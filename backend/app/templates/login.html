@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ app_name }} 로그인</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <img src="/static/assets/ci.png" alt="기관 로고" class="login-logo">
+    <h1>{{ app_name }}</h1>
+    <p>영양사 업무용 단일 사용자 시스템</p>
+    <form id="login-form" class="stack-form">
+      <label>아이디<input id="username" name="username" autocomplete="username" required value="admin"></label>
+      <label>비밀번호<input id="password" name="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit" class="primary-button">로그인</button>
+      <div id="login-error" class="form-error" aria-live="polite"></div>
+    </form>
+  </main>
+  <script>
+    document.getElementById('login-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const response = await fetch('/api/auth/login', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({username: username.value, password: password.value})
+      });
+      if (response.ok) location.href = '/';
+      else document.getElementById('login-error').textContent = (await response.json()).detail || '로그인 실패';
+    });
+  </script>
+</body>
+</html>

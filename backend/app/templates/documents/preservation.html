@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"><title>보존식 기록지</title>
+<style>
+@page{size:A4 landscape;margin:8mm}*{box-sizing:border-box}body{margin:0;font-family:"Noto Sans CJK KR","Malgun Gothic",sans-serif;color:#000}.preview-toolbar{position:sticky;top:0;z-index:10;background:#102a43;color:#fff;padding:10px 16px;display:flex;gap:10px;align-items:center}.preview-toolbar a,.preview-toolbar button{background:#fff;color:#102a43;text-decoration:none;border:0;border-radius:8px;padding:9px 14px;font-weight:700}.page{width:281mm;height:194mm;margin:0 auto;display:grid;grid-template-columns:repeat(3,1fr);break-after:page;page-break-after:always;overflow:hidden}.page:last-child{break-after:auto;page-break-after:auto}.record{height:100%}.record-table{width:100%;height:100%;border-collapse:collapse;table-layout:fixed}.record-table col.label{width:26%}.record-table col.value{width:24.666%}.record-table th,.record-table td{border:1px solid #000;text-align:center;vertical-align:middle;padding:0}.title-row{height:16mm}.title{font-family:"Noto Serif CJK KR",serif;font-size:17pt}.date-row{height:15mm}.date-cell{font-size:12pt}.collection-row{height:16mm}.menu-row{height:72mm;min-height:72mm;max-height:72mm}.menu-cell{height:72mm;min-height:72mm;max-height:72mm;padding:2mm!important;vertical-align:top!important;overflow:hidden}.menu-content{height:66mm;max-height:66mm;overflow:hidden;font-size:10.5pt;font-weight:700;line-height:1.25}.menu-item{margin-bottom:.7mm}.fixed-row{height:13mm}.fixed-value{text-align:left!important;padding:0 2mm!important}.empty .dynamic{visibility:hidden}@media print{.preview-toolbar{display:none}}
+</style>
+</head>
+<body>
+{% if toolbar %}<div class="preview-toolbar"><strong>보존식 기록지 미리보기</strong><a href="/api/documents/{{ preview.token }}/pdf">PDF 다운로드</a><a href="/api/documents/{{ preview.token }}/hwpx">HWPX 다운로드</a><button onclick="window.close()">닫기</button></div>{% endif %}
+{% set records = document.records %}
+{% for page_start in range(0, (records|length if records|length else 1), 3) %}
+<section class="page">
+{% for slot in range(3) %}
+{% set index = page_start + slot %}{% set record = records[index] if index < records|length else none %}
+<article class="record {% if not record %}empty{% endif %}">
+<table class="record-table"><colgroup><col class="label"><col class="value"><col class="value"><col class="value"></colgroup><tbody>
+<tr class="title-row"><th colspan="4" class="title">보존식 기록지</th></tr>
+<tr class="date-row"><td colspan="4" class="date-cell dynamic">{% if record %}{{ record.date_label }} {{ record.weekday }} {{ record.meal_name }}{% endif %}</td></tr>
+<tr class="collection-row"><th>채취일시</th><td><span class="dynamic">{{ record.collection_hour if record else '' }}</span> 시</td><td><span class="dynamic">{{ record.collection_minute if record else '' }}</span> 분</td><th>담당자<br><span class="dynamic">{{ record.manager_name if record else '' }}</span></th></tr>
+<tr class="menu-row"><th>식단명</th><td colspan="3" class="menu-cell"><div class="menu-content dynamic">{% if record %}{% for menu in record.menu_items %}<div class="menu-item">{{ menu }}</div>{% endfor %}{% endif %}</div></td></tr>
+<tr class="fixed-row"><th>냉동고 온도</th><td colspan="3" class="fixed-value dynamic">{{ record.freezer_temperature if record else '' }}</td></tr>
+<tr class="fixed-row"><th>폐기일시</th><td colspan="3" class="dynamic">{{ record.disposal_date if record else '' }}</td></tr>
+<tr class="fixed-row"><th>채취자</th><td colspan="3" class="fixed-value dynamic">{{ record.collector_name if record else '' }}</td></tr>
+<tr class="fixed-row"><th>채취시간</th><td colspan="3" class="fixed-value dynamic">{{ record.collection_time if record else '' }}</td></tr>
+</tbody></table></article>
+{% endfor %}
+</section>
+{% endfor %}
+</body>
+</html>

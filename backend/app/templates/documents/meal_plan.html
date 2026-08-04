@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>식단표</title>
+<style>
+@page{size:A4 landscape;margin:8mm}*{box-sizing:border-box}body{margin:0;font-family:"Noto Sans CJK KR","Malgun Gothic",sans-serif;color:#111}.preview-toolbar{position:sticky;top:0;z-index:10;background:#102a43;color:#fff;padding:10px 16px;display:flex;gap:10px;align-items:center}.preview-toolbar a,.preview-toolbar button{background:#fff;color:#102a43;text-decoration:none;border:0;border-radius:8px;padding:9px 14px;font-weight:700}.document{padding:8mm}.title{text-align:center;font-size:22px;margin:0 0 8px}.period{text-align:center;margin-bottom:12px;color:#475569}.week-block{margin-bottom:10px;border:1.5px solid #111}.week-header{padding:6px 10px;background:#edf3f8;font-weight:700}.week-grid{display:grid;grid-template-columns:repeat(5,1fr)}.day{border-right:1px solid #111;min-height:64mm}.day:last-child{border-right:0}.day-head{display:flex;justify-content:space-between;border-bottom:1px solid #111;padding:5px 7px;font-weight:700}.service{padding:6px;border-bottom:1px solid #777}.service:last-child{border-bottom:0}.service-title{display:flex;justify-content:space-between;font-weight:700;margin-bottom:4px}.menu{font-size:10.5pt;line-height:1.45}@media print{.preview-toolbar{display:none}.document{padding:0}}
+</style>
+</head>
+<body>
+{% if toolbar %}<div class="preview-toolbar"><strong>식단표 미리보기</strong><a href="/api/documents/{{ preview.token }}/pdf">PDF 다운로드</a><a href="/api/documents/{{ preview.token }}/hwpx">HWPX 다운로드</a><button onclick="window.close()">닫기</button></div>{% endif %}
+<div class="document">
+<h1 class="title">주간 식단표</h1>
+{% if document.weeks %}<div class="period">{{ document.weeks[0].start }} ~ {{ document.weeks[-1].end }}</div>{% endif %}
+{% for week in document.weeks %}
+<section class="week-block">
+  <div class="week-header">{{ week.start }} ~ {{ week.end }}</div>
+  <div class="week-grid">
+  {% for day in week.days %}
+    <div class="day">
+      <div class="day-head"><span>{{ day.date_label }}</span><span>{{ day.weekday }}</span></div>
+      {% for meal_type in ['LUNCH','DINNER'] %}
+        {% set service = day.services.get(meal_type) %}
+        {% if service %}
+        <div class="service">
+          <div class="service-title"><span>{{ service.meal_name }}</span><span>{{ service.service_time }}</span></div>
+          {% for menu in service.menus %}<div class="menu">{{ menu }}</div>{% endfor %}
+        </div>
+        {% endif %}
+      {% endfor %}
+    </div>
+  {% endfor %}
+  </div>
+</section>
+{% endfor %}
+</div>
+</body>
+</html>

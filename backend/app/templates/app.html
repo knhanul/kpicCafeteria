@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ app_name }}</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div id="app-shell" class="app-shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <img src="/static/assets/ci.png" alt="기관 로고">
+      <div><strong>구내식당 관리</strong><span>영양사 업무 시스템</span></div>
+    </div>
+    <nav class="side-nav">
+      <button data-view="workspace" class="active">주간 급식 운영</button>
+      <button data-view="master">메뉴·재료 기준정보</button>
+      <button data-view="setup">기초 데이터 구축</button>
+      <button data-view="master-data">기본 데이터 관리</button>
+      <button data-view="statistics">통계 보기</button>
+    </nav>
+    <div class="sidebar-foot">제약보다 정보 제공과 복구 중심</div>
+  </aside>
+
+  <section class="main-area">
+    <header class="top-header" id="top-header">
+      <div><small>구내식당 관리 시스템</small><h1 id="page-title">주간 급식 운영</h1></div>
+      <div class="user-actions"><span>👤 {{ display_name }}</span><button id="logout-button" class="ghost-button">로그아웃</button></div>
+    </header>
+
+    <main id="view-workspace" class="view active">
+      <div class="workspace-toolbar">
+        <div class="mode-tabs" role="tablist">
+          <button data-mode="meal" class="active">식단 작성</button>
+          <button data-mode="cooking">조리지시서</button>
+          <button data-mode="preservation">보존식 기록</button>
+          <button data-mode="actual">실제 식수</button>
+        </div>
+        <div class="week-controls">
+          <button id="prev-week" class="ghost-button">‹ 이전</button>
+          <strong id="week-range"></strong>
+          <button id="next-week" class="ghost-button">다음 ›</button>
+          <button id="today-week" class="ghost-button">이번 주</button>
+          <button id="document-preview" class="secondary-button">미리보기·출력</button>
+          <button id="focus-toggle" class="primary-button">⛶ 집중 작성</button>
+        </div>
+      </div>
+      <div id="focus-toolbar" class="focus-toolbar hidden">
+        <strong>식단 집중 작성</strong><span id="focus-week-range"></span><span id="save-state">저장됨</span>
+        <button id="focus-exit" class="ghost-button">집중 모드 종료</button>
+      </div>
+      <div class="workspace-grid">
+        <section class="week-board-wrap"><div id="week-board" class="week-board"></div></section>
+        <aside id="editor-panel" class="editor-panel"><div class="empty-editor">날짜와 배식을 선택해 주세요.</div></aside>
+      </div>
+    </main>
+
+    <main id="view-master" class="view">
+      <div class="page-card">
+        <div class="section-heading"><div><h2>메뉴·재료 기준정보</h2><p>목록과 편집 패널을 한 화면에서 사용합니다. 메뉴에는 재료 구성이 다른 여러 레시피를 등록할 수 있습니다.</p></div></div>
+        <div class="master-tabs"><button data-master="menus" class="active">메뉴·레시피</button><button data-master="ingredients">재료</button></div>
+        <div id="master-content" class="master-workspace"></div>
+      </div>
+    </main>
+
+    <main id="view-setup" class="view">
+      <div class="page-card narrow-card">
+        <h2>기초 데이터 구축</h2>
+        <p>`식재료_마이그레이션_기준정보.xlsx`를 검증한 뒤 메뉴, 재료, 100인 기준 레시피와 과거 식단을 생성합니다.</p>
+        <div class="upload-zone">
+          <input id="migration-file" type="file" accept=".xlsx">
+          <button id="migration-preview" class="secondary-button">선택 파일 검증</button><button id="bundled-migration-preview" class="ghost-button">포함된 기준파일 사용</button>
+        </div>
+        <div id="migration-result"></div>
+      </div>
+    </main>
+
+    <main id="view-master-data" class="view">
+      <div class="page-card">
+        <div class="section-heading"><div><h2>기본 데이터 관리</h2><p>HWPX 문서 양식과 배식 기본값을 관리합니다.</p></div></div>
+        <div class="master-tabs md-tabs" id="master-data-tabs"><button data-md-tab="hwpx-templates" class="active">HWPX 양식 관리</button><button data-md-tab="meal-service-defaults">배식 기본값 관리</button></div>
+        <div id="master-data-content"></div>
+      </div>
+    </main>
+
+    <main id="view-statistics" class="view">
+      <div class="page-card">
+        <div class="section-heading"><div><h2>식단 구성 대시보드</h2><p>식단 작성 화면과 분리하여 메뉴 반복, 단백질원, 재료 구성과 실제 식수 결과를 확인합니다.</p></div></div>
+        <div class="dashboard-toolbar">
+          <label>시작일 <input id="stats-start" type="date"></label>
+          <label>종료일 <input id="stats-end" type="date"></label>
+          <button id="stats-this-week" class="ghost-button">이번 주</button>
+          <button id="stats-four-weeks" class="ghost-button">최근 4주</button>
+          <button id="stats-search" class="primary-button">통계 조회</button>
+        </div>
+        <div id="statistics-content"></div>
+      </div>
+    </main>
+  </section>
+</div>
+<div id="modal-root"></div>
+<div id="toast-root" aria-live="polite"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

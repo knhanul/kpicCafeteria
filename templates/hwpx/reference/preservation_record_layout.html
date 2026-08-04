@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>보존식 기록지</title>
+
+  <style>
+    @page {
+      size: A4 landscape;
+      margin: 8mm;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: #fff;
+      color: #000;
+      font-family: "Noto Sans CJK KR", "Noto Sans KR", "Malgun Gothic", sans-serif;
+    }
+
+    body {
+      font-size: 11pt;
+    }
+
+    .preservation-page {
+      width: 281mm;
+      height: 194mm;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      align-items: stretch;
+      border-top: 1px solid #000;
+      border-left: 1px solid #000;
+      break-after: page;
+      page-break-after: always;
+      overflow: hidden;
+    }
+
+    .preservation-page:last-child {
+      break-after: auto;
+      page-break-after: auto;
+    }
+
+    .preservation-record {
+      min-width: 0;
+      height: 100%;
+      border-right: 1px solid #000;
+      border-bottom: 1px solid #000;
+    }
+
+    .preservation-table {
+      width: 100%;
+      height: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    .preservation-table col.label-col {
+      width: 26%;
+    }
+
+    .preservation-table col.value-col {
+      width: 24.666%;
+    }
+
+    .preservation-table th,
+    .preservation-table td {
+      border: 1px solid #000;
+      padding: 0;
+      text-align: center;
+      vertical-align: middle;
+      font-weight: 400;
+      line-height: 1.25;
+    }
+
+    .preservation-table tr:first-child > * {
+      border-top: 0;
+    }
+
+    .preservation-table tr:last-child > * {
+      border-bottom: 0;
+    }
+
+    .preservation-table tr > *:first-child {
+      border-left: 0;
+    }
+
+    .preservation-table tr > *:last-child {
+      border-right: 0;
+    }
+
+    .title-row {
+      height: 16mm;
+    }
+
+    .title-cell {
+      font-family: "Noto Serif CJK KR", "Batang", serif;
+      font-size: 17pt;
+      letter-spacing: 0.08em;
+    }
+
+    .date-row {
+      height: 15mm;
+    }
+
+    .date-cell {
+      font-family: "Noto Serif CJK KR", "Batang", serif;
+      font-size: 13pt;
+      white-space: nowrap;
+    }
+
+    .collection-row {
+      height: 16mm;
+    }
+
+    .collection-row th,
+    .collection-row td {
+      font-size: 12pt;
+    }
+
+    .collection-label {
+      white-space: nowrap;
+    }
+
+    .time-value {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      width: 100%;
+      min-height: 100%;
+      padding: 0 2mm;
+    }
+
+    .time-number {
+      min-width: 0;
+      text-align: center;
+    }
+
+    .time-unit {
+      padding-left: 1mm;
+      white-space: nowrap;
+    }
+
+    /*
+      핵심:
+      메뉴 데이터의 개수와 관계없이 메뉴 행의 높이를 항상 고정한다.
+      table-layout: fixed와 tr/td height를 함께 지정한다.
+    */
+    .menu-row {
+      height: 72mm;
+      min-height: 72mm;
+      max-height: 72mm;
+    }
+
+    .menu-label {
+      font-family: "Noto Serif CJK KR", "Batang", serif;
+      font-size: 13pt;
+      white-space: nowrap;
+    }
+
+    .menu-cell {
+      height: 72mm;
+      min-height: 72mm;
+      max-height: 72mm;
+      padding: 2mm 2.5mm !important;
+      vertical-align: top !important;
+      overflow: hidden;
+    }
+
+    .menu-content {
+      height: 66mm;
+      min-height: 66mm;
+      max-height: 66mm;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      align-items: stretch;
+      gap: 0.7mm;
+      font-family: "Noto Sans CJK KR", "Noto Sans KR", sans-serif;
+      font-size: 10.5pt;
+      font-weight: 700;
+      line-height: 1.25;
+      text-align: center;
+      word-break: keep-all;
+      overflow-wrap: anywhere;
+    }
+
+    .menu-item {
+      flex: 0 0 auto;
+      margin: 0;
+      padding: 0;
+    }
+
+    .fixed-row {
+      height: 13mm;
+    }
+
+    .fixed-row th {
+      font-family: "Noto Serif CJK KR", "Batang", serif;
+      font-size: 11.5pt;
+      white-space: nowrap;
+    }
+
+    .fixed-value {
+      padding: 0 2mm !important;
+      text-align: left !important;
+      font-size: 11pt;
+    }
+
+    .disposal-value {
+      display: flex;
+      align-items: center;
+      justify-content: space-around;
+      gap: 1mm;
+      width: 100%;
+      height: 100%;
+      white-space: nowrap;
+    }
+
+    .empty-record .dynamic-value,
+    .empty-record .menu-item {
+      visibility: hidden;
+    }
+
+    @media screen {
+      body {
+        background: #e9ecef;
+        padding: 16px;
+      }
+
+      .preservation-page {
+        background: #fff;
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.16);
+        transform-origin: top center;
+      }
+    }
+
+    @media print {
+      body {
+        background: #fff;
+      }
+
+      .preservation-page {
+        margin: 0;
+        box-shadow: none;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <!--
+    서버 템플릿 적용 예:
+    records를 3건씩 chunk 처리한 후, 부족한 칸에는 빈 객체를 넣는다.
+
+    Jinja2:
+    {% for page_records in records|batch(3, none) %}
+      <section class="preservation-page">
+        {% for record in page_records %}
+          ... record가 none이면 empty-record 클래스를 적용 ...
+        {% endfor %}
+      </section>
+    {% endfor %}
+  -->
+
+  <section class="preservation-page">
+
+    <!-- 1번 기록 -->
+    <article class="preservation-record">
+      <table class="preservation-table">
+        <colgroup>
+          <col class="label-col" />
+          <col class="value-col" />
+          <col class="value-col" />
+          <col class="value-col" />
+        </colgroup>
+        <tbody>
+          <tr class="title-row">
+            <th colspan="4" class="title-cell">보존식 기록지</th>
+          </tr>
+
+          <tr class="date-row">
+            <td colspan="4" class="date-cell">
+              <span class="dynamic-value">2026년&nbsp; 7월&nbsp; 13일&nbsp; 월요일&nbsp; 중식</span>
+            </td>
+          </tr>
+
+          <tr class="collection-row">
+            <th class="collection-label">채취일시</th>
+            <td>
+              <div class="time-value">
+                <span class="time-number dynamic-value">11</span>
+                <span class="time-unit">시</span>
+              </div>
+            </td>
+            <td>
+              <div class="time-value">
+                <span class="time-number dynamic-value">30</span>
+                <span class="time-unit">분</span>
+              </div>
+            </td>
+            <th>담당자</th>
+          </tr>
+
+          <tr class="menu-row">
+            <th class="menu-label">식단명</th>
+            <td colspan="3" class="menu-cell">
+              <div class="menu-content">
+                <div class="menu-item">현미밥</div>
+                <div class="menu-item">소고기무국</div>
+                <div class="menu-item">치킨까스</div>
+                <div class="menu-item">가지나물</div>
+                <div class="menu-item">두부구이/양념장</div>
+                <div class="menu-item">치커리 유자 드레싱</div>
+                <div class="menu-item">깍두기</div>
+              </div>
+            </td>
+          </tr>
+
+          <tr class="fixed-row">
+            <th>냉동고 온도</th>
+            <td colspan="3" class="fixed-value">
+              <span class="dynamic-value">-18℃</span>
+            </td>
+          </tr>
+
+          <tr class="fixed-row">
+            <th>폐기일시</th>
+            <td colspan="3">
+              <div class="disposal-value">
+                <span class="dynamic-value">2026년</span>
+                <span class="dynamic-value">7월</span>
+                <span class="dynamic-value">19일</span>
+                <span class="dynamic-value">일요일</span>
+              </div>
+            </td>
+          </tr>
+
+          <tr class="fixed-row">
+            <th>채취자</th>
+            <td colspan="3" class="fixed-value">
+              <span class="dynamic-value">홍길동</span>
+            </td>
+          </tr>
+
+          <tr class="fixed-row">
+            <th>채취시간</th>
+            <td colspan="3" class="fixed-value">
+              <span class="dynamic-value">11:30</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </article>
+
+    <!-- 2번 기록 -->
+    <article class="preservation-record">
+      <table class="preservation-table">
+        <colgroup>
+          <col class="label-col" />
+          <col class="value-col" />
+          <col class="value-col" />
+          <col class="value-col" />
+        </colgroup>
+        <tbody>
+          <tr class="title-row">
+            <th colspan="4" class="title-cell">보존식 기록지</th>
+          </tr>
+
+          <tr class="date-row">
+            <td colspan="4" class="date-cell">
+              <span class="dynamic-value">2026년&nbsp; 7월&nbsp; 13일&nbsp; 월요일&nbsp; 석식</span>
+            </td>
+          </tr>
+
+          <tr class="collection-row">
+            <th class="collection-label">채취일시</th>
+            <td>
+              <div class="time-value">
+                <span class="time-number dynamic-value">17</span>
+                <span class="time-unit">시</span>
+              </div>
+            </td>
+            <td>
+              <div class="time-value">
+                <span class="time-number dynamic-value">20</span>
+                <span class="time-unit">분</span>
+              </div>
+            </td>
+            <th>담당자</th>
+          </tr>
+
+          <tr class="menu-row">
+            <th class="menu-label">식단명</th>
+            <td colspan="3" class="menu-cell">
+              <div class="menu-content">
+                <div class="menu-item">백미밥</div>
+                <div class="menu-item">옹심이 감자국</div>
+                <div class="menu-item">등뼈 매운찜</div>
+                <div class="menu-item">해파리 냉채</div>
+                <div class="menu-item">계란말이</div>
+                <div class="menu-item">배추김치</div>
+              </div>
+            </td>
+          </tr>
+
+          <tr class="fixed-row">
+            <th>냉동고 온도</th>
+            <td colspan="3" class="fixed-value">
+              <span class="dynamic-value">-18℃</span>
+            </td>
+          </tr>
+
+          <tr class="fixed-row">
+            <th>폐기일시</th>
+            <td colspan="3">
+              <div class="disposal-value">
+                <span class="dynamic-value">2026년</span>
+                <span class="dynamic-value">7월</span>
+                <span class="dynamic-value">19일</span>
+                <span class="dynamic-value">일요일</span>
+              </div>
+            </td>
+          </tr>
+
+          <tr class="fixed-row">
+            <th>채취자</th>
+            <td colspan="3" class="fixed-value">
+              <span class="dynamic-value">김영양</span>
+            </td>
+          </tr>
+
+          <tr class="fixed-row">
+            <th>채취시간</th>
+            <td colspan="3" class="fixed-value">
+              <span class="dynamic-value">17:20</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </article>
+
+    <!--
+      3번 기록: 빈 양식 예시
+      마지막 페이지에서 데이터가 1건 또는 2건뿐이어도 이 빈 양식을 제거하지 않는다.
+    -->
+    <article class="preservation-record empty-record">
+      <table class="preservation-table">
+        <colgroup>
+          <col class="label-col" />
+          <col class="value-col" />
+          <col class="value-col" />
+          <col class="value-col" />
+        </colgroup>
+        <tbody>
+          <tr class="title-row">
+            <th colspan="4" class="title-cell">보존식 기록지</th>
+          </tr>
+
+          <tr class="date-row">
+            <td colspan="4" class="date-cell">
+              <span class="dynamic-value">&nbsp;</span>
+            </td>
+          </tr>
+
+          <tr class="collection-row">
+            <th class="collection-label">채취일시</th>
+            <td>
+              <div class="time-value">
+                <span class="time-number dynamic-value">&nbsp;</span>
+                <span class="time-unit">시</span>
+              </div>
+            </td>
+            <td>
+              <div class="time-value">
+                <span class="time-number dynamic-value">&nbsp;</span>
+                <span class="time-unit">분</span>
+              </div>
+            </td>
+            <th>담당자</th>
+          </tr>
+
+          <tr class="menu-row">
+            <th class="menu-label">식단명</th>
+            <td colspan="3" class="menu-cell">
+              <div class="menu-content">
+                <div class="menu-item">&nbsp;</div>
+              </div>
+            </td>
+          </tr>
+
+          <tr class="fixed-row">
+            <th>냉동고 온도</th>
+            <td colspan="3" class="fixed-value">
+              <span class="dynamic-value">&nbsp;</span>
+            </td>
+          </tr>
+
+          <tr class="fixed-row">
+            <th>폐기일시</th>
+            <td colspan="3">
+              <div class="disposal-value">
+                <span class="dynamic-value">&nbsp;</span>
+                <span class="dynamic-value">&nbsp;</span>
+                <span class="dynamic-value">&nbsp;</span>
+                <span class="dynamic-value">&nbsp;</span>
+              </div>
+            </td>
+          </tr>
+
+          <tr class="fixed-row">
+            <th>채취자</th>
+            <td colspan="3" class="fixed-value">
+              <span class="dynamic-value">&nbsp;</span>
+            </td>
+          </tr>
+
+          <tr class="fixed-row">
+            <th>채취시간</th>
+            <td colspan="3" class="fixed-value">
+              <span class="dynamic-value">&nbsp;</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </article>
+  </section>
+</body>
+</html>
