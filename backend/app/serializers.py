@@ -56,6 +56,7 @@ def meal_service_dict(service: MealService, detail: bool = True) -> dict[str, An
         "meal_type_name": MEAL_NAMES.get(service.meal_type, service.meal_type),
         "planned_count": service.planned_count,
         "service_time": iso(service.service_time),
+        "concept_title": service.concept_title,
         "note": service.note or "",
         "menus": [service_menu_dict(menu, detail) for menu in service.menus],
         "menu_count": len(service.menus),

@@ -117,8 +117,8 @@ docker compose down
 ## 최초 데이터 생성
 
 1. 로그인합니다.
-2. 좌측 `기초 데이터 구축` 메뉴를 엽니다.
-3. `data/source/식재료_마이그레이션_기준정보.xlsx`를 선택합니다.
+2. 좌측 `기본 데이터 관리` 메뉴를 열고 `기초 데이터 구축` 탭을 선택합니다.
+3. 로컬 XLSX 파일을 선택합니다.
 4. `파일 검증`을 실행합니다.
 5. 최초 구축은 `기존 업무데이터 교체`를 선택합니다.
 6. `기초데이터 생성`을 실행합니다.
@@ -177,7 +177,6 @@ backend/
     document_service.py
     hwpx_service.py
   tests/
-data/source/          마이그레이션 기준 XLSX
 storage/              업로드, 템플릿, 생성파일
 nginx/
 templates/hwpx/       HWPX 플레이스홀더 규칙

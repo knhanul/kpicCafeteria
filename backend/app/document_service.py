@@ -101,6 +101,7 @@ def _meal_plan_payload(services: list[MealService]) -> dict[str, Any]:
             "meal_name": MEAL_NAMES.get(service.meal_type, service.meal_type),
             "planned_count": service.planned_count,
             "service_time": service.service_time.strftime("%H:%M") if service.service_time else "",
+            "concept_title": service.concept_title,
             "menus": [item.menu_name_snapshot for item in service.menus],
         }
     if not by_date:

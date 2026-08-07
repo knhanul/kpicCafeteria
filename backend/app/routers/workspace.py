@@ -35,6 +35,7 @@ class ServiceCreateBody(BaseModel):
 class ServiceUpdateBody(BaseModel):
     planned_count: int = Field(ge=0)
     service_time: str | None = None
+    concept_title: str | None = None
     note: str | None = None
 
 
@@ -197,6 +198,7 @@ def update_service(
     service = service_detail(db, service_id)
     service.planned_count = body.planned_count
     service.service_time = parse_clock(body.service_time)
+    service.concept_title = body.concept_title
     service.note = body.note
     # Recalculate total quantities from per-100 quantities when the plan count changes.
     for menu in service.menus:
@@ -287,6 +289,91 @@ def add_menu(
     return meal_service_dict(service_detail(db, service_id))
 
 
+class BatchAddMenuItemBody(BaseModel):
+    menu_id: int
+    recipe_id: int | None = None
+    sort_order: int = 0
+
+
+class BatchAddMenuBody(BaseModel):
+    items: list[BatchAddMenuItemBody] = Field(default_factory=list)
+
+
+@router.post("/services/{service_id}/menus/batch")
+def batch_add_menus(
+    service_id: int,
+    body: BatchAddMenuBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    service = service_detail(db, service_id)
+    if not body.items:
+        raise HTTPException(status_code=400, detail="추가할 메뉴를 선택해 주세요.")
+
+    # Check for duplicate menu_ids within the request
+    menu_ids = [item.menu_id for item in body.items]
+    if len(set(menu_ids)) != len(menu_ids):
+        raise HTTPException(status_code=400, detail="요청에 중복된 메뉴가 있습니다.")
+
+    # Check for duplicate sort_order within the request
+    sort_orders = [item.sort_order for item in body.items]
+    if len(set(sort_orders)) != len(sort_orders):
+        raise HTTPException(status_code=400, detail="요청에 중복된 정렬 순서가 있습니다.")
+
+    # Check for duplicates with existing menus
+    existing_menu_ids = {item.menu_id for item in service.menus}
+    for mid in menu_ids:
+        if mid in existing_menu_ids:
+            raise HTTPException(status_code=409, detail="이미 추가된 메뉴가 있습니다.")
+
+    # Load all menus with recipes in one query
+    menu_rows = db.scalars(
+        select(Menu)
+        .where(Menu.id.in_(menu_ids), Menu.active.is_(True))
+        .options(selectinload(Menu.recipes).selectinload(Recipe.ingredients).selectinload(RecipeIngredient.ingredient))
+    ).unique().all()
+    menu_map = {m.id: m for m in menu_rows}
+
+    # Validate all menus exist and are active
+    for mid in menu_ids:
+        if mid not in menu_map:
+            raise HTTPException(status_code=404, detail=f"메뉴를 찾을 수 없습니다: {mid}")
+
+    # Validate recipes belong to their respective menus and are active
+    for item in body.items:
+        menu = menu_map[item.menu_id]
+        if item.recipe_id is not None:
+            recipe = next((r for r in menu.recipes if r.id == item.recipe_id), None)
+            if not recipe:
+                raise HTTPException(status_code=400, detail=f"{menu.name}의 선택한 레시피를 찾을 수 없습니다.")
+            if not recipe.active:
+                raise HTTPException(status_code=400, detail=f"{menu.name}의 선택한 레시피는 사용 중지 상태입니다.")
+
+    # All validation passed — create service menus in a transaction
+    base_sort = len(service.menus)
+    for item in body.items:
+        menu = menu_map[item.menu_id]
+        active_recipes = [r for r in menu.recipes if r.active]
+        if item.recipe_id is not None:
+            recipe = next(r for r in active_recipes if r.id == item.recipe_id)
+        else:
+            recipe = next((r for r in active_recipes if r.is_default), None) or (active_recipes[0] if active_recipes else None)
+
+        new_item = MealServiceMenu(
+            service=service,
+            menu=menu,
+            sort_order=base_sort + item.sort_order,
+            menu_name_snapshot=menu.name,
+            is_representative=False,
+        )
+        db.add(new_item)
+        db.flush()
+        _copy_recipe_to_service_menu(db, new_item, recipe)
+
+    db.commit()
+    return meal_service_dict(service_detail(db, service_id))
+
+
 @router.put("/service-menus/{item_id}/recipe")
 def change_service_menu_recipe(
     item_id: int,
@@ -370,6 +457,84 @@ def update_service_menu_ingredients(
         )
     db.commit()
     return meal_service_dict(service_detail(db, item.meal_service_id))
+
+
+class MealEditorIngredientBody(BaseModel):
+    ingredient_id: int | None = None
+    name: str
+    quantity_total: float | None = None
+    unit: str | None = None
+
+
+class MealEditorMenuBody(BaseModel):
+    service_menu_id: int | None = None
+    note: str | None = None
+    is_representative: bool = False
+    ingredients: list[MealEditorIngredientBody] = []
+
+
+class MealEditorBody(BaseModel):
+    planned_count: int = Field(ge=0)
+    service_time: str | None = None
+    concept_title: str | None = None
+    note: str | None = None
+    menus: list[MealEditorMenuBody] = []
+
+
+@router.put("/services/{service_id}/meal-editor")
+def save_meal_editor(
+    service_id: int,
+    body: MealEditorBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    service = service_detail(db, service_id)
+
+    # 1. Save service basic info
+    service.planned_count = body.planned_count
+    service.service_time = parse_clock(body.service_time)
+    service.concept_title = body.concept_title
+    service.note = body.note
+
+    # 2. Save each menu's note, representative, and ingredients
+    representative_set = False
+    for menu_body in body.menus:
+        if menu_body.service_menu_id:
+            item = db.get(MealServiceMenu, menu_body.service_menu_id)
+            if not item or item.meal_service_id != service_id:
+                continue
+            item.note = menu_body.note
+            # Representative: only first True wins; unchecking is allowed
+            if menu_body.is_representative and not representative_set:
+                item.is_representative = True
+                representative_set = True
+            else:
+                item.is_representative = False
+
+            # Replace ingredients
+            db.query(MealServiceMenuIngredient).filter(
+                MealServiceMenuIngredient.meal_service_menu_id == item.id
+            ).delete(synchronize_session=False)
+            for index, row in enumerate(menu_body.ingredients, start=1):
+                ingredient = db.get(Ingredient, row.ingredient_id) if row.ingredient_id else None
+                per_100 = None
+                total = row.quantity_total
+                if total is not None and service.planned_count:
+                    per_100 = total * 100 / service.planned_count
+                db.add(
+                    MealServiceMenuIngredient(
+                        meal_service_menu_id=item.id,
+                        ingredient_id=ingredient.id if ingredient else None,
+                        sort_order=index,
+                        ingredient_name_snapshot=row.name.strip(),
+                        quantity_total=total,
+                        quantity_per_100=per_100,
+                        unit=row.unit or (ingredient.default_unit if ingredient else None),
+                    )
+                )
+
+    db.commit()
+    return meal_service_dict(service_detail(db, service_id))
 
 
 @router.delete("/service-menus/{item_id}")

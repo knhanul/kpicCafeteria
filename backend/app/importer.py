@@ -207,13 +207,7 @@ class MigrationImporter:
                 alias.source = clean_text(row.get("출처")) or "기존데이터"
                 counters["aliases"] += 1
 
-            recipe_by_menu_id: dict[int, Recipe] = {}
-            if mode == "merge":
-                existing_recipes = db.scalars(
-                    select(Recipe).where(Recipe.is_default.is_(True), Recipe.active.is_(True))
-                ).all()
-                for recipe in existing_recipes:
-                    recipe_by_menu_id[recipe.menu_id] = recipe
+            recipe_source_rows: list[dict[str, Any]] = []
             for row in reader.sheet_rows("05_메뉴별재료_기준"):
                 menu_code = clean_text(row.get("메뉴ID"))
                 ingredient_code = clean_text(row.get("재료ID"))
@@ -221,46 +215,77 @@ class MigrationImporter:
                 ingredient = ingredient_by_code.get(ingredient_code)
                 if not menu or not ingredient:
                     continue
-                recipe = recipe_by_menu_id.get(menu.id)
-                if not recipe:
-                    recipe = Recipe(
-                        menu=menu,
-                        name="기본 레시피",
-                        version=1,
-                        composition_key=f"IMPORT-{menu.id}",
-                        is_default=True,
-                        active=True,
-                    )
-                    db.add(recipe)
-                    db.flush()
-                    recipe_by_menu_id[menu.id] = recipe
-                existing = db.scalar(
-                    select(RecipeIngredient).where(
-                        RecipeIngredient.recipe_id == recipe.id,
-                        RecipeIngredient.ingredient_id == ingredient.id,
-                        RecipeIngredient.sort_order == (clean_int(row.get("재료순서")) or 1),
-                    )
+                recipe_source_rows.append(
+                    {
+                        "menu": menu,
+                        "ingredient": ingredient,
+                        "sort_order": clean_int(row.get("재료순서")) or 1,
+                        "quantity_per_100": clean_float(row.get("100인기준수량")),
+                        "unit": clean_text(row.get("단위")) or ingredient.default_unit,
+                        "review_status": clean_text(row.get("검토상태")) or "정상",
+                    }
                 )
-                if not existing:
-                    existing = RecipeIngredient(recipe=recipe, ingredient=ingredient)
-                    db.add(existing)
-                existing.sort_order = clean_int(row.get("재료순서")) or 1
-                existing.quantity_per_100 = clean_float(row.get("100인기준수량"))
-                existing.unit = clean_text(row.get("단위")) or ingredient.default_unit
-                existing.review_status = clean_text(row.get("검토상태")) or "정상"
                 counters["recipe_rows"] += 1
-            db.flush()
-            for recipe in recipe_by_menu_id.values():
-                ids = db.scalars(
-                    select(RecipeIngredient.ingredient_id)
-                    .where(RecipeIngredient.recipe_id == recipe.id)
-                    .order_by(RecipeIngredient.ingredient_id)
-                ).all()
-                recipe.composition_key = ",".join(str(value) for value in sorted(set(ids))) or "EMPTY"
+
+            existing_recipes_by_menu: dict[int, dict[str, Recipe]] = defaultdict(dict)
+            existing_recipes = db.scalars(select(Recipe).where(Recipe.active.is_(True))).all()
+            for recipe in existing_recipes:
+                existing_recipes_by_menu[recipe.menu_id][recipe.composition_key] = recipe
+
+            grouped_rows = self._group_recipe_rows_by_composition(recipe_source_rows)
+            recipe_map_by_menu: dict[int, dict[str, Recipe]] = defaultdict(dict)
+            default_recipe_by_menu: dict[int, Recipe] = {}
+
+            for menu_id, recipe_groups in grouped_rows.items():
+                for composition_key, rows_in_group in recipe_groups.items():
+                    recipe = existing_recipes_by_menu.get(menu_id, {}).get(composition_key)
+                    if not recipe:
+                        max_version = db.scalar(select(Recipe.version).where(Recipe.menu_id == menu_id).order_by(Recipe.version.desc())) or 0
+                        recipe = Recipe(
+                            menu_id=menu_id,
+                            name=f"기본 레시피 v{max_version + 1}",
+                            version=max_version + 1,
+                            composition_key=composition_key,
+                            is_default=False,
+                            active=True,
+                        )
+                        db.add(recipe)
+                        db.flush()
+
+                    item_by_ingredient_id: dict[int, RecipeIngredient] = {}
+                    for row_data in rows_in_group:
+                        ingredient: Ingredient = row_data["ingredient"]
+                        item = item_by_ingredient_id.get(ingredient.id)
+                        if not item:
+                            item = db.scalar(
+                                select(RecipeIngredient).where(
+                                    RecipeIngredient.recipe_id == recipe.id,
+                                    RecipeIngredient.ingredient_id == ingredient.id,
+                                )
+                            )
+                        if not item:
+                            item = RecipeIngredient(recipe=recipe, ingredient=ingredient)
+                            db.add(item)
+                        item.sort_order = row_data["sort_order"]
+                        item.quantity_per_100 = row_data["quantity_per_100"]
+                        item.unit = row_data["unit"]
+                        item.review_status = row_data["review_status"]
+                        item_by_ingredient_id[ingredient.id] = item
+
+                    recipe_map_by_menu[menu_id][composition_key] = recipe
+                    if recipe.is_default:
+                        default_recipe_by_menu[menu_id] = recipe
+
+                if menu_id not in default_recipe_by_menu and recipe_map_by_menu[menu_id]:
+                    first_recipe = min(recipe_map_by_menu[menu_id].values(), key=lambda r: r.version)
+                    first_recipe.is_default = True
+                    default_recipe_by_menu[menu_id] = first_recipe
             db.flush()
 
             service_map: dict[tuple[str, str], MealService] = {}
             service_menu_map: dict[tuple[str, str, str, int], MealServiceMenu] = {}
+            service_menu_by_id: dict[int, MealServiceMenu] = {}
+            service_menu_ingredient_ids: dict[int, set[int]] = defaultdict(set)
             for row in reader.sheet_rows("06_식단이력_이관"):
                 service_date = excel_serial_to_date(row.get("일자"))
                 meal_name = clean_text(row.get("배식유형"))
@@ -299,7 +324,7 @@ class MigrationImporter:
                         )
                     )
                 if not service_menu:
-                    source_recipe = recipe_by_menu_id.get(menu.id) if menu else None
+                    source_recipe = default_recipe_by_menu.get(menu.id) if menu else None
                     service_menu = MealServiceMenu(
                         service=service,
                         menu=menu,
@@ -313,6 +338,7 @@ class MigrationImporter:
                 service_menu.note = clean_text(row.get("메뉴비고")) or None
                 db.flush()
                 service_menu_map[menu_key] = service_menu
+                service_menu_by_id[service_menu.id] = service_menu
                 counters["meal_history_rows"] += 1
 
             for row in reader.sheet_rows("07_식단재료_이관"):
@@ -333,6 +359,8 @@ class MigrationImporter:
                 ingredient_name = clean_text(row.get("표준재료명")) or clean_text(row.get("원본재료명"))
                 if not ingredient_name:
                     continue
+                if ingredient:
+                    service_menu_ingredient_ids[service_menu.id].add(ingredient.id)
                 sort_order = clean_int(row.get("재료순서")) or 1
                 existing = db.scalar(
                     select(MealServiceMenuIngredient).where(
@@ -355,6 +383,20 @@ class MigrationImporter:
                 existing.source_note = clean_text(row.get("원본비고")) or None
                 existing.source_row = clean_text(row.get("원본행")) or None
                 counters["meal_ingredient_rows"] += 1
+
+            for service_menu_id, ingredient_ids in service_menu_ingredient_ids.items():
+                service_menu = service_menu_by_id.get(service_menu_id)
+                if not service_menu or not service_menu.menu_id:
+                    continue
+                composition_key = self._composition_key_from_ingredient_ids(ingredient_ids)
+                recipe = recipe_map_by_menu.get(service_menu.menu_id, {}).get(composition_key)
+                if not recipe:
+                    recipe = default_recipe_by_menu.get(service_menu.menu_id)
+                if not recipe:
+                    continue
+                service_menu.recipe_id = recipe.id
+                service_menu.recipe_name_snapshot = recipe.name
+                service_menu.recipe_version_snapshot = recipe.version
 
             db.add(
                 AuditLog(
@@ -396,3 +438,41 @@ class MigrationImporter:
         ):
             db.execute(delete(model))
         db.flush()
+
+    @staticmethod
+    def _composition_key_from_ingredient_ids(ingredient_ids: set[int] | list[int]) -> str:
+        ids = sorted({int(value) for value in ingredient_ids})
+        return ",".join(str(value) for value in ids) if ids else "EMPTY"
+
+    @classmethod
+    def _group_recipe_rows_by_composition(cls, recipe_rows: list[dict[str, Any]]) -> dict[int, dict[str, list[dict[str, Any]]]]:
+        grouped: dict[int, dict[str, list[dict[str, Any]]]] = defaultdict(dict)
+        current_block_rows_by_menu: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        last_sort_order_by_menu: dict[int, int] = {}
+
+        def flush_block(menu_id: int) -> None:
+            rows = current_block_rows_by_menu.get(menu_id) or []
+            if not rows:
+                return
+            composition_key = cls._composition_key_from_ingredient_ids(
+                [row["ingredient"].id for row in rows if row.get("ingredient")]
+            )
+            if composition_key not in grouped[menu_id]:
+                grouped[menu_id][composition_key] = []
+            grouped[menu_id][composition_key].extend(rows)
+            current_block_rows_by_menu[menu_id] = []
+
+        for row in recipe_rows:
+            menu: Menu = row["menu"]
+            menu_id = menu.id
+            sort_order = int(row.get("sort_order") or 0)
+            last_sort = last_sort_order_by_menu.get(menu_id)
+            if last_sort is not None and sort_order <= last_sort:
+                flush_block(menu_id)
+            current_block_rows_by_menu[menu_id].append(row)
+            last_sort_order_by_menu[menu_id] = sort_order
+
+        for menu_id in list(current_block_rows_by_menu.keys()):
+            flush_block(menu_id)
+
+        return grouped

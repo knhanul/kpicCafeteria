@@ -51,27 +51,6 @@ def preview_import(
     return {"token": token, "summary": summary, "errors": errors}
 
 
-@router.post("/import/bundled-preview")
-def preview_bundled_import(
-    db: Session = Depends(get_db),
-    user: User = Depends(current_user),
-):
-    source = Path("/app/data/source/식재료_마이그레이션_기준정보.xlsx")
-    if not source.exists():
-        raise HTTPException(status_code=404, detail="서버에 포함된 기준 XLSX를 찾을 수 없습니다.")
-    token = secrets.token_urlsafe(24)
-    destination = settings.import_dir / f"{token}.xlsx"
-    shutil.copy2(source, destination)
-    summary, errors = MigrationImporter(destination).preview()
-    job = ImportJob(
-        token=token, filename=source.name, storage_path=str(destination),
-        status="PREVIEWED" if not errors else "INVALID", summary=summary, errors=errors,
-    )
-    db.add(job)
-    db.commit()
-    return {"token": token, "summary": summary, "errors": errors}
-
-
 @router.post("/import/apply")
 def apply_import(
     body: ApplyBody,

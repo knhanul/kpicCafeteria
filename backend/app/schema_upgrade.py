@@ -18,6 +18,9 @@ def upgrade_existing_schema(engine: Engine) -> None:
     with engine.begin() as connection:
         if dialect == "postgresql":
             connection.execute(text("ALTER TABLE recipes DROP CONSTRAINT IF EXISTS recipes_menu_id_key"))
+            # Drop legacy unique index on recipes.menu_id (from older schema) and recreate as plain index
+            connection.execute(text("DROP INDEX IF EXISTS ix_recipes_menu_id"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_recipes_menu_id ON recipes(menu_id)"))
             connection.execute(text("ALTER TABLE recipes ADD COLUMN IF NOT EXISTS name VARCHAR(120)"))
             connection.execute(text("ALTER TABLE recipes ADD COLUMN IF NOT EXISTS version INTEGER"))
             connection.execute(text("ALTER TABLE recipes ADD COLUMN IF NOT EXISTS composition_key VARCHAR(1000)"))
@@ -65,6 +68,15 @@ def upgrade_existing_schema(engine: Engine) -> None:
             }.items():
                 if name not in mts_cols:
                     connection.execute(text(f"ALTER TABLE meal_type_settings ADD COLUMN IF NOT EXISTS {name} {decl}"))
+            # MealService concept_title
+            ms_cols = {col["name"] for col in inspector.get_columns("meal_services")} if "meal_services" in inspector.get_table_names() else set()
+            if "concept_title" not in ms_cols:
+                connection.execute(text("ALTER TABLE meal_services ADD COLUMN IF NOT EXISTS concept_title VARCHAR(80)"))
+            # Widen meal_service_menu_ingredients.source_row from VARCHAR(50) to TEXT
+            if "meal_service_menu_ingredients" in inspector.get_table_names():
+                msmi_cols = {col["name"]: col for col in inspector.get_columns("meal_service_menu_ingredients")}
+                if "source_row" in msmi_cols:
+                    connection.execute(text("ALTER TABLE meal_service_menu_ingredients ALTER COLUMN source_row TYPE TEXT"))
         elif dialect == "sqlite":
             # SQLite cannot drop the legacy UNIQUE(menu_id) constraint in place.
             # Fresh test databases work normally. Existing SQLite users should export,
@@ -117,3 +129,9 @@ def upgrade_existing_schema(engine: Engine) -> None:
                 }.items():
                     if name not in mts_columns:
                         connection.execute(text(f"ALTER TABLE meal_type_settings ADD COLUMN {name} {declaration}"))
+
+            # --- MealService concept_title (SQLite) ---
+            if "meal_services" in inspector.get_table_names():
+                ms_columns = {column["name"] for column in inspector.get_columns("meal_services")}
+                if "concept_title" not in ms_columns:
+                    connection.execute(text("ALTER TABLE meal_services ADD COLUMN concept_title VARCHAR(80)"))

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..db import get_db
 from ..deps import current_user
-from ..models import Ingredient, IngredientAlias, Menu, Recipe, RecipeIngredient, User
+from ..models import Ingredient, IngredientAlias, MealServiceMenu, Menu, Recipe, RecipeIngredient, User
 
 router = APIRouter(prefix="/api/master", tags=["master"])
 
@@ -210,6 +210,75 @@ def list_menus(
         stmt = stmt.where(Menu.active == active)
     rows = db.scalars(stmt.order_by(Menu.name).offset(offset).limit(limit)).unique().all()
     return [menu_payload(row) for row in rows]
+
+
+@router.get("/menus/picker")
+def picker_list_menus(
+    q: str = "",
+    role: str | None = None,
+    active: bool | None = True,
+    service_id: int | None = None,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    stmt = _menu_query()
+    if q.strip():
+        term = f"%{q.strip()}%"
+        stmt = stmt.where(or_(Menu.name.ilike(term), Menu.canonical_name.ilike(term)))
+    if role and role != "ALL":
+        stmt = stmt.where(Menu.role == role)
+    if active is not None:
+        stmt = stmt.where(Menu.active == active)
+
+    # Get total count
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    total = db.scalar(count_stmt) or 0
+
+    rows = db.scalars(stmt.order_by(Menu.name).offset(offset).limit(limit)).unique().all()
+
+    # Determine already_added menus for the given service
+    added_map: dict[int, int | None] = {}
+    if service_id:
+        existing = db.execute(
+            select(MealServiceMenu.menu_id, MealServiceMenu.recipe_id).where(MealServiceMenu.meal_service_id == service_id)
+        ).all()
+        added_map = {row[0]: row[1] for row in existing}
+
+    items = []
+    for menu in rows:
+        active_recipes = [r for r in menu.recipes if r.active]
+        default_recipe = next((r for r in active_recipes if r.is_default), None)
+        already_added = menu.id in added_map
+        current_recipe_id = added_map.get(menu.id) if already_added else None
+
+        recipes_payload = []
+        for recipe in active_recipes:
+            ingredient_names = [ri.ingredient.name for ri in recipe.ingredients[:5]]
+            recipes_payload.append({
+                "id": recipe.id,
+                "name": recipe.name,
+                "version": recipe.version,
+                "is_default": recipe.is_default,
+                "active": recipe.active,
+                "ingredient_count": len(recipe.ingredients),
+                "ingredient_summary": ingredient_names,
+                "note": recipe.note or "",
+            })
+
+        items.append({
+            "id": menu.id,
+            "name": menu.name,
+            "role": menu.role,
+            "active": menu.active,
+            "already_added": already_added,
+            "current_recipe_id": current_recipe_id,
+            "default_recipe_id": default_recipe.id if default_recipe else (active_recipes[0].id if active_recipes else None),
+            "recipes": recipes_payload,
+        })
+
+    return {"items": items, "total": total, "offset": offset, "limit": limit}
 
 
 @router.get("/menus/{menu_id}")

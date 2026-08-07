@@ -2,9 +2,13 @@ const state = {
   view: 'workspace', mode: 'meal', focus: false, weeks: 2,
   weekStart: mondayOf(new Date()), workspace: null,
   selectedServiceId: null, selectedService: null, selectedMenuItemId: null,
+  selectedDocumentServiceIds: new Set(),
   stats: null, dashboard: null, importToken: null, masterTab: 'menus', masterSelectionId: null,
   masterDataTab: 'hwpx-templates', masterDataSelectionId: null, mealDefaults: null,
   mealServiceTime: null, preservationCollectionTime: null,
+  mealEditorDraft: null, mealEditorDirty: false,
+  menuSearchOpen: false, menuSearchQuery: '',
+  menuPickerDraft: null,
   codes: null, ingredientCache: [], selectedRecipeId: null,
 };
 
@@ -124,11 +128,11 @@ function bindGlobal() {
   $$('#master-data-tabs button').forEach(button=>button.addEventListener('click',()=>{state.masterDataTab=button.dataset.mdTab;state.masterDataSelectionId=null;$$('#master-data-tabs button').forEach(x=>x.classList.toggle('active',x===button));loadMasterData();}));
   $('#prev-week').addEventListener('click',()=>moveWeek(-1)); $('#next-week').addEventListener('click',()=>moveWeek(1));
   $('#today-week').addEventListener('click',()=>{state.weekStart=mondayOf(new Date());loadWorkspace();});
+  $('#select-all-services').addEventListener('click',selectAllServicesForDocument);
+  $('#clear-selected-services').addEventListener('click',clearSelectedServicesForDocument);
   $('#focus-toggle').addEventListener('click',()=>toggleFocus(true)); $('#focus-exit').addEventListener('click',()=>toggleFocus(false));
   $('#document-preview').addEventListener('click',previewCurrentDocument);
   $('#logout-button').addEventListener('click',async()=>{await api('/api/auth/logout',{method:'POST'});location.href='/login';});
-  $('#migration-preview').addEventListener('click',previewMigration);
-  $('#bundled-migration-preview').addEventListener('click',previewBundledMigration);
   $('#stats-search').addEventListener('click',loadDashboardStats);
   $('#stats-this-week').addEventListener('click',()=>setStatsRange(7));
   $('#stats-four-weeks').addEventListener('click',()=>setStatsRange(28));
@@ -142,7 +146,7 @@ function bindGlobal() {
 function switchView(view) {
   state.view=view; $$('.view').forEach(x=>x.classList.toggle('active',x.id===`view-${view}`));
   $$('.side-nav button').forEach(x=>x.classList.toggle('active',x.dataset.view===view));
-  const titles={workspace:'주간 급식 운영',master:'메뉴·재료 기준정보',setup:'기초 데이터 구축','master-data':'기본 데이터 관리',statistics:'통계 보기'};
+  const titles={workspace:'주간 급식 운영',master:'메뉴·재료 기준정보','master-data':'기본 데이터 관리',statistics:'통계 보기'};
   $('#page-title').textContent=titles[view]||'';
   if(view==='master') loadMaster(); if(view==='master-data') loadMasterData(); if(view==='statistics') initStatsDashboard();
 }
@@ -159,11 +163,40 @@ async function loadWorkspace(keepSelection=true) {
   state.workspace=await api(`/api/workspace/weeks?week_start=${start}&weeks=${state.weeks}`);
   $('#week-range').textContent=`${state.workspace.start} ~ ${state.workspace.end}`; $('#focus-week-range').textContent=$('#week-range').textContent;
   const serviceIds=allServiceIds();
+  state.selectedDocumentServiceIds = new Set([...state.selectedDocumentServiceIds].filter(id=>serviceIds.includes(id)));
   if(!keepSelection || !serviceIds.includes(state.selectedServiceId)){state.selectedServiceId=null;state.selectedService=null;state.selectedMenuItemId=null;}
   renderWeekBoard();
+  updateDocumentSelectionInfo();
   if(state.selectedServiceId) await selectService(state.selectedServiceId,false); else renderEditor();
 }
 function allServiceIds(){ return (state.workspace?.weeks||[]).flatMap(w=>w.days.flatMap(d=>d.services.map(s=>s.id))); }
+function selectedServiceIdsForDocument(){
+  const selected=[...state.selectedDocumentServiceIds].filter(id=>allServiceIds().includes(id));
+  return selected.length ? selected : allServiceIds();
+}
+function updateDocumentSelectionInfo(){
+  const selected=[...state.selectedDocumentServiceIds].filter(id=>allServiceIds().includes(id));
+  const info=$('#document-selection-info');
+  if(info){
+    info.textContent=selected.length ? `출력 선택 ${selected.length}건` : '출력 선택 없음 (전체)';
+  }
+}
+function toggleServiceSelectionForDocument(serviceId){
+  if(state.selectedDocumentServiceIds.has(serviceId)) state.selectedDocumentServiceIds.delete(serviceId);
+  else state.selectedDocumentServiceIds.add(serviceId);
+  renderWeekBoard();
+  updateDocumentSelectionInfo();
+}
+function selectAllServicesForDocument(){
+  state.selectedDocumentServiceIds=new Set(allServiceIds());
+  renderWeekBoard();
+  updateDocumentSelectionInfo();
+}
+function clearSelectedServicesForDocument(){
+  state.selectedDocumentServiceIds.clear();
+  renderWeekBoard();
+  updateDocumentSelectionInfo();
+}
 function moveWeek(direction){ state.weekStart=addDays(state.weekStart,direction*(state.focus?7:14)); loadWorkspace(false); }
 function toggleFocus(enabled){ state.focus=enabled; state.weeks=enabled?1:2; $('#app-shell').classList.toggle('focus-mode',enabled); $('#focus-toolbar').classList.toggle('hidden',!enabled); $('#focus-toggle').classList.toggle('hidden',enabled); loadWorkspace(true); }
 
@@ -179,14 +212,21 @@ function renderWeekBoard() {
     <header class="week-section-header"><strong>${week.week_start} 주간</strong><span>${week.week_start} ~ ${week.week_end}</span></header>
     <div class="weekday-grid">${week.days.map(day=>`<article class="day-column ${day.services.some(s=>s.id===state.selectedServiceId)?'selected':''}" data-date="${day.date}">
       <header class="day-head"><strong>${day.day}</strong><span>${day.weekday}</span></header>
-      <div class="day-body">${day.services.map(service=>`<div class="service-card ${service.id===state.selectedServiceId?'selected':''}" data-service-id="${service.id}">
+      <div class="day-body">${day.services.map(service=>`<div class="service-card ${service.id===state.selectedServiceId?'selected':''} ${state.selectedDocumentServiceIds.has(service.id)?'print-selected':''}" data-service-id="${service.id}">
+        <label class="service-select-check" title="출력 선택">
+          <input type="checkbox" data-service-print-select="${service.id}" ${state.selectedDocumentServiceIds.has(service.id)?'checked':''}>
+          <span>출력</span>
+        </label>
         <div class="service-top"><span>${service.meal_type_name}</span><span>${service.service_time?service.service_time.slice(0,5):''}</span></div>
+        ${service.concept_title?`<div class="service-concept">${escapeHtml(service.concept_title)}</div>`:''}
         <div class="service-meta"><span>${numberText(service.planned_count)}명</span>${statusMarkup(service)}</div>
         <div class="menu-lines">${service.menus.map(m=>`<div>${escapeHtml(m.name)}</div>`).join('')||'<span class="muted">메뉴 없음</span>'}</div>
       </div>`).join('')}
       <button class="add-service" data-add-date="${day.date}">＋ 배식 추가</button></div>
     </article>`).join('')}</div></section>`).join('');
   $$('.service-card',board).forEach(card=>card.addEventListener('click',()=>selectService(Number(card.dataset.serviceId))));
+  $$('[data-service-print-select]',board).forEach(input=>input.addEventListener('click',event=>event.stopPropagation()));
+  $$('[data-service-print-select]',board).forEach(input=>input.addEventListener('change',()=>toggleServiceSelectionForDocument(Number(input.dataset.servicePrintSelect))));
   $$('[data-add-date]',board).forEach(button=>button.addEventListener('click',()=>openServiceAdd(button.dataset.addDate)));
 }
 
@@ -207,8 +247,12 @@ async function loadServiceAddOptions(date,existing){
 }
 
 async function selectService(id,rerender=true) {
+  if(state.selectedServiceId!==id){
+    captureCurrentMenuDraft();
+  }
   state.selectedServiceId=id; state.selectedService=await api(`/api/workspace/services/${id}`);
   if(!state.selectedMenuItemId || !state.selectedService.menus.some(m=>m.id===state.selectedMenuItemId)) state.selectedMenuItemId=state.selectedService.menus[0]?.id||null;
+  initializeMealEditorDraft(state.selectedService);
   if(rerender) renderWeekBoard(); renderEditor();
 }
 
@@ -226,71 +270,708 @@ function renderEditor() {
 }
 async function deleteCurrentService(){if(!confirm('이 배식과 메뉴, 기록을 모두 삭제하시겠습니까?'))return;try{await api(`/api/workspace/services/${state.selectedServiceId}`,{method:'DELETE'});state.selectedServiceId=null;state.selectedService=null;await loadWorkspace(false);toast('배식을 삭제했습니다.');}catch(e){toast(e.message,true);}}
 
+function createEditableIngredientGrid(opts) {
+  const mode=opts.mode||'service';
+  const rows=opts.rows||[];
+  const allowPrimary=opts.allowPrimary||false;
+  const wrap=document.createElement('div');
+  wrap.className='ingredient-grid-wrap';
+  const showPrimary=mode==='recipe'&&allowPrimary;
+  const headerHtml=showPrimary
+    ?'<tr><th class="row-number">#</th><th>재료명</th><th>100인 수량</th><th>단위</th><th>주재료</th><th></th></tr>'
+    :'<tr><th class="row-number">#</th><th>재료명</th><th>사용량</th><th>단위</th><th></th></tr>';
+  wrap.innerHTML=`<table class="ingredient-grid"><thead>${headerHtml}</thead><tbody class="ig-body"></tbody></table>`;
+  const body=$('.ig-body',wrap);
+  function rowHtml(item={},index=1){
+    const ingId=item.ingredient_id||item.ingredientId||'';
+    const name=item.ingredient_name||item.name||'';
+    const qty=mode==='recipe'?(item.quantity_per_100??''):(item.quantity_total??'');
+    const unit=item.unit||'';
+    const primary=showPrimary?(item.is_primary?'checked':''):'';
+    return `<tr data-ig-row data-ingredient-id="${ingId}"><td class="row-number">${index}</td><td><input class="ig-name" list="ingredient-options" value="${escapeHtml(name)}"></td><td><input class="ig-qty" type="number" step="0.001" value="${qty}"></td><td><select class="ig-unit"><option value="">단위</option>${state.codes.units.map(u=>`<option ${u===unit?'selected':''}>${u}</option>`).join('')}</select></td>${showPrimary?`<td class="center-cell"><input class="ig-primary" type="checkbox" ${primary}></td>`:''}<td><button class="icon-button ig-remove" aria-label="행 삭제">×</button></td></tr>`;
+  }
+  function renderRows(){
+    body.innerHTML=rows.map((item,i)=>rowHtml(item,i+1)).join('');
+    if(rows.length===0)appendRow();
+    bindAll();
+  }
+  function appendRow(values={}){
+    const tmp=document.createElement('tbody');
+    tmp.innerHTML=rowHtml(values,$$('[data-ig-row]',body).length+1);
+    const row=tmp.firstElementChild;
+    body.append(row);
+    bindRow(row);
+    return row;
+  }
+  function renumber(){$$('[data-ig-row]',body).forEach((row,i)=>$('.row-number',row).textContent=i+1);}
+  function bindRow(row){
+    $('.ig-remove',row).addEventListener('click',()=>{row.remove();renumber();if(opts.onChange)opts.onChange();});
+    const nameInput=$('.ig-name',row);
+    nameInput.addEventListener('change',()=>{resolveIngredientRow(row);if(opts.onChange)opts.onChange();});
+    nameInput.addEventListener('blur',()=>{resolveIngredientRow(row);});
+    if(opts.onChange){
+      $('.ig-qty',row).addEventListener('input',opts.onChange);
+      $('.ig-unit',row).addEventListener('change',opts.onChange);
+      if(showPrimary)$('.ig-primary',row).addEventListener('change',opts.onChange);
+    }
+  }
+  function bindAll(){
+    $$('[data-ig-row]',body).forEach(bindRow);
+    body.addEventListener('paste',event=>{
+      if(!event.target.classList.contains('ig-name'))return;
+      const text=event.clipboardData.getData('text');
+      if(!text.includes('\n')&&!text.includes('\t'))return;
+      event.preventDefault();
+      const lines=text.replace(/\r/g,'').split('\n').filter(line=>line.trim()!=='');
+      if(lines.length>0&&/^(재료명|수량|사용량|단위|주재료)/i.test(lines[0].split('\t')[0]))lines.shift();
+      let row=event.target.closest('tr');
+      let index=$$('[data-ig-row]',body).indexOf(row);
+      lines.forEach((line,offset)=>{
+        const columns=line.split('\t');
+        let target=$$('[data-ig-row]',body)[index+offset];
+        if(!target)target=appendRow();
+        $('.ig-name',target).value=(columns[0]||'').trim();
+        const qtyVal=(columns[1]||'').trim();
+        $('.ig-qty',target).value=qtyVal;
+        if(columns[2]){
+          const unit=columns[2].trim();
+          if(!state.codes.units.includes(unit)){
+            const option=document.createElement('option');
+            option.value=unit;option.textContent=unit;
+            $('.ig-unit',target).append(option);
+          }
+          $('.ig-unit',target).value=unit;
+        }
+        if(showPrimary)$('.ig-primary',target).checked=/^(y|yes|true|1|주재료|o)$/i.test((columns[3]||'').trim());
+        resolveIngredientRow(target);
+      });
+      renumber();
+      if(opts.onChange)opts.onChange();
+    });
+  }
+  function resolveIngredientRow(row){
+    const nameInput=$('.ig-name',row);
+    const unitSelect=$('.ig-unit',row);
+    const name=nameInput.value.trim();
+    const found=state.ingredientCache.find(i=>i.name===name);
+    row.dataset.ingredientId=found?.id||'';
+    if(found&&!unitSelect.value)unitSelect.value=found.default_unit||'';
+    row.classList.toggle('unresolved-ingredient',Boolean(name)&&!found);
+  }
+  function collect(){
+    return $$('[data-ig-row]',body).map(row=>{
+      const name=$('.ig-name',row).value.trim();
+      const found=state.ingredientCache.find(i=>i.name===name);
+      const result={ingredient_id:found?.id||null,name,quantity_total:$('.ig-qty',row).value===''?null:Number($('.ig-qty',row).value),unit:$('.ig-unit',row).value||null};
+      if(showPrimary)result.is_primary=$('.ig-primary',row).checked;
+      if(mode==='recipe')result.quantity_per_100=result.quantity_total;
+      return result;
+    }).filter(row=>row.name);
+  }
+  renderRows();
+  return {element:wrap,appendRow,collect,renumber,resolveIngredientRow};
+}
+
+function parseIngredientClipboard(text,mode='service'){
+  const lines=text.replace(/\r/g,'').split('\n').filter(line=>line.trim()!=='');
+  if(lines.length>0&&/^(재료명|수량|사용량|단위|주재료)/i.test(lines[0].split('\t')[0]))lines.shift();
+  return lines.map(line=>{
+    const columns=line.split('\t');
+    return{ingredientName:(columns[0]||'').trim(),quantity:(columns[1]||'').trim()===''?null:Number(columns[1]),unit:(columns[2]||'').trim()||null};
+  });
+}
+
+function initializeMealEditorDraft(service){
+  state.mealServiceTime=normalizeTime24(service.service_time)||null;
+  state.mealEditorDraft={
+    serviceId:service.id,
+    plannedCount:service.planned_count,
+    serviceTime:normalizeTime24(service.service_time),
+    conceptTitle:service.concept_title||'',
+    serviceNote:service.note||'',
+    menus:Object.fromEntries(service.menus.map(menu=>[menu.id,{
+      note:menu.note||'',
+      isRepresentative:Boolean(menu.is_representative),
+      recipeId:menu.recipe_id||null,
+      ingredients:structuredClone(menu.ingredients||[]),
+      dirty:false
+    }]))
+  };
+  state.mealEditorDirty=false;
+}
+
+function captureCurrentMenuDraft(){
+  if(!state.mealEditorDraft||!state.selectedMenuItemId)return;
+  const menuId=state.selectedMenuItemId;
+  const draft=state.mealEditorDraft.menus[menuId];
+  if(!draft)return;
+  const noteEl=$('#menu-note');
+  if(noteEl)draft.note=noteEl.value;
+  const repEl=$('#representative');
+  if(repEl)draft.is_representative=repEl.checked;
+  const gridEl=$('#ingredient-grid-container');
+  if(gridEl&&gridEl._gridInstance){
+    draft.ingredients=gridEl._gridInstance.collect().map(r=>({ingredient_id:r.ingredient_id,name:r.name,quantity_total:r.quantity_total,unit:r.unit}));
+    draft.dirty=true;
+  }
+}
+
+function getSelectedMenuDraft(){
+  if(!state.mealEditorDraft||!state.selectedMenuItemId)return null;
+  return state.mealEditorDraft.menus[state.selectedMenuItemId]||null;
+}
+
+function markMealEditorDirty(){
+  state.mealEditorDirty=true;
+  updateMealEditorSaveState();
+}
+
+function updateMealEditorSaveState(){
+  const el=$('.save-state',$('#editor-panel'));
+  if(!el)return;
+  if(state.mealEditorDirty){
+    el.textContent='저장되지 않은 변경사항이 있습니다.';
+  }else{
+    el.textContent='저장됨';
+  }
+}
+
+function switchMealMenu(menuId){
+  captureCurrentMenuDraft();
+  state.selectedMenuItemId=menuId;
+  renderEditor();
+}
+
+function checkMealEditorDirty(action){
+  if(state.mealEditorDirty){
+    return confirm('저장하지 않은 변경사항이 있습니다.\n저장하지 않고 이동하시겠습니까?');
+  }
+  return true;
+}
+
 function renderMealEditor(panel,service) {
   const selected=service.menus.find(m=>m.id===state.selectedMenuItemId)||service.menus[0];
-  state.mealServiceTime=normalizeTime24(service.service_time)||null;
+  if(!state.mealEditorDraft||state.mealEditorDraft.serviceId!==service.id){
+    initializeMealEditorDraft(service);
+  }
+  const draft=state.mealEditorDraft;
   panel.innerHTML=editorHeader(service,'식단 작성')+`
-  <div class="field-grid three"><label class="field">계획 식수<input id="planned-count" type="number" min="0" value="${service.planned_count}"></label><label class="field">배식시간<div id="service-time-cell"></div></label><label class="field">배식 비고<input id="service-note" value="${escapeHtml(service.note||'')}"></label></div>
+  <section class="service-basic-card">
+    <div class="service-basic-grid">
+      <label class="field">
+        <span>계획 식수</span>
+        <div class="count-input-wrap">
+          <input id="planned-count" type="number" min="0" value="${draft.plannedCount}">
+          <span class="input-suffix">명</span>
+        </div>
+      </label>
+      <label class="field">
+        <span>배식시간</span>
+        <div id="service-time-cell"></div>
+      </label>
+      <label class="field service-concept-field">
+        <span>식단 제목·컨셉</span>
+        <input id="service-concept-title" type="text" maxlength="80" placeholder="예: LA갈비 특식, 명절 특별식" value="${escapeHtml(draft.conceptTitle)}">
+        <small>입력하면 해당 배식 카드와 식단표 상단에 강조 표시됩니다.</small>
+      </label>
+    </div>
+  </section>
   <div class="panel-section"><div class="panel-section-head"><h4>메뉴 ${service.menus.length}개</h4><button class="secondary-button" id="add-menu">＋ 메뉴 추가</button></div>
-    <div class="menu-tabs">${service.menus.map(m=>`<button class="menu-tab ${m.id===selected?.id?'active':''}" data-menu-tab="${m.id}">${escapeHtml(m.name)}</button>`).join('')}</div>
+    <div class="menu-tabs" role="tablist">${service.menus.map(m=>`<button class="menu-tab ${m.id===selected?.id?'active':''}" data-menu-tab="${m.id}" role="tab" aria-selected="${m.id===selected?.id}">${escapeHtml(m.name)}</button>`).join('')}</div>
     ${selected?menuDetailHtml(selected):'<div class="empty-editor">메뉴를 추가해 주세요.</div>'}
   </div>
-  <div class="save-bar"><span class="save-state">수정 제약 없이 저장할 수 있습니다.</span><button class="primary-button" id="save-service">식단 저장</button></div>`;
-  const ti24=createTimeInput24({value:state.mealServiceTime,label:'배식시간',showQuickButtons:false,onChange:v=>{state.mealServiceTime=v;}});
+  <div class="save-bar"><span class="save-state" aria-live="polite">저장됨</span><button class="primary-button" id="save-service">식단 저장</button></div>`;
+  const ti24=createTimeInput24({value:state.mealServiceTime,label:'배식시간',showQuickButtons:true,stepMinutes:5,onChange:v=>{state.mealServiceTime=v;markMealEditorDirty();}});
   $('#service-time-cell').append(ti24);
-  $('#add-menu').addEventListener('click',openMenuSearch);
-  $$('[data-menu-tab]').forEach(button=>button.addEventListener('click',()=>{state.selectedMenuItemId=Number(button.dataset.menuTab);renderEditor();}));
-  $('#save-service').addEventListener('click',saveMealEditor);
+  $('#planned-count').addEventListener('input',()=>{markMealEditorDirty();});
+  $('#service-concept-title').addEventListener('input',()=>{markMealEditorDirty();});
+  $('#add-menu').addEventListener('click',openMenuPicker);
+  $$('[data-menu-tab]').forEach(button=>button.addEventListener('click',()=>switchMealMenu(Number(button.dataset.menuTab))));
+  $('#save-service').addEventListener('click',saveMealEditorTransaction);
   if(selected) bindMenuDetail(selected);
 }
 function menuDetailHtml(menu) {
-  return `<div class="menu-row"><div class="menu-row-head"><div><strong>${escapeHtml(menu.name)}</strong><div class="recipe-chip">${menu.recipe_name?`사용 레시피: ${escapeHtml(menu.recipe_name)} v${menu.recipe_version||''}`:'등록 레시피 없음'}</div><div><label><input id="representative" type="checkbox" ${menu.is_representative?'checked':''}> 대표메뉴</label></div></div><div class="menu-row-actions"><button class="ghost-button" id="change-recipe">레시피 변경</button><button class="icon-button" id="move-up">↑</button><button class="icon-button" id="move-down">↓</button><button class="danger-button" id="remove-menu">삭제</button></div></div>
-  <label class="field" style="margin-top:8px">메뉴 비고<input id="menu-note" value="${escapeHtml(menu.note||'')}"></label>
-  <div class="panel-section-head" style="margin-top:10px"><strong>재료</strong><button class="ghost-button" id="add-ingredient">＋ 재료</button></div>
-  <table class="ingredient-table"><thead><tr><th>재료명</th><th>수량</th><th>단위</th><th></th></tr></thead><tbody id="ingredient-body">${menu.ingredients.map(i=>ingredientRowHtml(i)).join('')}</tbody></table>
-  <div class="warning-strip">수량·단위가 비어 있어도 저장할 수 있습니다. 통계의 중량값만 입력된 범위에서 계산됩니다.</div></div>`;
+  const draft=state.mealEditorDraft?.menus[menu.id];
+  const ingredients=draft?.ingredients||menu.ingredients||[];
+  return `<div class="menu-row">
+    <div class="menu-editor-head">
+      <div class="menu-title-area">
+        <div class="menu-name-line">
+          <strong class="menu-editor-name">${escapeHtml(menu.name)}</strong>
+          <label class="representative-toggle">
+            <input id="representative" type="checkbox" ${menu.is_representative?'checked':''}>
+            <span>대표 메뉴</span>
+          </label>
+        </div>
+        <div class="recipe-summary">${menu.recipe_name?`기본 레시피 v${menu.recipe_version||''}`:'등록 레시피 없음'}</div>
+      </div>
+      <div class="menu-editor-actions">
+        <button type="button" class="ghost-button" id="change-recipe">레시피 변경</button>
+        <button type="button" class="icon-button" id="move-up" aria-label="메뉴 위로 이동">↑</button>
+        <button type="button" class="icon-button" id="move-down" aria-label="메뉴 아래로 이동">↓</button>
+        <button type="button" class="danger-button" id="remove-menu" aria-label="${escapeHtml(menu.name)} 삭제">삭제</button>
+      </div>
+    </div>
+    <label class="field" style="margin-top:8px">메뉴 비고<input id="menu-note" value="${escapeHtml(menu.note||'')}"></label>
+    <div class="panel-section-head" style="margin-top:10px"><strong>재료</strong><button class="ghost-button" id="add-ingredient-row">＋ 빈 행</button></div>
+    <div id="ingredient-grid-container"></div>
+    <div class="grid-status" aria-live="polite"></div>
+  </div>`;
 }
-function ingredientRowHtml(item={}) { return `<tr data-ingredient-row data-ingredient-id="${item.ingredient_id||''}"><td><input class="ing-name" value="${escapeHtml(item.name||'')}"></td><td><input class="ing-qty" type="number" step="0.001" value="${item.quantity_total??''}"></td><td><select class="ing-unit"><option value="">단위</option>${state.codes.units.map(u=>`<option ${u===(item.unit||'')?'selected':''}>${u}</option>`).join('')}</select></td><td><button class="icon-button remove-ing">×</button></td></tr>`; }
 function bindMenuDetail(menu) {
-  $('#remove-menu').addEventListener('click',async()=>{if(!confirm(`${menu.name}을 식단에서 삭제할까요?`))return;try{state.selectedService=await api(`/api/workspace/service-menus/${menu.id}`,{method:'DELETE'});state.selectedMenuItemId=state.selectedService.menus[0]?.id||null;renderEditor();renderWeekBoard();toast('메뉴를 삭제했습니다.');}catch(e){toast(e.message,true);}});
-  $('#add-ingredient').addEventListener('click',openIngredientSearch);
+  $('#remove-menu').addEventListener('click',async()=>{
+    if(!confirm(`${menu.name}을 식단에서 삭제할까요?`))return;
+    try{
+      state.selectedService=await api(`/api/workspace/service-menus/${menu.id}`,{method:'DELETE'});
+      state.selectedMenuItemId=state.selectedService.menus[0]?.id||null;
+      initializeMealEditorDraft(state.selectedService);
+      renderEditor();renderWeekBoard();toast('메뉴를 삭제했습니다.');
+    }catch(e){toast(e.message,true);}
+  });
   $('#change-recipe').addEventListener('click',()=>openRecipeChange(menu));
-  $$('.remove-ing').forEach(b=>b.addEventListener('click',()=>b.closest('tr').remove()));
-  $('#move-up').addEventListener('click',()=>moveSelectedMenu(-1)); $('#move-down').addEventListener('click',()=>moveSelectedMenu(1));
+  $('#move-up').addEventListener('click',()=>moveSelectedMenu(-1));
+  $('#move-down').addEventListener('click',()=>moveSelectedMenu(1));
+  $('#representative').addEventListener('change',markMealEditorDirty);
+  $('#menu-note').addEventListener('input',markMealEditorDirty);
+  const draft=state.mealEditorDraft?.menus[menu.id];
+  const ingredients=draft?.ingredients||menu.ingredients||[];
+  const grid=createEditableIngredientGrid({
+    mode:'service',
+    rows:ingredients,
+    onChange:()=>{markMealEditorDirty();updateGridStatus();}
+  });
+  const container=$('#ingredient-grid-container');
+  container.innerHTML='';
+  container.append(grid.element);
+  container._gridInstance=grid;
+  $('#add-ingredient-row').addEventListener('click',()=>{grid.appendRow();markMealEditorDirty();});
+  updateGridStatus();
+}
+function updateGridStatus(){
+  const gridEl=$('#ingredient-grid-container');
+  if(!gridEl||!gridEl._gridInstance)return;
+  const rows=gridEl._gridInstance.collect();
+  const unresolved=rows.filter(r=>r.name&&!r.ingredient_id);
+  const statusEl=$('.grid-status');
+  if(statusEl){
+    if(unresolved.length>0){
+      statusEl.textContent=`미등록 재료 ${unresolved.length}개 — 기준정보에 등록 후 통계에 반영됩니다.`;
+      statusEl.className='grid-status grid-status-warn';
+    }else if(rows.length>0){
+      statusEl.textContent=`재료 ${rows.length}개`;
+      statusEl.className='grid-status';
+    }else{
+      statusEl.textContent='재료를 입력하거나 엑셀에서 붙여넣을 수 있습니다.';
+      statusEl.className='grid-status grid-status-hint';
+    }
+  }
 }
 async function moveSelectedMenu(delta){const ids=state.selectedService.menus.map(m=>m.id),idx=ids.indexOf(state.selectedMenuItemId),next=idx+delta;if(next<0||next>=ids.length)return;[ids[idx],ids[next]]=[ids[next],ids[idx]];try{state.selectedService=await api(`/api/workspace/services/${state.selectedServiceId}/reorder`,json('POST',{menu_ids:ids}));renderEditor();renderWeekBoard();}catch(e){toast(e.message,true);}}
 
-async function saveMealEditor() {
+async function saveMealEditorTransaction() {
   try{
-    $('#save-state').textContent='저장 중…';
-    await api(`/api/workspace/services/${state.selectedServiceId}`,json('PUT',{planned_count:Number($('#planned-count').value||0),service_time:state.mealServiceTime||null,note:$('#service-note').value||null}));
-    const menu=state.selectedService.menus.find(m=>m.id===state.selectedMenuItemId);
-    if(menu){
-      await api(`/api/workspace/service-menus/${menu.id}`,json('PUT',{note:$('#menu-note').value||null,is_representative:$('#representative').checked,cooking_instruction:menu.cooking_instruction,cooking_note:menu.cooking_note}));
-      const ingredients=$$('[data-ingredient-row]').map(row=>({ingredient_id:Number(row.dataset.ingredientId)||null,name:$('.ing-name',row).value.trim(),quantity_total:$('.ing-qty',row).value===''?null:Number($('.ing-qty',row).value),unit:$('.ing-unit',row).value||null})).filter(x=>x.name);
-      await api(`/api/workspace/service-menus/${menu.id}/ingredients`,json('PUT',ingredients));
-    }
-    await selectService(state.selectedServiceId); await loadWorkspace(true); $('#save-state').textContent='저장됨'; toast('식단을 저장했습니다.');
-  }catch(e){$('#save-state').textContent='저장 실패';toast(e.message,true);}
+    const saveStateEl=$('.save-state',$('#editor-panel'));
+    if(saveStateEl)saveStateEl.textContent='저장 중…';
+    captureCurrentMenuDraft();
+    const draft=state.mealEditorDraft;
+    if(!draft){toast('저장할 데이터가 없습니다.',true);return;}
+    const service=state.selectedService;
+    const menusBody=service.menus.map(menu=>{
+      const md=draft.menus[menu.id]||{};
+      return {
+        service_menu_id:menu.id,
+        note:md.note||null,
+        is_representative:md.isRepresentative||false,
+        ingredients:(md.ingredients||[]).map(r=>({ingredient_id:r.ingredient_id||null,name:r.name,quantity_total:r.quantity_total,unit:r.unit||null}))
+      };
+    });
+    const body={
+      planned_count:Number($('#planned-count').value||0),
+      service_time:state.mealServiceTime||null,
+      concept_title:$('#service-concept-title')?.value||null,
+      note:draft.serviceNote||null,
+      menus:menusBody
+    };
+    state.selectedService=await api(`/api/workspace/services/${state.selectedServiceId}/meal-editor`,json('PUT',body));
+    initializeMealEditorDraft(state.selectedService);
+    await loadWorkspace(true);
+    if(saveStateEl)saveStateEl.textContent='저장됨';
+    state.mealEditorDirty=false;
+    toast('식단을 저장했습니다.');
+  }catch(e){
+    const saveStateEl=$('.save-state',$('#editor-panel'));
+    if(saveStateEl)saveStateEl.textContent='저장 실패';
+    toast(e.message,true);
+  }
 }
 
-async function openMenuSearch(){
-  modal(`<div class="modal-head"><h3>메뉴 추가</h3><button class="icon-button" onclick="closeModal()">×</button></div><input id="menu-search" placeholder="메뉴명 검색" autofocus><div id="menu-search-results" class="menu-search-results" style="margin-top:12px"></div>`);
-  const search=async()=>{try{
-    const rows=await api(`/api/master/menus?q=${encodeURIComponent($('#menu-search').value)}&active=true&limit=80`);
-    $('#menu-search-results').innerHTML=rows.map(row=>{
-      const recipes=(row.recipes||[]).filter(r=>r.active);
-      const options=recipes.map(r=>`<option value="${r.id}" ${r.id===row.default_recipe_id?'selected':''}>${escapeHtml(r.name)} · 재료 ${r.ingredient_count}개</option>`).join('');
-      return `<div class="search-menu-card menu-pick-card" data-menu-card="${row.id}"><strong>${escapeHtml(row.name)}</strong><span>${escapeHtml(row.role)} · 레시피 ${recipes.length}개</span>${recipes.length?`<select class="menu-recipe-select">${options}</select>`:'<small class="muted">등록 레시피 없음</small>'}<button class="secondary-button add-menu-from-search" data-add-menu-id="${row.id}">추가</button></div>`;
-    }).join('')||'<p>검색 결과가 없습니다.</p>';
-    $$('.add-menu-from-search').forEach(b=>b.addEventListener('click',async()=>{try{
-      const card=b.closest('[data-menu-card]');
-      const recipeSelect=$('.menu-recipe-select',card);
-      state.selectedService=await api(`/api/workspace/services/${state.selectedServiceId}/menus`,json('POST',{menu_id:Number(b.dataset.addMenuId),recipe_id:recipeSelect?Number(recipeSelect.value):null}));
-      state.selectedMenuItemId=state.selectedService.menus.at(-1)?.id;closeModal();renderEditor();renderWeekBoard();toast('메뉴를 추가했습니다.');
-    }catch(e){toast(e.message,true);}}));
-  }catch(e){toast(e.message,true);}};
-  $('#menu-search').addEventListener('input',search);search();
+function initializeMenuPickerDraft(){
+  const svc=state.selectedService;
+  state.menuPickerDraft={
+    serviceId: svc?.id||null,
+    query:'', role:'ALL',
+    results:[], total:0, offset:0,
+    selectedItems:[],
+    loading:false, submitting:false,
+    expandedMenuId:null,
+  };
+}
+
+function openMenuPicker(){
+  captureCurrentMenuDraft();
+  initializeMenuPickerDraft();
+  renderMenuPickerModal();
+  loadMenuPickerResults();
+}
+
+function closeMenuPicker(){
+  const draft=state.menuPickerDraft;
+  if(draft && draft.submitting)return;
+  if(draft && draft.selectedItems.length>0){
+    if(!confirm('선택한 메뉴가 있습니다. 선택을 취소하고 닫을까요?'))return;
+  }
+  state.menuPickerDraft=null;
+  closeModal();
+  const addBtn=$('#add-menu'); if(addBtn)addBtn.focus();
+}
+
+function renderMenuPickerModal(){
+  const draft=state.menuPickerDraft;
+  if(!draft)return;
+  const svc=state.selectedService;
+  const dateStr=svc?new Date(svc.service_date).toLocaleDateString('ko-KR',{year:'numeric',month:'2-digit',day:'2-digit'}):'';
+  const mealName=svc?({BREAKFAST:'조식',LUNCH:'중식',DINNER:'석식',SNACK:'간식'}[svc.meal_type]||svc.meal_type):'';
+  const existingCount=svc?svc.menus.length:0;
+  const roles=state.codes?.menu_roles||['밥·죽','면·떡','국·탕','찌개·전골','주찬','부찬','김치·절임','샐러드','후식·음료','기타'];
+
+  $('#modal-root').innerHTML=`<div class="modal-backdrop"><section class="modal menu-picker-modal" role="dialog" aria-modal="true" aria-labelledby="menu-picker-title"><header class="menu-picker-header">
+    <div class="menu-picker-header-info">
+      <h3 id="menu-picker-title">메뉴 선택</h3>
+      <small>${dateStr} ${escapeHtml(mealName)} · 계획 식수 ${numberText(svc?.planned_count)}명 · 식단 ${existingCount}개</small>
+    </div>
+    <button class="icon-button" id="menu-picker-close" aria-label="닫기">×</button>
+  </header>
+  <div class="menu-picker-body">
+    <aside class="menu-picker-filters">
+      <label class="field">메뉴명 검색<input id="picker-search" type="search" placeholder="메뉴명 입력" value="${escapeHtml(draft.query)}"></label>
+      <label class="field">메뉴 역할<select id="picker-role"><option value="ALL">전체</option>${roles.map(r=>`<option value="${escapeHtml(r)}" ${r===draft.role?'selected':''}>${escapeHtml(r)}</option>`).join('')}</select></label>
+    </aside>
+    <main class="menu-picker-results" id="picker-results"></main>
+    <aside class="menu-picker-basket" id="picker-basket"></aside>
+  </div>
+  <footer class="menu-picker-footer">
+    <span class="picker-summary" aria-live="polite" id="picker-summary"></span>
+    <div class="picker-footer-actions">
+      <button class="ghost-button" id="picker-cancel">취소</button>
+      <button class="primary-button" id="picker-submit" disabled>가져오기</button>
+    </div>
+  </footer></section></div>`;
+  $('.modal-backdrop').addEventListener('click',e=>{
+    if(e.target.classList.contains('modal-backdrop'))closeMenuPicker();
+  });
+
+  $('#menu-picker-close').addEventListener('click',closeMenuPicker);
+  $('#picker-cancel').addEventListener('click',closeMenuPicker);
+  $('#picker-submit').addEventListener('click',submitMenuPickerBatch);
+  const searchInput=$('#picker-search');
+  searchInput.addEventListener('keydown',e=>{if(e.key==='Escape'){e.stopPropagation();closeMenuPicker();}});
+  let debounceTimer;
+  searchInput.addEventListener('input',()=>{
+    draft.query=searchInput.value;
+    clearTimeout(debounceTimer);
+    debounceTimer=setTimeout(loadMenuPickerResults,250);
+  });
+  $('#picker-role').addEventListener('change',e=>{draft.role=e.target.value;loadMenuPickerResults();});
+  document.addEventListener('keydown',pickerEscapeHandler);
+  searchInput.focus();
+  renderMenuPickerBasket();
+  updatePickerSummary();
+}
+
+function pickerEscapeHandler(e){
+  if(e.key==='Escape'){
+    const draft=state.menuPickerDraft;
+    if(draft && !draft.submitting){
+      e.stopPropagation();
+      closeMenuPicker();
+    }
+  }
+}
+
+async function loadMenuPickerResults(){
+  const draft=state.menuPickerDraft;
+  if(!draft)return;
+  draft.loading=true;
+  renderMenuPickerResults();
+  try{
+    const params=new URLSearchParams();
+    if(draft.query.trim())params.set('q',draft.query.trim());
+    if(draft.role&&draft.role!=='ALL')params.set('role',draft.role);
+    params.set('active','true');
+    if(draft.serviceId)params.set('service_id',draft.serviceId);
+    params.set('offset','0');
+    params.set('limit','50');
+    const data=await api(`/api/master/menus/picker?${params}`);
+    draft.results=data.items||[];
+    draft.total=data.total||0;
+    draft.offset=data.offset||0;
+  }catch(e){toast(e.message,true);draft.results=[];}
+  draft.loading=false;
+  renderMenuPickerResults();
+}
+
+function renderMenuPickerResults(){
+  const draft=state.menuPickerDraft;
+  if(!draft)return;
+  const el=$('#picker-results');
+  if(!el)return;
+  if(draft.loading){
+    el.innerHTML='<p class="muted" style="padding:20px">불러오는 중…</p>';
+    return;
+  }
+  if(!draft.results.length){
+    el.innerHTML='<p class="muted" style="padding:20px">검색 결과가 없습니다.</p>';
+    return;
+  }
+  el.innerHTML=draft.results.map(menu=>{
+    const isSelected=draft.selectedItems.some(s=>s.menuId===menu.id);
+    const isAdded=menu.already_added;
+    const cardClass=`menu-picker-result-card${isSelected?' selected':''}${isAdded?' already-added':''}`;
+    const checkboxDisabled=isAdded?'disabled':'';
+    const checked=isSelected||isAdded?'checked':'';
+    const addedBadge=isAdded?'<span class="picker-added-badge">✓ 이미 식단에 추가됨</span>':'';
+    const recipeCount=menu.recipes.length;
+    const defaultRecipe=menu.recipes.find(r=>r.id===menu.default_recipe_id);
+    const defaultRecipeName=defaultRecipe?`${escapeHtml(defaultRecipe.name)} v${defaultRecipe.version}`:'등록 레시피 없음';
+    const expanded=draft.expandedMenuId===menu.id;
+    const showRecipes=recipeCount>1||expanded;
+    return `<div class="${cardClass}" data-picker-menu="${menu.id}">
+      <label class="picker-menu-check">
+        <input type="checkbox" data-picker-check="${menu.id}" ${checked} ${checkboxDisabled}>
+        <strong>${escapeHtml(menu.name)}</strong>
+      </label>
+      <div class="picker-menu-meta">${escapeHtml(menu.role)} · 레시피 ${recipeCount}개 · ${escapeHtml(defaultRecipeName)} ${addedBadge}</div>
+      ${showRecipes?renderMenuRecipeChoices(menu,isSelected):''}
+    </div>`;
+  }).join('');
+
+  $$('[data-picker-check]',el).forEach(cb=>{
+    if(!cb.disabled)cb.addEventListener('change',()=>toggleMenuPickerItem(Number(cb.dataset.pickerCheck)));
+  });
+  $$('[data-picker-recipe]',el).forEach(radio=>{
+    radio.addEventListener('change',()=>selectMenuPickerRecipe(Number(radio.dataset.pickerMenu),Number(radio.dataset.pickerRecipe)));
+  });
+  $$('[data-picker-expand]',el).forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const mid=Number(btn.dataset.pickerExpand);
+      draft.expandedMenuId=draft.expandedMenuId===mid?null:mid;
+      renderMenuPickerResults();
+    });
+  });
+}
+
+function renderMenuRecipeChoices(menu,isSelected){
+  const draft=state.menuPickerDraft;
+  if(!draft)return'';
+  const selectedItem=draft.selectedItems.find(s=>s.menuId===menu.id);
+  const selectedRecipeId=selectedItem?.recipeId;
+  if(menu.recipes.length===0){
+    return `<div class="menu-picker-recipe-list"><label class="menu-picker-recipe selected"><input type="radio" name="recipe-${menu.id}" data-picker-recipe="0" data-picker-menu="${menu.id}" checked><div><strong>레시피 없이 추가</strong><span>빈 재료 그리드로 추가됩니다.</span></div></label></div>`;
+  }
+  if(menu.recipes.length===1){
+    const r=menu.recipes[0];
+    return `<div class="menu-picker-recipe-list"><label class="menu-picker-recipe selected"><input type="radio" name="recipe-${menu.id}" data-picker-recipe="${r.id}" data-picker-menu="${menu.id}" checked><div><strong>${escapeHtml(r.name)} v${r.version}${r.is_default?' · 기본':''}</strong><span>재료 ${r.ingredient_count}개 · ${r.ingredient_summary.map(escapeHtml).join(', ')}</span>${r.note?`<small>${escapeHtml(r.note)}</small>`:''}</div></label></div>`;
+  }
+  const recipesHtml=menu.recipes.map(r=>{
+    const isSel=r.id===selectedRecipeId||(r.id===menu.default_recipe_id&&!selectedRecipeId);
+    return `<label class="menu-picker-recipe${isSel?' selected':''}">
+      <input type="radio" name="recipe-${menu.id}" value="${r.id}" data-picker-recipe="${r.id}" data-picker-menu="${menu.id}" ${isSel?'checked':''}>
+      <div>
+        <strong>${escapeHtml(r.name)} v${r.version}${r.is_default?' · 기본':''}</strong>
+        <span>재료 ${r.ingredient_count}개 · ${r.ingredient_summary.map(escapeHtml).join(', ')}${r.ingredient_count>5?` 외 ${r.ingredient_count-5}개`:''}</span>
+        ${r.note?`<small>${escapeHtml(r.note)}</small>`:''}
+      </div>
+    </label>`;
+  }).join('');
+  return `<div class="menu-picker-recipe-list">${recipesHtml}</div>`;
+}
+
+function toggleMenuPickerItem(menuId){
+  const draft=state.menuPickerDraft;
+  if(!draft)return;
+  const menu=draft.results.find(m=>m.id===menuId);
+  if(!menu||menu.already_added)return;
+  const idx=draft.selectedItems.findIndex(s=>s.menuId===menuId);
+  if(idx>=0){
+    draft.selectedItems.splice(idx,1);
+  }else{
+    const activeRecipes=menu.recipes;
+    let recipeId=null,recipeName='레시피 없음',recipeVersion=0;
+    if(activeRecipes.length===1){
+      recipeId=activeRecipes[0].id;recipeName=activeRecipes[0].name;recipeVersion=activeRecipes[0].version;
+    }else if(activeRecipes.length>1){
+      const def=activeRecipes.find(r=>r.is_default);
+      const picked=def||activeRecipes[activeRecipes.length-1];
+      recipeId=picked.id;recipeName=picked.name;recipeVersion=picked.version;
+    }
+    draft.selectedItems.push({
+      menuId, menuName:menu.name, role:menu.role,
+      recipeId, recipeName, recipeVersion,
+      ingredientCount:activeRecipes.find(r=>r.id===recipeId)?.ingredient_count||0,
+    });
+  }
+  renderMenuPickerResults();
+  renderMenuPickerBasket();
+  updatePickerSummary();
+}
+
+function selectMenuPickerRecipe(menuId,recipeId){
+  const draft=state.menuPickerDraft;
+  if(!draft)return;
+  const item=draft.selectedItems.find(s=>s.menuId===menuId);
+  if(!item)return;
+  if(recipeId===0){
+    item.recipeId=null;item.recipeName='레시피 없음';item.recipeVersion=0;item.ingredientCount=0;
+  }else{
+    const menu=draft.results.find(m=>m.id===menuId);
+    const recipe=menu?.recipes.find(r=>r.id===recipeId);
+    if(recipe){
+      item.recipeId=recipeId;item.recipeName=recipe.name;item.recipeVersion=recipe.version;item.ingredientCount=recipe.ingredient_count;
+    }
+  }
+  renderMenuPickerResults();
+  renderMenuPickerBasket();
+  updatePickerSummary();
+}
+
+function renderMenuPickerBasket(){
+  const draft=state.menuPickerDraft;
+  if(!draft)return;
+  const el=$('#picker-basket');
+  if(!el)return;
+  if(!draft.selectedItems.length){
+    el.innerHTML='<p class="muted" style="padding:14px">선택한 메뉴가 없습니다.<br>왼쪽에서 메뉴를 선택해 주세요.</p>';
+    return;
+  }
+  el.innerHTML=`<h4>선택한 메뉴 ${draft.selectedItems.length}개</h4>`+draft.selectedItems.map((item,idx)=>{
+    const recipeText=item.recipeId?`${escapeHtml(item.recipeName)} v${item.recipeVersion}`:'레시피 없음';
+    return `<div class="menu-picker-basket-item">
+      <div class="basket-item-head"><strong>${idx+1}. ${escapeHtml(item.menuName)}</strong></div>
+      <div class="basket-item-recipe">${recipeText}</div>
+      <div class="menu-picker-basket-actions">
+        <button class="icon-button" data-basket-up="${idx}" aria-label="위로 이동" ${idx===0?'disabled':''}>↑</button>
+        <button class="icon-button" data-basket-down="${idx}" aria-label="아래로 이동" ${idx===draft.selectedItems.length-1?'disabled':''}>↓</button>
+        <button class="icon-button" data-basket-remove="${idx}" aria-label="제거">×</button>
+      </div>
+    </div>`;
+  }).join('');
+  $$('[data-basket-up]',el).forEach(b=>b.addEventListener('click',()=>moveMenuPickerItem(Number(b.dataset.basketUp),-1)));
+  $$('[data-basket-down]',el).forEach(b=>b.addEventListener('click',()=>moveMenuPickerItem(Number(b.dataset.basketDown),1)));
+  $$('[data-basket-remove]',el).forEach(b=>b.addEventListener('click',()=>removeMenuPickerItem(Number(b.dataset.basketRemove))));
+}
+
+function moveMenuPickerItem(idx,direction){
+  const draft=state.menuPickerDraft;
+  if(!draft)return;
+  const newIdx=idx+direction;
+  if(newIdx<0||newIdx>=draft.selectedItems.length)return;
+  [draft.selectedItems[idx],draft.selectedItems[newIdx]]=[draft.selectedItems[newIdx],draft.selectedItems[idx]];
+  renderMenuPickerBasket();
+  updatePickerSummary();
+}
+
+function removeMenuPickerItem(idx){
+  const draft=state.menuPickerDraft;
+  if(!draft)return;
+  draft.selectedItems.splice(idx,1);
+  renderMenuPickerResults();
+  renderMenuPickerBasket();
+  updatePickerSummary();
+}
+
+function validateMenuPickerDraft(){
+  const draft=state.menuPickerDraft;
+  if(!draft)return{valid:false,error:''};
+  if(!draft.selectedItems.length)return{valid:false,error:''};
+  return{valid:true,error:''};
+}
+
+function updatePickerSummary(){
+  const draft=state.menuPickerDraft;
+  if(!draft)return;
+  const count=draft.selectedItems.length;
+  const summary=$('#picker-summary');
+  if(summary)summary.textContent=count>0?`선택 ${count}개`:'';
+  const submitBtn=$('#picker-submit');
+  if(submitBtn){
+    submitBtn.disabled=count===0||draft.submitting;
+    submitBtn.textContent=count>0?`선택한 메뉴 ${count}개 가져오기`:'가져오기';
+  }
+}
+
+async function submitMenuPickerBatch(){
+  const draft=state.menuPickerDraft;
+  if(!draft||!draft.selectedItems.length)return;
+  const validation=validateMenuPickerDraft();
+  if(!validation.valid)return;
+  draft.submitting=true;
+  updatePickerSummary();
+  const submitBtn=$('#picker-submit');
+  if(submitBtn){submitBtn.disabled=true;submitBtn.textContent='가져오는 중…';}
+  const cancelBtn=$('#picker-cancel');
+  if(cancelBtn)cancelBtn.disabled=true;
+  const closeBtn=$('#menu-picker-close');
+  if(closeBtn)closeBtn.disabled=true;
+  try{
+    const items=draft.selectedItems.map((item,idx)=>({
+      menu_id:item.menuId,
+      recipe_id:item.recipeId,
+      sort_order:idx+1,
+    }));
+    state.selectedService=await api(`/api/workspace/services/${state.selectedServiceId}/menus/batch`,json('POST',{items}));
+    const newMenuIds=new Set(draft.selectedItems.map(s=>s.menuId));
+    const firstNew=state.selectedService.menus.find(m=>newMenuIds.has(m.menu_id));
+    if(firstNew)state.selectedMenuItemId=firstNew.id;
+    mergeAddedMenusIntoMealDraft();
+    document.removeEventListener('keydown',pickerEscapeHandler);
+    state.menuPickerDraft=null;
+    closeModal();
+    renderEditor();renderWeekBoard();
+    toast(`${items.length}개 메뉴를 추가했습니다.`);
+  }catch(e){
+    draft.submitting=false;
+    if(submitBtn){submitBtn.disabled=false;submitBtn.textContent=`선택한 메뉴 ${draft.selectedItems.length}개 가져오기`;}
+    if(cancelBtn)cancelBtn.disabled=false;
+    if(closeBtn)closeBtn.disabled=false;
+    updatePickerSummary();
+    toast(e.message,true);
+    const summary=$('#picker-summary');
+    if(summary)summary.textContent=`오류: ${e.message}`;
+  }
+}
+
+function mergeAddedMenusIntoMealDraft(){
+  const draft=state.mealEditorDraft;
+  const svc=state.selectedService;
+  if(!draft||!svc)return;
+  draft.serviceId=svc.id;
+  draft.plannedCount=svc.planned_count;
+  draft.conceptTitle=svc.concept_title||'';
+  draft.serviceNote=svc.note||'';
+  for(const menu of svc.menus){
+    if(!draft.menus[menu.id]){
+      draft.menus[menu.id]={
+        note:menu.note||'',
+        isRepresentative:menu.is_representative||false,
+        ingredients:(menu.ingredients||[]).map(ing=>({
+          ingredient_id:ing.ingredient_id||null,
+          name:ing.ingredient_name_snapshot||ing.name||'',
+          quantity_total:ing.quantity_total,
+          unit:ing.unit||'',
+        })),
+      };
+    }
+  }
 }
 
 async function openRecipeChange(menuItem){
@@ -299,14 +980,8 @@ async function openRecipeChange(menuItem){
     const recipes=(menu.recipes||[]).filter(recipe=>recipe.active);
     if(!recipes.length){toast('이 메뉴에 등록된 레시피가 없습니다.',true);return;}
     modal(`<div class="modal-head"><h3>${escapeHtml(menu.name)} 레시피 변경</h3><button class="icon-button" onclick="closeModal()">×</button></div><div class="recipe-choice-list">${recipes.map(recipe=>`<label class="recipe-choice"><input type="radio" name="recipe-choice" value="${recipe.id}" ${recipe.id===menuItem.recipe_id?'checked':''}><div><strong>${escapeHtml(recipe.name)}</strong><span>v${recipe.version} · 재료 ${recipe.ingredient_count}개${recipe.is_default?' · 기본':''}</span><small>${recipe.ingredients.map(x=>escapeHtml(x.ingredient_name)).join(', ')}</small></div></label>`).join('')}</div><div class="save-bar"><span>레시피를 바꾸면 현재 재료 목록이 선택 레시피로 교체됩니다.</span><button id="apply-recipe-change" class="primary-button">적용</button></div>`);
-    $('#apply-recipe-change').addEventListener('click',async()=>{const picked=$('input[name="recipe-choice"]:checked');if(!picked){toast('레시피를 선택해 주세요.',true);return;}try{state.selectedService=await api(`/api/workspace/service-menus/${menuItem.id}/recipe`,json('PUT',{recipe_id:Number(picked.value)}));closeModal();renderEditor();renderWeekBoard();toast('레시피를 변경했습니다.');}catch(e){toast(e.message,true);}});
+    $('#apply-recipe-change').addEventListener('click',async()=>{const picked=$('input[name="recipe-choice"]:checked');if(!picked){toast('레시피를 선택해 주세요.',true);return;}try{state.selectedService=await api(`/api/workspace/service-menus/${menuItem.id}/recipe`,json('PUT',{recipe_id:Number(picked.value)}));closeModal();initializeMealEditorDraft(state.selectedService);renderEditor();renderWeekBoard();toast('레시피를 변경했습니다.');}catch(e){toast(e.message,true);}});
   }catch(e){toast(e.message,true);}
-}
-
-async function openIngredientSearch(){
-  modal(`<div class="modal-head"><h3>재료 추가</h3><button class="icon-button" onclick="closeModal()">×</button></div><input id="ingredient-search" placeholder="재료명 검색" autofocus><div id="ingredient-search-results" class="menu-search-results" style="margin-top:12px"></div>`);
-  const search=async()=>{const rows=await api(`/api/master/ingredients?q=${encodeURIComponent($('#ingredient-search').value)}&active=true&limit=80`);$('#ingredient-search-results').innerHTML=rows.map(row=>`<button class="search-menu-card" data-add-ingredient-id="${row.id}" data-name="${escapeHtml(row.name)}" data-unit="${escapeHtml(row.default_unit||'')}"><strong>${escapeHtml(row.name)}</strong><span>${escapeHtml(row.stat_group)}</span></button>`).join('');$$('[data-add-ingredient-id]').forEach(b=>b.addEventListener('click',()=>{const tmp=document.createElement('tbody');tmp.innerHTML=ingredientRowHtml({ingredient_id:Number(b.dataset.addIngredientId),name:b.dataset.name,unit:b.dataset.unit});const row=tmp.firstElementChild;$('#ingredient-body').append(row);$('.remove-ing',row).addEventListener('click',()=>row.remove());closeModal();}));};
-  $('#ingredient-search').addEventListener('input',search);search();
 }
 
 function renderCookingEditor(panel,service){panel.innerHTML=editorHeader(service,'조리지시 작성')+`<p class="muted">모든 메뉴에 조리지시를 반드시 작성할 필요는 없습니다. 필요한 메뉴만 입력합니다.</p><div class="panel-section">${service.menus.map(menu=>`<div class="menu-row" data-cooking-row="${menu.id}"><strong>${escapeHtml(menu.name)}</strong><label class="field" style="margin-top:8px">조리지시<textarea class="cook-instruction">${escapeHtml(menu.cooking_instruction||'')}</textarea></label><label class="field">주의·비고<input class="cook-note" value="${escapeHtml(menu.cooking_note||'')}"></label></div>`).join('')||'<div class="empty-editor">식단 작성 모드에서 메뉴를 먼저 추가해 주세요.</div>'}</div><div class="save-bar"><span class="save-state">출력 여부만 주간 카드에 간단히 표시됩니다.</span><button class="primary-button" id="save-cooking">조리지시 저장</button></div>`;$('#save-cooking').addEventListener('click',saveCooking);}
@@ -356,30 +1031,63 @@ function renderFullStatistics(){
     </div>`;
 }
 
-async function previewCurrentDocument(){const type={meal:'MEAL_PLAN',cooking:'COOKING_INSTRUCTION',preservation:'PRESERVATION_RECORD'}[state.mode];if(!type)return;const ids=allServiceIds();if(!ids.length){toast('출력할 배식이 없습니다.',true);return;}try{const result=await api('/api/documents/preview',json('POST',{document_type:type,service_ids:ids}));window.open(result.html_url,'_blank','noopener');if(type==='COOKING_INSTRUCTION')setTimeout(()=>loadWorkspace(true),600);}catch(e){toast(e.message,true);}}
-
-async function previewBundledMigration(){
+async function previewCurrentDocument(){
+  const type={meal:'MEAL_PLAN',cooking:'COOKING_INSTRUCTION',preservation:'PRESERVATION_RECORD'}[state.mode];
+  if(!type)return;
+  const ids=selectedServiceIdsForDocument();
+  if(!ids.length){toast('출력할 배식이 없습니다.',true);return;}
   try{
-    $('#migration-result').innerHTML='<div class="result-card">포함된 기준파일을 검증 중입니다.</div>';
-    const result=await api('/api/setup/import/bundled-preview',{method:'POST'});
-    showMigrationPreviewResult(result);
+    const result=await api('/api/documents/preview',json('POST',{document_type:type,service_ids:ids}));
+    window.open(result.html_url,'_blank','noopener');
+    if(type==='COOKING_INSTRUCTION')setTimeout(()=>loadWorkspace(true),600);
+    const selectedCount=[...state.selectedDocumentServiceIds].filter(id=>allServiceIds().includes(id)).length;
+    if(selectedCount){toast(`선택한 ${selectedCount}건으로 출력했습니다.`);}else{toast('전체 배식으로 출력했습니다.');}
   }catch(e){toast(e.message,true);}
 }
+
 function showMigrationPreviewResult(result){
   state.importToken=result.token;const s=result.summary;
-  $('#migration-result').innerHTML=`<div class="result-card"><h3>${result.errors.length?'검증 필요':'업로드 가능'}</h3><p>배식 ${s.meal_types||0}, 메뉴 ${s.menus||0}, 재료 ${s.ingredients||0}, 레시피 ${s.recipe_rows||0}, 식단이력 ${s.meal_history_rows||0}</p>${result.errors.length?`<pre>${escapeHtml(JSON.stringify(result.errors,null,2))}</pre>`:`<div class="inline-form"><select id="import-mode"><option value="replace">기존 업무데이터 교체</option><option value="merge">기존 데이터에 병합</option></select><button class="primary-button" id="apply-migration">기초데이터 생성</button></div>`}</div>`;
-  if(!result.errors.length)$('#apply-migration').addEventListener('click',applyMigration);
+  const ok=!result.errors.length;
+  $('#migration-result').innerHTML=`<div class="result-card"><h3>${ok?'업로드 가능':'검증 필요'}</h3><p>배식 ${s.meal_types||0}, 메뉴 ${s.menus||0}, 재료 ${s.ingredients||0}, 레시피 ${s.recipe_rows||0}, 식단이력 ${s.meal_history_rows||0}</p>${ok?'':`<pre>${escapeHtml(JSON.stringify(result.errors,null,2))}</pre>`}<div class="inline-form"><select id="import-mode" ${ok?'':'disabled'}><option value="replace">기존 업무데이터 교체</option><option value="merge">기존 데이터에 병합</option></select><button class="primary-button" id="apply-migration" ${ok?'':'disabled'}>기초데이터 생성</button></div></div>`;
+  if(ok)$('#apply-migration').addEventListener('click',applyMigration);
 }
 async function previewMigration(){const file=$('#migration-file').files[0];if(!file){toast('XLSX 파일을 선택해 주세요.',true);return;}const data=new FormData();data.append('file',file);try{$('#migration-result').innerHTML='<div class="result-card">검증 중입니다.</div>';const result=await api('/api/setup/import/preview',{method:'POST',body:data});showMigrationPreviewResult(result);}catch(e){toast(e.message,true);}}
-async function applyMigration(){if(!confirm('선택한 방식으로 기초데이터와 과거 식단을 생성할까요?'))return;try{$('#apply-migration').disabled=true;$('#apply-migration').textContent='생성 중…';const result=await api('/api/setup/import/apply',json('POST',{token:state.importToken,mode:$('#import-mode').value}));$('#migration-result').innerHTML=`<div class="result-card"><h3>생성 완료</h3><pre>${escapeHtml(JSON.stringify(result.result,null,2))}</pre></div>`;state.weekStart=mondayOf(new Date());await loadWorkspace(false);toast('기초데이터 생성을 완료했습니다.');}catch(e){toast(e.message,true);}}
+async function applyMigration(){
+  if(!confirm('선택한 방식으로 기초데이터와 과거 식단을 생성할까요?'))return;
+  const btn=$('#apply-migration');
+  try{
+    btn.disabled=true;btn.textContent='생성 중…';
+    const result=await api('/api/setup/import/apply',json('POST',{token:state.importToken,mode:$('#import-mode').value}));
+    $('#migration-result').innerHTML=`<div class="result-card"><h3>생성 완료</h3><pre>${escapeHtml(JSON.stringify(result.result,null,2))}</pre></div>`;
+    state.weekStart=mondayOf(new Date());await loadWorkspace(false);toast('기초데이터 생성을 완료했습니다.');
+  }catch(e){
+    btn.disabled=false;btn.textContent='기초데이터 생성';
+    $('#migration-result').innerHTML=`<div class="result-card"><h3 style="color:#9e2f28">생성 실패</h3><pre>${escapeHtml(e.message)}</pre></div>`;
+    toast(e.message,true);
+  }
+}
 
 async function loadMasterData(){
   const root=$('#master-data-content');if(!root)return;
   root.innerHTML='<div class="empty-editor">불러오는 중입니다.</div>';
   try{
     if(state.masterDataTab==='hwpx-templates') await renderHwpxTemplatesView(root);
-    else await renderMealServiceDefaultsView(root);
+    else if(state.masterDataTab==='meal-service-defaults') await renderMealServiceDefaultsView(root);
+    else renderSetupImportView(root);
   }catch(e){root.innerHTML=`<div class="form-error">${escapeHtml(e.message)}</div>`;}
+}
+
+function renderSetupImportView(root){
+  root.innerHTML=`<div class="narrow-card">
+    <h2>기초 데이터 구축</h2>
+    <p>XLSX 파일을 선택하고 검증 결과 오류가 없을 때만 서버 업로드 파일로 기초 데이터를 생성합니다.</p>
+    <div class="upload-zone">
+      <input id="migration-file" type="file" accept=".xlsx">
+      <button id="migration-preview" class="secondary-button">선택 파일 검증</button>
+    </div>
+    <div id="migration-result"></div>
+  </div>`;
+  $('#migration-preview').addEventListener('click',previewMigration);
 }
 
 async function renderHwpxTemplatesView(root){
@@ -534,51 +1242,30 @@ async function renderMenuMasterPanel(id=null,emptyWhenNoSelection=false){
 }
 
 function recipeEditorHtml(recipe){
-  const rows=[...(recipe.ingredients||[]),{},{},{}];
   return `<div class="recipe-editor-head"><div><h4>${recipe.id?'레시피 수정':'새 레시피'}</h4><small>수량만 바뀌는 경우 이 레시피를 수정하세요. 재료가 달라질 때만 새 레시피를 만듭니다.</small></div>${recipe.id?'<button class="danger-button" id="archive-recipe">삭제</button>':''}</div>
   <div class="field-grid"><label class="field">레시피명<input id="recipe-name" value="${escapeHtml(recipe.name||'')}"></label><label class="field">상태<select id="recipe-active"><option value="true" ${recipe.active?'selected':''}>사용</option><option value="false" ${!recipe.active?'selected':''}>미사용</option></select></label></div>
   <div class="recipe-options"><label><input id="recipe-default" type="checkbox" ${recipe.is_default?'checked':''}> 식단 추가 시 기본 선택</label></div>
   <div class="grid-help">엑셀에서 <strong>재료명 / 100인 수량 / 단위 / 주재료</strong> 열을 복사한 뒤 첫 번째 재료 칸에 붙여넣을 수 있습니다.</div>
-  <div class="recipe-grid-wrap"><table class="recipe-grid"><thead><tr><th class="row-number">#</th><th>재료명</th><th>100인 수량</th><th>단위</th><th>주재료</th><th></th></tr></thead><tbody id="recipe-grid-body">${rows.map((item,index)=>recipeGridRowHtml(item,index+1)).join('')}</tbody></table></div>
+  <div id="recipe-grid-container"></div>
   <div class="panel-action-row"><button class="ghost-button" id="add-recipe-row">＋ 행 추가</button></div>
   <label class="field">레시피 비고<textarea id="recipe-note">${escapeHtml(recipe.note||'')}</textarea></label>
   <div class="save-bar"><span class="save-state">재료 구성은 수량과 무관하게 레시피를 구분합니다.</span><button class="primary-button" id="save-recipe">레시피 저장</button></div>`;
 }
 
-function recipeGridRowHtml(item={},index=1){
-  return `<tr data-recipe-grid-row data-ingredient-id="${item.ingredient_id||''}"><td class="row-number">${index}</td><td><input class="rg-name" list="ingredient-options" value="${escapeHtml(item.ingredient_name||item.name||'')}"></td><td><input class="rg-qty" type="number" step="0.001" value="${item.quantity_per_100??''}"></td><td><select class="rg-unit"><option value="">단위</option>${state.codes.units.map(u=>`<option ${u===(item.unit||'')?'selected':''}>${u}</option>`).join('')}</select></td><td class="center-cell"><input class="rg-primary" type="checkbox" ${item.is_primary?'checked':''}></td><td><button class="icon-button rg-remove">×</button></td></tr>`;
-}
-
-function appendRecipeGridRow(values={}){
-  const body=$('#recipe-grid-body');const tmp=document.createElement('tbody');tmp.innerHTML=recipeGridRowHtml(values,$$('[data-recipe-grid-row]',body).length+1);const row=tmp.firstElementChild;body.append(row);bindRecipeGridRow(row);return row;
-}
-function renumberRecipeRows(){$$('[data-recipe-grid-row]').forEach((row,index)=>$('.row-number',row).textContent=index+1);}
-function bindRecipeGridRow(row){
-  $('.rg-remove',row).addEventListener('click',()=>{row.remove();renumberRecipeRows();});
-  $('.rg-name',row).addEventListener('change',event=>{const found=state.ingredientCache.find(i=>i.name===event.target.value.trim());row.dataset.ingredientId=found?.id||'';if(found&&!$('.rg-unit',row).value)$('.rg-unit',row).value=found.default_unit||'';});
-}
-function bindRecipeGrid(){
-  $$('[data-recipe-grid-row]').forEach(bindRecipeGridRow);
-  $('#recipe-grid-body').addEventListener('paste',event=>{
-    if(!event.target.classList.contains('rg-name'))return;
-    const text=event.clipboardData.getData('text');if(!text.includes('\n')&&!text.includes('\t'))return;
-    event.preventDefault();const lines=text.replace(/\r/g,'').split('\n').filter(line=>line.trim()!=='');
-    let row=event.target.closest('tr');let index=$$('[data-recipe-grid-row]').indexOf(row);
-    lines.forEach((line,offset)=>{const columns=line.split('\t');let target=$$('[data-recipe-grid-row]')[index+offset];if(!target)target=appendRecipeGridRow();$('.rg-name',target).value=(columns[0]||'').trim();$('.rg-qty',target).value=(columns[1]||'').trim();if(columns[2]){const unit=columns[2].trim();if(!state.codes.units.includes(unit)){const option=document.createElement('option');option.value=unit;option.textContent=unit;$('.rg-unit',target).append(option);}$('.rg-unit',target).value=unit;}$('.rg-primary',target).checked=/^(y|yes|true|1|주재료|o)$/i.test((columns[3]||'').trim());const found=state.ingredientCache.find(i=>i.name===$('.rg-name',target).value);target.dataset.ingredientId=found?.id||'';});
-    renumberRecipeRows();
-  });
-}
-function collectRecipeGrid(){
-  return $$('[data-recipe-grid-row]').map(row=>{
-    const name=$('.rg-name',row).value.trim();const found=state.ingredientCache.find(i=>i.name===name);
-    return {ingredient_id:found?.id||null,ingredient_name:name,quantity_per_100:$('.rg-qty',row).value===''?null:Number($('.rg-qty',row).value),unit:$('.rg-unit',row).value||null,is_primary:$('.rg-primary',row).checked};
-  }).filter(row=>row.ingredient_name);
-}
 function bindRecipeEditor(menuId,recipe){
-  bindRecipeGrid();
-  $('#add-recipe-row').addEventListener('click',()=>appendRecipeGridRow());
+  const rows=[...(recipe.ingredients||[]),{},{},{}];
+  const grid=createEditableIngredientGrid({
+    mode:'recipe',
+    rows,
+    allowPrimary:true
+  });
+  const container=$('#recipe-grid-container');
+  container.innerHTML='';
+  container.append(grid.element);
+  container._gridInstance=grid;
+  $('#add-recipe-row').addEventListener('click',()=>grid.appendRow());
   $('#save-recipe').addEventListener('click',async()=>{try{
-    const body={name:$('#recipe-name').value,note:$('#recipe-note').value||null,is_default:$('#recipe-default').checked,active:$('#recipe-active').value==='true',ingredients:collectRecipeGrid()};
+    const body={name:$('#recipe-name').value,note:$('#recipe-note').value||null,is_default:$('#recipe-default').checked,active:$('#recipe-active').value==='true',ingredients:grid.collect().map(r=>({ingredient_id:r.ingredient_id,ingredient_name:r.name,quantity_per_100:r.quantity_per_100,unit:r.unit,is_primary:r.is_primary||false}))};
     const result=recipe.id?await api(`/api/master/recipes/${recipe.id}`,json('PUT',body)):await api(`/api/master/menus/${menuId}/recipes`,json('POST',body));
     state.selectedRecipeId=result.id;state.ingredientCache=[];toast('레시피를 저장했습니다.');renderMenuMasterPanel(menuId);
   }catch(e){toast(e.message,true);}});

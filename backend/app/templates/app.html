@@ -16,7 +16,6 @@
     <nav class="side-nav">
       <button data-view="workspace" class="active">주간 급식 운영</button>
       <button data-view="master">메뉴·재료 기준정보</button>
-      <button data-view="setup">기초 데이터 구축</button>
       <button data-view="master-data">기본 데이터 관리</button>
       <button data-view="statistics">통계 보기</button>
     </nav>
@@ -42,6 +41,9 @@
           <strong id="week-range"></strong>
           <button id="next-week" class="ghost-button">다음 ›</button>
           <button id="today-week" class="ghost-button">이번 주</button>
+          <span id="document-selection-info" class="document-selection-info">출력 선택 없음 (전체)</span>
+          <button id="select-all-services" class="ghost-button">전체 선택</button>
+          <button id="clear-selected-services" class="ghost-button">선택 해제</button>
           <button id="document-preview" class="secondary-button">미리보기·출력</button>
           <button id="focus-toggle" class="primary-button">⛶ 집중 작성</button>
         </div>
@@ -64,22 +66,10 @@
       </div>
     </main>
 
-    <main id="view-setup" class="view">
-      <div class="page-card narrow-card">
-        <h2>기초 데이터 구축</h2>
-        <p>`식재료_마이그레이션_기준정보.xlsx`를 검증한 뒤 메뉴, 재료, 100인 기준 레시피와 과거 식단을 생성합니다.</p>
-        <div class="upload-zone">
-          <input id="migration-file" type="file" accept=".xlsx">
-          <button id="migration-preview" class="secondary-button">선택 파일 검증</button><button id="bundled-migration-preview" class="ghost-button">포함된 기준파일 사용</button>
-        </div>
-        <div id="migration-result"></div>
-      </div>
-    </main>
-
     <main id="view-master-data" class="view">
       <div class="page-card">
         <div class="section-heading"><div><h2>기본 데이터 관리</h2><p>HWPX 문서 양식과 배식 기본값을 관리합니다.</p></div></div>
-        <div class="master-tabs md-tabs" id="master-data-tabs"><button data-md-tab="hwpx-templates" class="active">HWPX 양식 관리</button><button data-md-tab="meal-service-defaults">배식 기본값 관리</button></div>
+        <div class="master-tabs md-tabs" id="master-data-tabs"><button data-md-tab="hwpx-templates" class="active">HWPX 양식 관리</button><button data-md-tab="meal-service-defaults">배식 기본값 관리</button><button data-md-tab="setup-import">기초 데이터 구축</button></div>
         <div id="master-data-content"></div>
       </div>
     </main>

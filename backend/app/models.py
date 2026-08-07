@@ -147,6 +147,7 @@ class MealService(Base):
     meal_type: Mapped[str] = mapped_column(String(30), index=True)
     planned_count: Mapped[int] = mapped_column(Integer, default=0)
     service_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    concept_title: Mapped[str | None] = mapped_column(String(80), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     meal_plan_output_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cooking_output_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -202,7 +203,7 @@ class MealServiceMenuIngredient(Base):
     quantity_per_100: Mapped[float | None] = mapped_column(Float, nullable=True)
     unit: Mapped[str | None] = mapped_column(String(30), nullable=True)
     source_note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    source_row: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    source_row: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     service_menu: Mapped[MealServiceMenu] = relationship(back_populates="ingredients")
     ingredient: Mapped[Ingredient | None] = relationship()

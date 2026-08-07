@@ -27,7 +27,6 @@ services:
       TZ: Asia/Seoul
     volumes:
       - ./storage:/app/storage
-      - ./data/source:/app/data/source:ro
       # HWPX templates are stored under /app/storage/templates/ and persisted via the storage volume above.
     depends_on:
       db:

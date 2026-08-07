@@ -204,7 +204,12 @@ def _page_mappings(preview: DocumentPreview) -> list[dict[str, str]]:
         mapping[f"D{index}_DATE"] = f"{day.get('date_label', '')} {day.get('weekday', '')}".strip()
         for meal_type, suffix in (("LUNCH", "LUNCH"), ("DINNER", "DINNER")):
             service = day.get("services", {}).get(meal_type, {}) if day else {}
-            mapping[f"D{index}_{suffix}"] = "\n".join(service.get("menus", []))
+            concept = service.get("concept_title")
+            menus = service.get("menus", [])
+            if concept:
+                mapping[f"D{index}_{suffix}"] = f"【{concept}】\n" + "\n".join(menus)
+            else:
+                mapping[f"D{index}_{suffix}"] = "\n".join(menus)
     return [mapping]
 
 
