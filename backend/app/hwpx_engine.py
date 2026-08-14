@@ -99,7 +99,6 @@ REQUIRED_PLACEHOLDERS = {
     },
     "MEAL_PLAN": {
         "PERIOD_TITLE",
-        "W1_WEEK_LABEL",
         "W1_D1_DATE",
         "W1_D1_LUNCH_MENU",
         "W1_D1_DINNER_MENU",
@@ -115,7 +114,6 @@ REQUIRED_PLACEHOLDERS = {
         "W1_D5_DATE",
         "W1_D5_LUNCH_MENU",
         "W1_D5_DINNER_MENU",
-        "W2_WEEK_LABEL",
         "W2_D1_DATE",
         "W2_D1_LUNCH_MENU",
         "W2_D1_DINNER_MENU",
