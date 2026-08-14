@@ -10,6 +10,8 @@ const state = {
   menuPickerDraft: null,
   codes: null, ingredientCache: [], selectedRecipeId: null,
   documentPreview: null,
+  masterMenuQuery: '', masterMenuOffset: 0, masterMenuHasMore: false, masterMenuLoading: false,
+  masterIngredientQuery: '', masterIngredientOffset: 0, masterIngredientHasMore: false, masterIngredientLoading: false,
 };
 
 const $ = (selector, root=document) => root.querySelector(selector);
@@ -1368,13 +1370,14 @@ async function loadMaster(){
 
 async function loadIngredientCache(){
   if(state.ingredientCache.length)return state.ingredientCache;
-  state.ingredientCache=await api('/api/master/ingredients?active=true&limit=1000');
+  const data=await api('/api/master/ingredients?active=true&limit=1000');
+  state.ingredientCache=data.items||data;
   return state.ingredientCache;
 }
 
 let _menuRenderToken=0;
 async function renderMenusMaster(root,q=''){const token=++_menuRenderToken;
-  const rows=await api(`/api/master/menus?q=${encodeURIComponent(q)}&limit=600`);
+  const data=await api(`/api/master/menus?q=${encodeURIComponent(q)}&offset=0&limit=50`); state.masterMenuQuery=q; state.masterMenuOffset=0; state.masterMenuHasMore=false; state.masterMenuLoading=false; const rows=data.items; state.masterMenuHasMore=data.has_more;
   if(token!==_menuRenderToken)return;
   const oldInput=$('#master-search');const hadFocus=document.activeElement===oldInput;const curVal=oldInput?.value??q;const curCursor=oldInput?.selectionStart;const curScroll=oldInput?.scrollTop;
   root.innerHTML=`<div class="master-split">
@@ -1387,7 +1390,7 @@ async function renderMenusMaster(root,q=''){const token=++_menuRenderToken;
   const si=$('#master-search');if(hadFocus&&si){si.focus();if(curCursor!=null)si.setSelectionRange(curCursor,curCursor);if(curScroll!=null)si.scrollTop=curScroll;}
   $('#master-search').addEventListener('input',e=>{clearTimeout(window.masterTimer);window.masterTimer=setTimeout(()=>renderMenusMaster(root,e.target.value),250)});
   $('#new-menu').addEventListener('click',()=>{state.masterSelectionId=null;state.selectedRecipeId=null;renderMenuMasterPanel(null);});
-  $$('[data-menu-master]').forEach(row=>row.addEventListener('click',()=>{state.masterSelectionId=Number(row.dataset.menuMaster);state.selectedRecipeId=null;$$('[data-menu-master]').forEach(x=>x.classList.toggle('selected-row',x===row));renderMenuMasterPanel(state.masterSelectionId);}));
+  const menuTable=$('.master-list-wrap table',root); menuTable.addEventListener('click',e=>{ const row=e.target.closest('tr[data-menu-master]'); if(!row)return; state.masterSelectionId=Number(row.dataset.menuMaster); state.selectedRecipeId=null; $$('[data-menu-master]',menuTable).forEach(x=>x.classList.toggle('selected-row',x===row)); renderMenuMasterPanel(state.masterSelectionId); }); const menuWrap=$('.master-list-wrap',root); menuWrap.addEventListener('scroll',()=>{ if(!state.masterMenuHasMore||state.masterMenuLoading)return; if(menuWrap.scrollTop+menuWrap.clientHeight>=menuWrap.scrollHeight-80) loadMoreMasterMenus(); });
   if(state.masterSelectionId && rows.some(r=>r.id===state.masterSelectionId)) renderMenuMasterPanel(state.masterSelectionId);
   else renderMenuMasterPanel(null,true);
 }
@@ -1461,7 +1464,7 @@ function bindRecipeEditor(menuId,recipe){
 
 let _ingredientRenderToken=0;
 async function renderIngredientsMaster(root,q=''){const token=++_ingredientRenderToken;
-  const rows=await api(`/api/master/ingredients?q=${encodeURIComponent(q)}&limit=600`);
+  const data=await api(`/api/master/ingredients?q=${encodeURIComponent(q)}&offset=0&limit=50`); state.masterIngredientQuery=q; state.masterIngredientOffset=0; state.masterIngredientHasMore=false; state.masterIngredientLoading=false; const rows=data.items; state.masterIngredientHasMore=data.has_more;
   if(token!==_ingredientRenderToken)return;
   const oldInput=$('#master-search');const hadFocus=document.activeElement===oldInput;const curVal=oldInput?.value??q;const curCursor=oldInput?.selectionStart;const curScroll=oldInput?.scrollTop;
   root.innerHTML=`<div class="master-split">
@@ -1470,7 +1473,7 @@ async function renderIngredientsMaster(root,q=''){const token=++_ingredientRende
   const si=$('#master-search');if(hadFocus&&si){si.focus();if(curCursor!=null)si.setSelectionRange(curCursor,curCursor);if(curScroll!=null)si.scrollTop=curScroll;}
   $('#master-search').addEventListener('input',e=>{clearTimeout(window.masterTimer);window.masterTimer=setTimeout(()=>renderIngredientsMaster(root,e.target.value),250)});
   $('#new-ingredient').addEventListener('click',()=>{state.masterSelectionId=null;renderIngredientMasterPanel();});
-  $$('[data-ingredient-master]').forEach(row=>row.addEventListener('click',()=>{state.masterSelectionId=Number(row.dataset.ingredientMaster);$$('[data-ingredient-master]').forEach(x=>x.classList.toggle('selected-row',x===row));renderIngredientMasterPanel(state.masterSelectionId);}));
+  const ingredientTable=$('.master-list-wrap table',root); ingredientTable.addEventListener('click',e=>{ const row=e.target.closest('tr[data-ingredient-master]'); if(!row)return; state.masterSelectionId=Number(row.dataset.ingredientMaster); $$('[data-ingredient-master]',ingredientTable).forEach(x=>x.classList.toggle('selected-row',x===row)); renderIngredientMasterPanel(state.masterSelectionId); }); const ingredientWrap=$('.master-list-wrap',root); ingredientWrap.addEventListener('scroll',()=>{ if(!state.masterIngredientHasMore||state.masterIngredientLoading)return; if(ingredientWrap.scrollTop+ingredientWrap.clientHeight>=ingredientWrap.scrollHeight-80) loadMoreMasterIngredients(); });
   if(state.masterSelectionId&&rows.some(r=>r.id===state.masterSelectionId))renderIngredientMasterPanel(state.masterSelectionId);else $('#master-editor').innerHTML='<div class="empty-editor">왼쪽에서 재료를 선택하거나 새 재료를 등록하세요.</div>';
 }
 
@@ -1481,4 +1484,4 @@ async function renderIngredientMasterPanel(id=null){
   if(id)$('#archive-ingredient').addEventListener('click',async()=>{if(!confirm('재료를 삭제(미사용 처리)할까요? 과거 식단 기록은 유지됩니다.'))return;try{await api(`/api/master/ingredients/${id}`,{method:'DELETE'});state.masterSelectionId=null;state.ingredientCache=[];toast('재료를 삭제 처리했습니다.');loadMaster();}catch(e){toast(e.message,true);}});
 }
 
-document.addEventListener('DOMContentLoaded',()=>init().catch(e=>toast(e.message,true)));
+async function loadMoreMasterMenus(){ if(state.masterMenuHasMore && !state.masterMenuLoading){ state.masterMenuLoading=true; const PAGE=50; const q=state.masterMenuQuery; const offset=state.masterMenuOffset+PAGE; try{ const data=await api(`/api/master/menus?q=${encodeURIComponent(q)}&offset=${offset}&limit=${PAGE}`); if(state.masterMenuQuery!==q)return; const tbody=$('#master-content .master-list-wrap tbody'); if(!tbody)return; state.masterMenuOffset=offset; state.masterMenuHasMore=data.has_more; tbody.insertAdjacentHTML('beforeend', data.items.map(r=>`<tr data-menu-master='${r.id}' class='${r.id===state.masterSelectionId?'selected-row':''}'><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.role)}</td><td>${r.recipe_count}개</td><td>${r.active?'사용':'미사용'}</td></tr>`).join('')); }catch(e){ toast(e.message,true); } finally{ state.masterMenuLoading=false; } } } async function loadMoreMasterIngredients(){ if(state.masterIngredientHasMore && !state.masterIngredientLoading){ state.masterIngredientLoading=true; const PAGE=50; const q=state.masterIngredientQuery; const offset=state.masterIngredientOffset+PAGE; try{ const data=await api(`/api/master/ingredients?q=${encodeURIComponent(q)}&offset=${offset}&limit=${PAGE}`); if(state.masterIngredientQuery!==q)return; const tbody=$('#master-content .master-list-wrap tbody'); if(!tbody)return; state.masterIngredientOffset=offset; state.masterIngredientHasMore=data.has_more; tbody.insertAdjacentHTML('beforeend', data.items.map(r=>`<tr data-ingredient-master='${r.id}' class='${r.id===state.masterSelectionId?'selected-row':''}'><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.stat_group)}</td><td>${escapeHtml(r.default_unit||'')}</td><td>${r.active?'사용':'미사용'}</td></tr>`).join('')); }catch(e){ toast(e.message,true); } finally{ state.masterIngredientLoading=false; } } } document.addEventListener('DOMContentLoaded',()=>init().catch(e=>toast(e.message,true)));

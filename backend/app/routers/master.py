@@ -208,8 +208,10 @@ def list_menus(
         stmt = stmt.where(Menu.role == role)
     if active is not None:
         stmt = stmt.where(Menu.active == active)
-    rows = db.scalars(stmt.order_by(Menu.name).offset(offset).limit(limit)).unique().all()
-    return [menu_payload(row) for row in rows]
+    rows = db.scalars(stmt.order_by(Menu.name).offset(offset).limit(limit + 1)).unique().all()
+    has_more = len(rows) > limit
+    items = rows[:limit]
+    return {'items': [menu_payload(row) for row in items], 'has_more': has_more, 'offset': offset, 'limit': limit}
 
 
 @router.get("/menus/picker")
@@ -450,8 +452,10 @@ def list_ingredients(
         stmt = stmt.where(Ingredient.stat_group == stat_group)
     if active is not None:
         stmt = stmt.where(Ingredient.active == active)
-    rows = db.scalars(stmt.order_by(Ingredient.name).offset(offset).limit(limit)).unique().all()
-    return [ingredient_payload(row) for row in rows]
+    rows = db.scalars(stmt.order_by(Ingredient.name).offset(offset).limit(limit + 1)).unique().all()
+    has_more = len(rows) > limit
+    items = rows[:limit]
+    return {'items': [ingredient_payload(row) for row in items], 'has_more': has_more, 'offset': offset, 'limit': limit}
 
 
 @router.get("/ingredients/{ingredient_id}")
