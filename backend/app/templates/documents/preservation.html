@@ -16,11 +16,12 @@
 <article class="record {% if not record %}empty{% endif %}">
 <table class="record-table"><colgroup><col class="label"><col class="value"><col class="value"><col class="value"></colgroup><tbody>
 <tr class="title-row"><th colspan="4" class="title">보존식 기록지</th></tr>
+{% if document.period_label %}<tr><td colspan="4" class="date-cell">{{ document.period_label }}</td></tr>{% endif %}
 <tr class="date-row"><td colspan="4" class="date-cell dynamic">{% if record %}{{ record.date_label }} {{ record.weekday }} {{ record.meal_name }}{% endif %}</td></tr>
-<tr class="collection-row"><th>채취일시</th><td><span class="dynamic">{{ record.collection_hour if record else '' }}</span> 시</td><td><span class="dynamic">{{ record.collection_minute if record else '' }}</span> 분</td><th>담당자<br><span class="dynamic">{{ record.manager_name if record else '' }}</span></th></tr>
+<tr class="collection-row"><th>채취일시</th><td colspan="3" class="dynamic">{% if record %}{{ record.sample_datetime }}{% endif %}</td></tr>
 <tr class="menu-row"><th>식단명</th><td colspan="3" class="menu-cell"><div class="menu-content dynamic">{% if record %}{% for menu in record.menu_items %}<div class="menu-item">{{ menu }}</div>{% endfor %}{% endif %}</div></td></tr>
 <tr class="fixed-row"><th>냉동고 온도</th><td colspan="3" class="fixed-value dynamic">{{ record.freezer_temperature if record else '' }}</td></tr>
-<tr class="fixed-row"><th>폐기일시</th><td colspan="3" class="dynamic">{{ record.disposal_date if record else '' }}</td></tr>
+<tr class="fixed-row"><th>폐기일시</th><td colspan="3" class="dynamic">{{ record.discard_datetime if record else '' }}</td></tr>
 <tr class="fixed-row"><th>채취자</th><td colspan="3" class="fixed-value dynamic">{{ record.collector_name if record else '' }}</td></tr>
 <tr class="fixed-row"><th>채취시간</th><td colspan="3" class="fixed-value dynamic">{{ record.collection_time if record else '' }}</td></tr>
 </tbody></table></article>

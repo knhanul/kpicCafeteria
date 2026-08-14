@@ -2,7 +2,6 @@ const state = {
   view: 'workspace', mode: 'meal', focus: false, weeks: 2,
   weekStart: mondayOf(new Date()), workspace: null,
   selectedServiceId: null, selectedService: null, selectedMenuItemId: null,
-  selectedDocumentServiceIds: new Set(),
   stats: null, dashboard: null, importToken: null, masterTab: 'menus', masterSelectionId: null,
   masterDataTab: 'hwpx-templates', masterDataSelectionId: null, mealDefaults: null,
   mealServiceTime: null, preservationCollectionTime: null,
@@ -10,6 +9,7 @@ const state = {
   menuSearchOpen: false, menuSearchQuery: '',
   menuPickerDraft: null,
   codes: null, ingredientCache: [], selectedRecipeId: null,
+  documentPreview: null,
 };
 
 const $ = (selector, root=document) => root.querySelector(selector);
@@ -26,6 +26,83 @@ function koDate(value) { return new Intl.DateTimeFormat('ko-KR',{month:'2-digit'
 function dateTimeLocal(value) { return value ? new Date(value).toISOString().slice(0,16) : ''; }
 function escapeHtml(value='') { return String(value).replace(/[&<>'"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
 function numberText(value) { return value === null || value === undefined || value === '' ? '' : Number(value).toLocaleString('ko-KR',{maximumFractionDigits:2}); }
+function compactPeriodLabel(startIso, endIso) {
+  const start = new Date(startIso);
+  const end = new Date(endIso);
+  const y1 = start.getFullYear();
+  const y2 = end.getFullYear();
+  const m1 = String(start.getMonth() + 1).padStart(2, '0');
+  const m2 = String(end.getMonth() + 1).padStart(2, '0');
+  const d1 = String(start.getDate()).padStart(2, '0');
+  const d2 = String(end.getDate()).padStart(2, '0');
+  const left = `${y1}.${m1}.${d1}`;
+  const right = y1 === y2 ? `${m2}.${d2}` : `${y2}.${m2}.${d2}`;
+  return `${left} ~ ${right}`;
+}
+
+const DOCUMENT_PREVIEW_CONFIG = {
+  MEAL_PLAN: { label: '식단표', hwpxUrl: '/api/documents/meal-plan/hwpx' },
+  COOKING_INSTRUCTION: { label: '조리지시서', hwpxUrl: '/api/documents/cooking-instruction/hwpx' },
+  PRESERVATION_RECORD: { label: '보존식 기록지', hwpxUrl: '/api/documents/preserved-food/hwpx' },
+};
+const DOCUMENT_PREVIEW_ORDER = ['MEAL_PLAN', 'COOKING_INSTRUCTION', 'PRESERVATION_RECORD'];
+
+function documentPreviewLabel(type) {
+  return DOCUMENT_PREVIEW_CONFIG[type]?.label || '문서';
+}
+
+function documentPreviewFilename(type, startDate, endDate, extension) {
+  const name = documentPreviewLabel(type).replace(/\s+/g, '');
+  return `${name}_${String(startDate).replaceAll('-', '')}_${String(endDate).replaceAll('-', '')}.${extension}`;
+}
+
+function parseContentDispositionFilename(header, fallback) {
+  if (!header) return fallback;
+  const utf8 = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8) {
+    try { return decodeURIComponent(utf8[1]); } catch { /* ignore */ }
+  }
+  const ascii = header.match(/filename="?([^";]+)"?/i);
+  return ascii ? ascii[1] : fallback;
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.rel = 'noopener';
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function triggerDownloadFromUrl(blobUrl, filename) {
+  const anchor = document.createElement('a');
+  anchor.href = blobUrl;
+  anchor.download = filename;
+  anchor.rel = 'noopener';
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+}
+
+async function requestBinary(url, options={}) {
+  try {
+    const response = await fetch(url, options);
+    if (response.status === 401) { location.href='/login'; throw new Error('로그인이 필요합니다.'); }
+    if (!response.ok) {
+      const type = response.headers.get('content-type') || '';
+      const data = type.includes('application/json') ? await response.json() : await response.text();
+      throw new Error(data.detail || data || `요청 실패 (${response.status})`);
+    }
+    return response;
+  } catch (error) {
+    if (error instanceof TypeError) throw new Error('네트워크 오류가 발생했습니다.');
+    throw error;
+  }
+}
 
 async function api(url, options={}) {
   const response = await fetch(url, options);
@@ -36,6 +113,101 @@ async function api(url, options={}) {
   return data;
 }
 function json(method, body) { return {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}; }
+
+function classifyDocumentPreviewError(message='') {
+  const text = String(message || '');
+  if (text.includes('출력할 배식이 없습니다')) {
+    return { kind: 'no_data', title: '데이터가 없습니다.', detail: '출력할 배식이 없습니다.' };
+  }
+  if (text.includes('활성 HWPX 템플릿이 없습니다')) {
+    return { kind: 'template_missing', title: 'HWPX 템플릿이 없습니다.', detail: text };
+  }
+  if (text.includes('HWPX 생성에 실패했습니다')) {
+    return { kind: 'hwpx_generation', title: 'HWPX 생성 실패', detail: 'HWPX 파일 생성에 실패했습니다.' };
+  }
+  if (text.includes('PDF 생성에 실패했습니다') || text.includes('HWPX를 PDF로 변환하지 못했습니다') || text.includes('PDF 저장 중 오류')) {
+    return { kind: 'pdf_conversion', title: '미리보기를 생성하지 못했습니다.', detail: '미리보기를 생성하지 못했습니다. HWPX 파일은 다운로드할 수 있습니다.' };
+  }
+  if (text.includes('네트워크 오류')) {
+    return { kind: 'network', title: '네트워크 오류', detail: '네트워크 오류가 발생했습니다.' };
+  }
+  return { kind: 'unknown', title: '미리보기를 생성하지 못했습니다.', detail: text || '미리보기를 생성하지 못했습니다.' };
+}
+
+function cleanupDocumentPreview() {
+  state.documentPreview = null;
+}
+
+function syncDocumentPreviewRangeFromInputs() {
+  const preview = state.documentPreview;
+  if (!preview) return null;
+  const start = $('#document-preview-start')?.value;
+  const end = $('#document-preview-end')?.value;
+  if (start) preview.startDate = start;
+  if (end) preview.endDate = end;
+  return preview;
+}
+
+function openDocumentPreviewDialog() {
+  const initialType = { meal: 'MEAL_PLAN', cooking: 'COOKING_INSTRUCTION', preservation: 'PRESERVATION_RECORD' }[state.mode] || 'MEAL_PLAN';
+  const rangeStart = state.workspace?.start;
+  const rangeEnd = state.workspace?.end;
+  if (!rangeStart || !rangeEnd) {
+    toast('출력 기간을 불러오지 못했습니다.', true);
+    return;
+  }
+  cleanupDocumentPreview();
+  state.documentPreview = {
+    type: initialType,
+    startDate: rangeStart,
+    endDate: rangeEnd,
+    hwpxFilename: documentPreviewFilename(initialType, rangeStart, rangeEnd, 'hwpx'),
+  };
+  renderDocumentPreviewDialog();
+}
+
+function renderDocumentPreviewDialog() {
+  const preview = state.documentPreview;
+  if (!preview) return;
+  const title = `${documentPreviewLabel(preview.type)} 출력`;
+  const tabs = DOCUMENT_PREVIEW_ORDER.map(type => `<button type="button" class="secondary-button${preview.type===type?' active':''}" data-preview-type="${type}">${escapeHtml(documentPreviewLabel(type))}</button>`).join('');
+  modal(`<div class="modal-head document-preview-head"><div><h3 id="document-preview-title">${escapeHtml(title)}</h3><small>${escapeHtml(preview.startDate)} ~ ${escapeHtml(preview.endDate)}</small></div><button class="icon-button" id="document-preview-close" aria-label="닫기">×</button></div><div class="preview-type-tabs" id="document-preview-types">${tabs}</div><div class="preview-range-form"><label class="field"><span>시작일</span><input id="document-preview-start" type="date" value="${escapeHtml(preview.startDate)}"></label><label class="field"><span>종료일</span><input id="document-preview-end" type="date" value="${escapeHtml(preview.endDate)}"></label></div><div class="button-row preview-action-row"><button class="primary-button" id="document-preview-hwpx" type="button">HWPX 다운로드</button></div>`);
+  bindDocumentPreviewDialogEvents();
+}
+
+function bindDocumentPreviewDialogEvents() {
+  const preview = state.documentPreview;
+  if (!preview) return;
+  $('#document-preview-close')?.addEventListener('click', closeModal);
+  $$('#document-preview-types [data-preview-type]').forEach(button => {
+    button.addEventListener('click', () => {
+      if (!state.documentPreview) return;
+      const nextType = button.dataset.previewType;
+      if (state.documentPreview.type === nextType) return;
+      state.documentPreview.type = nextType;
+      state.documentPreview.hwpxFilename = documentPreviewFilename(nextType, state.documentPreview.startDate, state.documentPreview.endDate, 'hwpx');
+      renderDocumentPreviewDialog();
+    });
+  });
+  $('#document-preview-hwpx')?.addEventListener('click', downloadDocumentPreviewHwpx);
+}
+
+async function downloadDocumentPreviewHwpx() {
+  const preview = syncDocumentPreviewRangeFromInputs();
+  if (!preview) return;
+  const config = DOCUMENT_PREVIEW_CONFIG[preview.type];
+  if (!config) return;
+  try {
+    const response = await requestBinary(config.hwpxUrl, json('POST', { start_date: preview.startDate, end_date: preview.endDate }));
+    const blob = await response.blob();
+    const filename = parseContentDispositionFilename(response.headers.get('content-disposition'), documentPreviewFilename(preview.type, preview.startDate, preview.endDate, 'hwpx'));
+    triggerDownload(blob, filename);
+    toast('HWPX 파일을 다운로드했습니다.');
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
 function toast(message, error=false) {
   const node = document.createElement('div'); node.className=`toast${error?' error':''}`; node.textContent=message;
   $('#toast-root').append(node); setTimeout(()=>node.remove(),3200);
@@ -44,7 +216,10 @@ function modal(content) {
   $('#modal-root').innerHTML=`<div class="modal-backdrop"><section class="modal">${content}</section></div>`;
   $('.modal-backdrop').addEventListener('click',e=>{if(e.target.classList.contains('modal-backdrop')) closeModal();});
 }
-function closeModal(){ $('#modal-root').innerHTML=''; }
+function closeModal(){
+  cleanupDocumentPreview();
+  $('#modal-root').innerHTML='';
+}
 
 function normalizeTime24(rawValue) {
   const trimmed = String(rawValue).trim();
@@ -118,6 +293,7 @@ function createTimeInput24({value, onChange, stepMinutes=5, disabled=false, requ
 async function init() {
   state.codes = await api('/api/master/codes');
   bindGlobal();
+  switchView(state.view);
   await loadWorkspace();
 }
 
@@ -128,8 +304,7 @@ function bindGlobal() {
   $$('#master-data-tabs button').forEach(button=>button.addEventListener('click',()=>{state.masterDataTab=button.dataset.mdTab;state.masterDataSelectionId=null;$$('#master-data-tabs button').forEach(x=>x.classList.toggle('active',x===button));loadMasterData();}));
   $('#prev-week').addEventListener('click',()=>moveWeek(-1)); $('#next-week').addEventListener('click',()=>moveWeek(1));
   $('#today-week').addEventListener('click',()=>{state.weekStart=mondayOf(new Date());loadWorkspace();});
-  $('#select-all-services').addEventListener('click',selectAllServicesForDocument);
-  $('#clear-selected-services').addEventListener('click',clearSelectedServicesForDocument);
+  $('#week-date-picker').addEventListener('change',e=>{if(e.target.value){state.weekStart=mondayOf(e.target.value);loadWorkspace();}});
   $('#focus-toggle').addEventListener('click',()=>toggleFocus(true)); $('#focus-exit').addEventListener('click',()=>toggleFocus(false));
   $('#document-preview').addEventListener('click',previewCurrentDocument);
   $('#logout-button').addEventListener('click',async()=>{await api('/api/auth/logout',{method:'POST'});location.href='/login';});
@@ -146,14 +321,15 @@ function bindGlobal() {
 function switchView(view) {
   state.view=view; $$('.view').forEach(x=>x.classList.toggle('active',x.id===`view-${view}`));
   $$('.side-nav button').forEach(x=>x.classList.toggle('active',x.dataset.view===view));
-  const titles={workspace:'주간 급식 운영',master:'메뉴·재료 기준정보','master-data':'기본 데이터 관리',statistics:'통계 보기'};
+  const titles={workspace:'',master:'메뉴·재료 기준정보','master-data':'기본 데이터 관리',statistics:'통계 보기'};
   $('#page-title').textContent=titles[view]||'';
+  $('#top-header').classList.toggle('hidden', view==='workspace');
   if(view==='master') loadMaster(); if(view==='master-data') loadMasterData(); if(view==='statistics') initStatsDashboard();
 }
 
 function setMode(mode) {
   state.mode=mode; $$('.mode-tabs button').forEach(x=>x.classList.toggle('active',x.dataset.mode===mode));
-  const labels={meal:'식단표 미리보기·출력',cooking:'조리지시서 미리보기·출력',preservation:'보존식 기록지 미리보기·출력',actual:'실제 식수는 별도 저장'};
+  const labels={meal:'식단표 출력',cooking:'조리지시서 출력',preservation:'보존식 기록지 출력',actual:'실제 식수는 별도 저장'};
   $('#document-preview').textContent=labels[mode]; $('#document-preview').disabled=mode==='actual';
   renderWeekBoard(); renderEditor();
 }
@@ -161,44 +337,20 @@ function setMode(mode) {
 async function loadWorkspace(keepSelection=true) {
   const start=isoDate(state.weekStart);
   state.workspace=await api(`/api/workspace/weeks?week_start=${start}&weeks=${state.weeks}`);
-  $('#week-range').textContent=`${state.workspace.start} ~ ${state.workspace.end}`; $('#focus-week-range').textContent=$('#week-range').textContent;
+  const dpe=$('#week-date-picker');if(dpe)dpe.value=isoDate(state.weekStart);
+  const wed=$('#week-end-date');if(wed)wed.textContent=state.workspace.end.replace(/-/g,'.');
+  $('#focus-week-range').textContent=compactPeriodLabel(state.workspace.start, state.workspace.end);
   const serviceIds=allServiceIds();
-  state.selectedDocumentServiceIds = new Set([...state.selectedDocumentServiceIds].filter(id=>serviceIds.includes(id)));
   if(!keepSelection || !serviceIds.includes(state.selectedServiceId)){state.selectedServiceId=null;state.selectedService=null;state.selectedMenuItemId=null;}
   renderWeekBoard();
-  updateDocumentSelectionInfo();
   if(state.selectedServiceId) await selectService(state.selectedServiceId,false); else renderEditor();
 }
 function allServiceIds(){ return (state.workspace?.weeks||[]).flatMap(w=>w.days.flatMap(d=>d.services.map(s=>s.id))); }
 function selectedServiceIdsForDocument(){
-  const selected=[...state.selectedDocumentServiceIds].filter(id=>allServiceIds().includes(id));
-  return selected.length ? selected : allServiceIds();
+  return allServiceIds();
 }
-function updateDocumentSelectionInfo(){
-  const selected=[...state.selectedDocumentServiceIds].filter(id=>allServiceIds().includes(id));
-  const info=$('#document-selection-info');
-  if(info){
-    info.textContent=selected.length ? `출력 선택 ${selected.length}건` : '출력 선택 없음 (전체)';
-  }
-}
-function toggleServiceSelectionForDocument(serviceId){
-  if(state.selectedDocumentServiceIds.has(serviceId)) state.selectedDocumentServiceIds.delete(serviceId);
-  else state.selectedDocumentServiceIds.add(serviceId);
-  renderWeekBoard();
-  updateDocumentSelectionInfo();
-}
-function selectAllServicesForDocument(){
-  state.selectedDocumentServiceIds=new Set(allServiceIds());
-  renderWeekBoard();
-  updateDocumentSelectionInfo();
-}
-function clearSelectedServicesForDocument(){
-  state.selectedDocumentServiceIds.clear();
-  renderWeekBoard();
-  updateDocumentSelectionInfo();
-}
-function moveWeek(direction){ state.weekStart=addDays(state.weekStart,direction*(state.focus?7:14)); loadWorkspace(false); }
-function toggleFocus(enabled){ state.focus=enabled; state.weeks=enabled?1:2; $('#app-shell').classList.toggle('focus-mode',enabled); $('#focus-toolbar').classList.toggle('hidden',!enabled); $('#focus-toggle').classList.toggle('hidden',enabled); loadWorkspace(true); }
+function moveWeek(direction){ state.weekStart=addDays(state.weekStart,direction*14); loadWorkspace(false); }
+async function toggleFocus(enabled){ state.focus=enabled; state.weeks=2; $('#app-shell').classList.toggle('focus-mode',enabled); $('#focus-toolbar').classList.toggle('hidden',!enabled); $('#focus-toggle').classList.toggle('hidden',enabled); await loadWorkspace(true); if(enabled){const wrap=$('.week-board-wrap');if(wrap)wrap.scrollTop=0;} }
 
 function statusMarkup(service) {
   if(state.mode==='cooking') return `<span class="status-dot ${service.cooking_output?'yes':''}">${service.cooking_output?'✓ 출력':'출력 전'}</span>`;
@@ -209,24 +361,17 @@ function statusMarkup(service) {
 function renderWeekBoard() {
   const board=$('#week-board'); if(!state.workspace){board.innerHTML='';return;}
   board.innerHTML=state.workspace.weeks.map(week=>`<section class="week-section">
-    <header class="week-section-header"><strong>${week.week_start} 주간</strong><span>${week.week_start} ~ ${week.week_end}</span></header>
     <div class="weekday-grid">${week.days.map(day=>`<article class="day-column ${day.services.some(s=>s.id===state.selectedServiceId)?'selected':''}" data-date="${day.date}">
-      <header class="day-head"><strong>${day.day}</strong><span>${day.weekday}</span></header>
-      <div class="day-body">${day.services.map(service=>`<div class="service-card ${service.id===state.selectedServiceId?'selected':''} ${state.selectedDocumentServiceIds.has(service.id)?'print-selected':''}" data-service-id="${service.id}">
-        <label class="service-select-check" title="출력 선택">
-          <input type="checkbox" data-service-print-select="${service.id}" ${state.selectedDocumentServiceIds.has(service.id)?'checked':''}>
-          <span>출력</span>
-        </label>
+      <header class="day-head"><div class="day-head-date"><strong>${day.date?day.date.slice(5).replace('-','/'):day.day}</strong><span>${day.weekday}</span></div><button class="add-service-inline" data-add-date="${day.date}">+ 배식</button></header>
+      <div class="day-body">${day.services.map(service=>`<div class="service-card ${service.id===state.selectedServiceId?'selected':''}" data-service-id="${service.id}">
         <div class="service-top"><span>${service.meal_type_name}</span><span>${service.service_time?service.service_time.slice(0,5):''}</span></div>
         ${service.concept_title?`<div class="service-concept">${escapeHtml(service.concept_title)}</div>`:''}
-        <div class="service-meta"><span>${numberText(service.planned_count)}명</span>${statusMarkup(service)}</div>
+        <div class="service-meta">${statusMarkup(service)}</div>
         <div class="menu-lines">${service.menus.map(m=>`<div>${escapeHtml(m.name)}</div>`).join('')||'<span class="muted">메뉴 없음</span>'}</div>
       </div>`).join('')}
-      <button class="add-service" data-add-date="${day.date}">＋ 배식 추가</button></div>
+      </div>
     </article>`).join('')}</div></section>`).join('');
   $$('.service-card',board).forEach(card=>card.addEventListener('click',()=>selectService(Number(card.dataset.serviceId))));
-  $$('[data-service-print-select]',board).forEach(input=>input.addEventListener('click',event=>event.stopPropagation()));
-  $$('[data-service-print-select]',board).forEach(input=>input.addEventListener('change',()=>toggleServiceSelectionForDocument(Number(input.dataset.servicePrintSelect))));
   $$('[data-add-date]',board).forEach(button=>button.addEventListener('click',()=>openServiceAdd(button.dataset.addDate)));
 }
 
@@ -459,20 +604,18 @@ function renderMealEditor(panel,service) {
   <section class="service-basic-card">
     <div class="service-basic-grid">
       <label class="field">
+        <span>식단 제목·컨셉</span>
+        <input id="service-concept-title" type="text" maxlength="80" placeholder="예: LA갈비 특식, 명절 특별식" value="${escapeHtml(draft.conceptTitle)}">
+      </label>
+      <label class="field">
         <span>계획 식수</span>
         <div class="count-input-wrap">
           <input id="planned-count" type="number" min="0" value="${draft.plannedCount}">
-          <span class="input-suffix">명</span>
         </div>
       </label>
       <label class="field">
         <span>배식시간</span>
         <div id="service-time-cell"></div>
-      </label>
-      <label class="field service-concept-field">
-        <span>식단 제목·컨셉</span>
-        <input id="service-concept-title" type="text" maxlength="80" placeholder="예: LA갈비 특식, 명절 특별식" value="${escapeHtml(draft.conceptTitle)}">
-        <small>입력하면 해당 배식 카드와 식단표 상단에 강조 표시됩니다.</small>
       </label>
     </div>
   </section>
@@ -481,7 +624,7 @@ function renderMealEditor(panel,service) {
     ${selected?menuDetailHtml(selected):'<div class="empty-editor">메뉴를 추가해 주세요.</div>'}
   </div>
   <div class="save-bar"><span class="save-state" aria-live="polite">저장됨</span><button class="primary-button" id="save-service">식단 저장</button></div>`;
-  const ti24=createTimeInput24({value:state.mealServiceTime,label:'배식시간',showQuickButtons:true,stepMinutes:5,onChange:v=>{state.mealServiceTime=v;markMealEditorDirty();}});
+  const ti24=createTimeInput24({value:state.mealServiceTime,label:'배식시간',showQuickButtons:false,stepMinutes:5,onChange:v=>{state.mealServiceTime=v;markMealEditorDirty();}});
   $('#service-time-cell').append(ti24);
   $('#planned-count').addEventListener('input',()=>{markMealEditorDirty();});
   $('#service-concept-title').addEventListener('input',()=>{markMealEditorDirty();});
@@ -682,6 +825,13 @@ function renderMenuPickerModal(){
     debounceTimer=setTimeout(loadMenuPickerResults,250);
   });
   $('#picker-role').addEventListener('change',e=>{draft.role=e.target.value;loadMenuPickerResults();});
+  const resultsEl=$('#picker-results');
+  resultsEl.addEventListener('scroll',()=>{
+    if(!draft.hasMore||draft.loading)return;
+    if(resultsEl.scrollTop+resultsEl.clientHeight>=resultsEl.scrollHeight-80){
+      fetchMenuPickerPage();
+    }
+  });
   document.addEventListener('keydown',pickerEscapeHandler);
   searchInput.focus();
   renderMenuPickerBasket();
@@ -701,21 +851,35 @@ function pickerEscapeHandler(e){
 async function loadMenuPickerResults(){
   const draft=state.menuPickerDraft;
   if(!draft)return;
-  draft.loading=true;
+  draft.results=[];
+  draft.offset=0;
+  draft.total=0;
+  draft.hasMore=true;
+  draft.loading=false;
   renderMenuPickerResults();
+  await fetchMenuPickerPage();
+}
+
+async function fetchMenuPickerPage(){
+  const draft=state.menuPickerDraft;
+  if(!draft||!draft.hasMore||draft.loading)return;
+  draft.loading=true;
+  if(draft.results.length)renderMenuPickerResults();
   try{
     const params=new URLSearchParams();
     if(draft.query.trim())params.set('q',draft.query.trim());
     if(draft.role&&draft.role!=='ALL')params.set('role',draft.role);
     params.set('active','true');
     if(draft.serviceId)params.set('service_id',draft.serviceId);
-    params.set('offset','0');
+    params.set('offset',String(draft.offset));
     params.set('limit','50');
     const data=await api(`/api/master/menus/picker?${params}`);
-    draft.results=data.items||[];
+    const items=data.items||[];
+    draft.results=draft.results.concat(items);
     draft.total=data.total||0;
-    draft.offset=data.offset||0;
-  }catch(e){toast(e.message,true);draft.results=[];}
+    draft.offset=draft.results.length;
+    draft.hasMore=draft.results.length<draft.total;
+  }catch(e){toast(e.message,true);draft.hasMore=false;}
   draft.loading=false;
   renderMenuPickerResults();
 }
@@ -725,7 +889,7 @@ function renderMenuPickerResults(){
   if(!draft)return;
   const el=$('#picker-results');
   if(!el)return;
-  if(draft.loading){
+  if(draft.loading&&!draft.results.length){
     el.innerHTML='<p class="muted" style="padding:20px">불러오는 중…</p>';
     return;
   }
@@ -768,6 +932,13 @@ function renderMenuPickerResults(){
       renderMenuPickerResults();
     });
   });
+  if(draft.hasMore){
+    const sentinel=document.createElement('div');
+    sentinel.id='picker-scroll-sentinel';
+    sentinel.style.cssText='text-align:center;padding:14px;color:#6985a0;font-size:13px';
+    sentinel.textContent=draft.loading?'불러오는 중…':'스크롤하여 더 보기';
+    el.appendChild(sentinel);
+  }
 }
 
 function renderMenuRecipeChoices(menu,isSelected){
@@ -775,25 +946,32 @@ function renderMenuRecipeChoices(menu,isSelected){
   if(!draft)return'';
   const selectedItem=draft.selectedItems.find(s=>s.menuId===menu.id);
   const selectedRecipeId=selectedItem?.recipeId;
+  const selClass=isSelected?' selected':'';
+  const chkAttr=isSelected?'checked':'';
+
   if(menu.recipes.length===0){
-    return `<div class="menu-picker-recipe-list"><label class="menu-picker-recipe selected"><input type="radio" name="recipe-${menu.id}" data-picker-recipe="0" data-picker-menu="${menu.id}" checked><div><strong>레시피 없이 추가</strong><span>빈 재료 그리드로 추가됩니다.</span></div></label></div>`;
+    return `<div class="menu-picker-recipe-list${selClass}"><div class="recipe-choices-head">📋 적용 레시피</div><label class="menu-picker-recipe${selClass}"><input type="radio" name="recipe-${menu.id}" data-picker-recipe="0" data-picker-menu="${menu.id}" ${chkAttr}><div><strong>레시피 없이 추가</strong><span>빈 재료 그리드로 추가됩니다.</span></div></label></div>`;
   }
   if(menu.recipes.length===1){
     const r=menu.recipes[0];
-    return `<div class="menu-picker-recipe-list"><label class="menu-picker-recipe selected"><input type="radio" name="recipe-${menu.id}" data-picker-recipe="${r.id}" data-picker-menu="${menu.id}" checked><div><strong>${escapeHtml(r.name)} v${r.version}${r.is_default?' · 기본':''}</strong><span>재료 ${r.ingredient_count}개 · ${r.ingredient_summary.map(escapeHtml).join(', ')}</span>${r.note?`<small>${escapeHtml(r.note)}</small>`:''}</div></label></div>`;
+    return `<div class="menu-picker-recipe-list${selClass}"><div class="recipe-choices-head">📋 적용 레시피</div><label class="menu-picker-recipe${selClass}"><input type="radio" name="recipe-${menu.id}" data-picker-recipe="${r.id}" data-picker-menu="${menu.id}" ${chkAttr}><div><div class="recipe-title-line"><span class="recipe-ver-badge">v${r.version}</span>${r.is_default?'<span class="recipe-default-badge">기본</span>':''}<strong>${escapeHtml(r.name)}</strong></div><span>재료 ${r.ingredient_count}개 · ${r.ingredient_summary.map(escapeHtml).join(', ')}</span>${r.note?`<small>${escapeHtml(r.note)}</small>`:''}</div></label></div>`;
   }
   const recipesHtml=menu.recipes.map(r=>{
-    const isSel=r.id===selectedRecipeId||(r.id===menu.default_recipe_id&&!selectedRecipeId);
+    const isSel=isSelected&&(r.id===selectedRecipeId||(r.id===menu.default_recipe_id&&!selectedRecipeId));
     return `<label class="menu-picker-recipe${isSel?' selected':''}">
       <input type="radio" name="recipe-${menu.id}" value="${r.id}" data-picker-recipe="${r.id}" data-picker-menu="${menu.id}" ${isSel?'checked':''}>
       <div>
-        <strong>${escapeHtml(r.name)} v${r.version}${r.is_default?' · 기본':''}</strong>
+        <div class="recipe-title-line">
+          <span class="recipe-ver-badge">v${r.version}</span>
+          ${r.is_default?'<span class="recipe-default-badge">기본</span>':''}
+          <strong>${escapeHtml(r.name)}</strong>
+        </div>
         <span>재료 ${r.ingredient_count}개 · ${r.ingredient_summary.map(escapeHtml).join(', ')}${r.ingredient_count>5?` 외 ${r.ingredient_count-5}개`:''}</span>
         ${r.note?`<small>${escapeHtml(r.note)}</small>`:''}
       </div>
     </label>`;
   }).join('');
-  return `<div class="menu-picker-recipe-list">${recipesHtml}</div>`;
+  return `<div class="menu-picker-recipe-list multi-recipes${selClass}"><div class="recipe-choices-head">📋 적용할 레시피 선택 <small>(${menu.recipes.length}개 레시피 중 선택)</small></div>${recipesHtml}</div>`;
 }
 
 function toggleMenuPickerItem(menuId){
@@ -828,15 +1006,29 @@ function toggleMenuPickerItem(menuId){
 function selectMenuPickerRecipe(menuId,recipeId){
   const draft=state.menuPickerDraft;
   if(!draft)return;
-  const item=draft.selectedItems.find(s=>s.menuId===menuId);
-  if(!item)return;
-  if(recipeId===0){
-    item.recipeId=null;item.recipeName='레시피 없음';item.recipeVersion=0;item.ingredientCount=0;
+  const menu=draft.results.find(m=>m.id===menuId);
+  if(!menu||menu.already_added)return;
+  let item=draft.selectedItems.find(s=>s.menuId===menuId);
+  if(!item){
+    let recipeName='레시피 없음',recipeVersion=0,ingredientCount=0;
+    if(recipeId!==0){
+      const recipe=menu.recipes.find(r=>r.id===recipeId);
+      if(recipe){
+        recipeName=recipe.name;recipeVersion=recipe.version;ingredientCount=recipe.ingredient_count;
+      }
+    }
+    draft.selectedItems.push({
+      menuId, menuName:menu.name, role:menu.role,
+      recipeId:recipeId===0?null:recipeId, recipeName, recipeVersion, ingredientCount
+    });
   }else{
-    const menu=draft.results.find(m=>m.id===menuId);
-    const recipe=menu?.recipes.find(r=>r.id===recipeId);
-    if(recipe){
-      item.recipeId=recipeId;item.recipeName=recipe.name;item.recipeVersion=recipe.version;item.ingredientCount=recipe.ingredient_count;
+    if(recipeId===0){
+      item.recipeId=null;item.recipeName='레시피 없음';item.recipeVersion=0;item.ingredientCount=0;
+    }else{
+      const recipe=menu.recipes.find(r=>r.id===recipeId);
+      if(recipe){
+        item.recipeId=recipeId;item.recipeName=recipe.name;item.recipeVersion=recipe.version;item.ingredientCount=recipe.ingredient_count;
+      }
     }
   }
   renderMenuPickerResults();
@@ -1031,18 +1223,8 @@ function renderFullStatistics(){
     </div>`;
 }
 
-async function previewCurrentDocument(){
-  const type={meal:'MEAL_PLAN',cooking:'COOKING_INSTRUCTION',preservation:'PRESERVATION_RECORD'}[state.mode];
-  if(!type)return;
-  const ids=selectedServiceIdsForDocument();
-  if(!ids.length){toast('출력할 배식이 없습니다.',true);return;}
-  try{
-    const result=await api('/api/documents/preview',json('POST',{document_type:type,service_ids:ids}));
-    window.open(result.html_url,'_blank','noopener');
-    if(type==='COOKING_INSTRUCTION')setTimeout(()=>loadWorkspace(true),600);
-    const selectedCount=[...state.selectedDocumentServiceIds].filter(id=>allServiceIds().includes(id)).length;
-    if(selectedCount){toast(`선택한 ${selectedCount}건으로 출력했습니다.`);}else{toast('전체 배식으로 출력했습니다.');}
-  }catch(e){toast(e.message,true);}
+function previewCurrentDocument(){
+  openDocumentPreviewDialog();
 }
 
 function showMigrationPreviewResult(result){
@@ -1097,7 +1279,7 @@ async function renderHwpxTemplatesView(root){
   const labels={'MEAL_PLAN':'식단표','COOKING_INSTRUCTION':'조리지시서','PRESERVATION_RECORD':'보존식 기록지'};
   root.innerHTML=`<div class="master-split">
     <section class="master-list-panel">
-      ${Object.entries(grouped).map(([type,items])=>`<div class="template-group"><h4>${labels[type]}</h4>${items.length?items.map(r=>`<button class="template-list-item ${r.id===state.masterDataSelectionId?'active':''}" data-template-select="${r.id}"><strong>${escapeHtml(r.name)}</strong><span>v${r.version}${r.active?' · [활성]':''}${r.is_valid?'':' · 검증실패'}</span></button>`).join(''):'<p class="muted">등록된 양식이 없습니다.</p>'}</div>`).join('')}
+      ${Object.entries(grouped).map(([type,items])=>`<div class="template-group"><h4>${labels[type]}</h4>${items.length?items.map(r=>`<button class="template-list-item ${r.id===state.masterDataSelectionId?'active':''}" data-template-select="${r.id}" title="${escapeHtml(r.name)}${r.original_filename?` (${escapeHtml(r.original_filename)})`:''}"><strong>${escapeHtml(r.name)}</strong><span>v${r.version}${r.active?' · [활성]':''}${r.is_valid?'':' · 검증실패'}</span></button>`).join(''):'<p class="muted">등록된 양식이 없습니다.</p>'}</div>`).join('')}
     </section>
     <aside id="hwpx-template-editor" class="master-editor-panel"><div class="empty-editor">왼쪽에서 양식을 선택하거나 새 양식을 등록하세요.</div></aside>
   </div>`;
@@ -1116,6 +1298,7 @@ async function renderHwpxTemplatePanel(){
 }
 
 function renderHwpxTemplateForm(panel,data){
+  const id=state.masterDataSelectionId;
   const isNew=!data;
   const d=data||{document_type:'MEAL_PLAN',name:'',description:'',original_filename:''};
   const ph=d.placeholder_summary;
@@ -1189,15 +1372,19 @@ async function loadIngredientCache(){
   return state.ingredientCache;
 }
 
-async function renderMenusMaster(root,q=''){
+let _menuRenderToken=0;
+async function renderMenusMaster(root,q=''){const token=++_menuRenderToken;
   const rows=await api(`/api/master/menus?q=${encodeURIComponent(q)}&limit=600`);
+  if(token!==_menuRenderToken)return;
+  const oldInput=$('#master-search');const hadFocus=document.activeElement===oldInput;const curVal=oldInput?.value??q;const curCursor=oldInput?.selectionStart;const curScroll=oldInput?.scrollTop;
   root.innerHTML=`<div class="master-split">
     <section class="master-list-panel">
-      <div class="table-tools"><input id="master-search" placeholder="메뉴 검색" value="${escapeHtml(q)}"><button class="secondary-button" id="new-menu">＋ 메뉴 등록</button></div>
+      <div class="table-tools"><input id="master-search" placeholder="메뉴 검색" value="${escapeHtml(curVal)}"><button class="secondary-button" id="new-menu">＋ 메뉴 등록</button></div>
       <div class="table-wrap master-list-wrap"><table class="data-table"><thead><tr><th>메뉴명</th><th>역할</th><th>레시피</th><th>상태</th></tr></thead><tbody>${rows.map(r=>`<tr data-menu-master="${r.id}" class="${r.id===state.masterSelectionId?'selected-row':''}"><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.role)}</td><td>${r.recipe_count}개</td><td>${r.active?'사용':'미사용'}</td></tr>`).join('')}</tbody></table></div>
     </section>
     <aside id="master-editor" class="master-editor-panel"></aside>
   </div>`;
+  const si=$('#master-search');if(hadFocus&&si){si.focus();if(curCursor!=null)si.setSelectionRange(curCursor,curCursor);if(curScroll!=null)si.scrollTop=curScroll;}
   $('#master-search').addEventListener('input',e=>{clearTimeout(window.masterTimer);window.masterTimer=setTimeout(()=>renderMenusMaster(root,e.target.value),250)});
   $('#new-menu').addEventListener('click',()=>{state.masterSelectionId=null;state.selectedRecipeId=null;renderMenuMasterPanel(null);});
   $$('[data-menu-master]').forEach(row=>row.addEventListener('click',()=>{state.masterSelectionId=Number(row.dataset.menuMaster);state.selectedRecipeId=null;$$('[data-menu-master]').forEach(x=>x.classList.toggle('selected-row',x===row));renderMenuMasterPanel(state.masterSelectionId);}));
@@ -1272,11 +1459,15 @@ function bindRecipeEditor(menuId,recipe){
   const archive=$('#archive-recipe');if(archive)archive.addEventListener('click',async()=>{if(!confirm('이 레시피를 삭제(미사용 처리)할까요? 기존 식단의 재료 스냅샷은 유지됩니다.'))return;try{await api(`/api/master/recipes/${recipe.id}`,{method:'DELETE'});state.selectedRecipeId=null;toast('레시피를 삭제 처리했습니다.');renderMenuMasterPanel(menuId);}catch(e){toast(e.message,true);}});
 }
 
-async function renderIngredientsMaster(root,q=''){
+let _ingredientRenderToken=0;
+async function renderIngredientsMaster(root,q=''){const token=++_ingredientRenderToken;
   const rows=await api(`/api/master/ingredients?q=${encodeURIComponent(q)}&limit=600`);
+  if(token!==_ingredientRenderToken)return;
+  const oldInput=$('#master-search');const hadFocus=document.activeElement===oldInput;const curVal=oldInput?.value??q;const curCursor=oldInput?.selectionStart;const curScroll=oldInput?.scrollTop;
   root.innerHTML=`<div class="master-split">
-    <section class="master-list-panel"><div class="table-tools"><input id="master-search" placeholder="재료 검색" value="${escapeHtml(q)}"><button class="secondary-button" id="new-ingredient">＋ 재료 등록</button></div><div class="table-wrap master-list-wrap"><table class="data-table"><thead><tr><th>재료명</th><th>통계분석군</th><th>단위</th><th>상태</th></tr></thead><tbody>${rows.map(r=>`<tr data-ingredient-master="${r.id}" class="${r.id===state.masterSelectionId?'selected-row':''}"><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.stat_group)}</td><td>${escapeHtml(r.default_unit||'')}</td><td>${r.active?'사용':'미사용'}</td></tr>`).join('')}</tbody></table></div></section>
+    <section class="master-list-panel"><div class="table-tools"><input id="master-search" placeholder="재료 검색" value="${escapeHtml(curVal)}"><button class="secondary-button" id="new-ingredient">＋ 재료 등록</button></div><div class="table-wrap master-list-wrap"><table class="data-table"><thead><tr><th>재료명</th><th>통계분석군</th><th>단위</th><th>상태</th></tr></thead><tbody>${rows.map(r=>`<tr data-ingredient-master="${r.id}" class="${r.id===state.masterSelectionId?'selected-row':''}"><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.stat_group)}</td><td>${escapeHtml(r.default_unit||'')}</td><td>${r.active?'사용':'미사용'}</td></tr>`).join('')}</tbody></table></div></section>
     <aside id="master-editor" class="master-editor-panel"></aside></div>`;
+  const si=$('#master-search');if(hadFocus&&si){si.focus();if(curCursor!=null)si.setSelectionRange(curCursor,curCursor);if(curScroll!=null)si.scrollTop=curScroll;}
   $('#master-search').addEventListener('input',e=>{clearTimeout(window.masterTimer);window.masterTimer=setTimeout(()=>renderIngredientsMaster(root,e.target.value),250)});
   $('#new-ingredient').addEventListener('click',()=>{state.masterSelectionId=null;renderIngredientMasterPanel();});
   $$('[data-ingredient-master]').forEach(row=>row.addEventListener('click',()=>{state.masterSelectionId=Number(row.dataset.ingredientMaster);$$('[data-ingredient-master]').forEach(x=>x.classList.toggle('selected-row',x===row));renderIngredientMasterPanel(state.masterSelectionId);}));

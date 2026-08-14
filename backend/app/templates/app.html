@@ -16,36 +16,50 @@
     <nav class="side-nav">
       <button data-view="workspace" class="active">주간 급식 운영</button>
       <button data-view="master">메뉴·재료 기준정보</button>
-      <button data-view="master-data">기본 데이터 관리</button>
       <button data-view="statistics">통계 보기</button>
     </nav>
+    <div class="side-nav-divider"></div>
+    <nav class="side-nav side-nav-sub">
+      <button data-view="master-data">기본 데이터 관리</button>
+    </nav>
+    <div class="sidebar-spacer"></div>
+    <div class="sidebar-user">
+      <span>👤 {{ display_name }}</span>
+      <button id="logout-button" class="ghost-button">로그아웃</button>
+    </div>
     <div class="sidebar-foot">제약보다 정보 제공과 복구 중심</div>
   </aside>
 
   <section class="main-area">
     <header class="top-header" id="top-header">
-      <div><small>구내식당 관리 시스템</small><h1 id="page-title">주간 급식 운영</h1></div>
-      <div class="user-actions"><span>👤 {{ display_name }}</span><button id="logout-button" class="ghost-button">로그아웃</button></div>
+      <div><h1 id="page-title">주간 급식 운영</h1></div>
     </header>
 
     <main id="view-workspace" class="view active">
       <div class="workspace-toolbar">
-        <div class="mode-tabs" role="tablist">
-          <button data-mode="meal" class="active">식단 작성</button>
-          <button data-mode="cooking">조리지시서</button>
-          <button data-mode="preservation">보존식 기록</button>
-          <button data-mode="actual">실제 식수</button>
+        <div class="toolbar-row toolbar-row-modes">
+          <div class="mode-tabs" role="tablist">
+            <button data-mode="meal" class="active">식단 작성</button>
+            <button data-mode="cooking">조리지시서</button>
+            <button data-mode="preservation">보존식 기록</button>
+            <button data-mode="actual">실제 식수</button>
+          </div>
         </div>
-        <div class="week-controls">
-          <button id="prev-week" class="ghost-button">‹ 이전</button>
-          <strong id="week-range"></strong>
-          <button id="next-week" class="ghost-button">다음 ›</button>
-          <button id="today-week" class="ghost-button">이번 주</button>
-          <span id="document-selection-info" class="document-selection-info">출력 선택 없음 (전체)</span>
-          <button id="select-all-services" class="ghost-button">전체 선택</button>
-          <button id="clear-selected-services" class="ghost-button">선택 해제</button>
-          <button id="document-preview" class="secondary-button">미리보기·출력</button>
-          <button id="focus-toggle" class="primary-button">⛶ 집중 작성</button>
+        <div class="toolbar-row toolbar-row-actions">
+          <div class="week-controls">
+            <button id="prev-week" class="ghost-button week-nav-btn">‹ 이전</button>
+            <span class="period-picker">
+              <input type="date" id="week-date-picker" class="week-date-picker" title="조회 시작일">
+              <span class="period-separator">~</span>
+              <span id="week-end-date" class="week-end-date"></span>
+            </span>
+            <button id="next-week" class="ghost-button week-nav-btn">다음 ›</button>
+            <button id="today-week" class="ghost-button week-nav-btn">이번 주</button>
+          </div>
+          <div class="workspace-actions">
+            <button id="document-preview" class="secondary-button">출력물 생성</button>
+            <button id="focus-toggle" class="primary-button">⛶ 집중 작성</button>
+          </div>
         </div>
       </div>
       <div id="focus-toolbar" class="focus-toolbar hidden">

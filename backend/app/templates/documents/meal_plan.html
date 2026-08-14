@@ -11,10 +11,10 @@
 {% if toolbar %}<div class="preview-toolbar"><strong>식단표 미리보기</strong><a href="/api/documents/{{ preview.token }}/pdf">PDF 다운로드</a><a href="/api/documents/{{ preview.token }}/hwpx">HWPX 다운로드</a><button onclick="window.close()">닫기</button></div>{% endif %}
 <div class="document">
 <h1 class="title">주간 식단표</h1>
-{% if document.weeks %}<div class="period">{{ document.weeks[0].start }} ~ {{ document.weeks[-1].end }}</div>{% endif %}
+{% if document.weeks %}<div class="period">{{ document.period_label }}</div>{% endif %}
 {% for week in document.weeks %}
 <section class="week-block">
-  <div class="week-header">{{ week.start }} ~ {{ week.end }}</div>
+  <div class="week-header">{{ week.week_label }}</div>
   <div class="week-grid">
   {% for day in week.days %}
     <div class="day">

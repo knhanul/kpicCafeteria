@@ -11,6 +11,11 @@ from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .hwpx_engine import (
+    HwpxTemplateError as _EngineHwpxTemplateError,
+    render_document as _render_document,
+    validate_template as _validate_template,
+)
 from .models import DocumentPreview, DocumentTemplate
 
 OPF_NS = "http://www.idpf.org/2007/opf/"
@@ -268,3 +273,14 @@ def render_hwpx(template_path: str | Path, preview: DocumentPreview) -> bytes:
         for index in range(len(mappings)):
             ET.fromstring(archive.read(f"Contents/section{index}.xml"))
     return output.getvalue()
+
+
+HwpxTemplateError = _EngineHwpxTemplateError
+
+
+def validate_hwpx(path: str | Path, document_type: str | None = None) -> dict[str, Any]:
+    return _validate_template(path, document_type)
+
+
+def render_hwpx(template_path: str | Path, preview: DocumentPreview) -> bytes:
+    return _render_document(template_path, preview)

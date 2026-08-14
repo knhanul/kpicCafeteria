@@ -104,6 +104,39 @@ class TestMealServiceDefaults:
 def make_minimal_hwpx(placeholders: list[str] | None = None) -> bytes:
     """Create a minimal valid HWPX file in memory."""
     placeholders = placeholders or []
+    meal_plan_aliases = {
+        "D1_DATE": "W1_D1_DATE",
+        "D1_LUNCH": "W1_D1_LUNCH_MENU",
+        "D1_DINNER": "W1_D1_DINNER_MENU",
+        "D2_DATE": "W1_D2_DATE",
+        "D2_LUNCH": "W1_D2_LUNCH_MENU",
+        "D2_DINNER": "W1_D2_DINNER_MENU",
+        "D3_DATE": "W1_D3_DATE",
+        "D3_LUNCH": "W1_D3_LUNCH_MENU",
+        "D3_DINNER": "W1_D3_DINNER_MENU",
+        "D4_DATE": "W1_D4_DATE",
+        "D4_LUNCH": "W1_D4_LUNCH_MENU",
+        "D4_DINNER": "W1_D4_DINNER_MENU",
+        "D5_DATE": "W1_D5_DATE",
+        "D5_LUNCH": "W1_D5_LUNCH_MENU",
+        "D5_DINNER": "W1_D5_DINNER_MENU",
+        "D6_DATE": "W2_D1_DATE",
+        "D6_LUNCH": "W2_D1_LUNCH_MENU",
+        "D6_DINNER": "W2_D1_DINNER_MENU",
+        "D7_DATE": "W2_D2_DATE",
+        "D7_LUNCH": "W2_D2_LUNCH_MENU",
+        "D7_DINNER": "W2_D2_DINNER_MENU",
+        "D8_DATE": "W2_D3_DATE",
+        "D8_LUNCH": "W2_D3_LUNCH_MENU",
+        "D8_DINNER": "W2_D3_DINNER_MENU",
+        "D9_DATE": "W2_D4_DATE",
+        "D9_LUNCH": "W2_D4_LUNCH_MENU",
+        "D9_DINNER": "W2_D4_DINNER_MENU",
+        "D10_DATE": "W2_D5_DATE",
+        "D10_LUNCH": "W2_D5_LUNCH_MENU",
+        "D10_DINNER": "W2_D5_DINNER_MENU",
+    }
+    placeholders = [meal_plan_aliases.get(item, item) for item in placeholders]
     placeholder_text = " ".join(f"{{{{{p}}}}}" for p in placeholders)
     section_xml = f'<?xml version="1.0" encoding="UTF-8"?><section xmlns="http://www.hancom.co.kr/hwpml/2011/section"><p><run><t>{placeholder_text}</t></run></p></section>'
     content_hpf = '<?xml version="1.0" encoding="UTF-8"?><package xmlns="http://www.hancom.co.kr/hwpml/2011/package"><manifest><item id="section1" href="section1.xml"/></manifest><spine><itemref idref="section1"/></spine></package>'
@@ -122,14 +155,29 @@ def make_minimal_hwpx(placeholders: list[str] | None = None) -> bytes:
     return buf.getvalue()
 
 
+MEAL_PLAN_PLACEHOLDERS = [
+    "W1_D1_DATE", "W1_D1_LUNCH_MENU", "W1_D1_DINNER_MENU",
+    "W1_D2_DATE", "W1_D2_LUNCH_MENU", "W1_D2_DINNER_MENU",
+    "W1_D3_DATE", "W1_D3_LUNCH_MENU", "W1_D3_DINNER_MENU",
+    "W1_D4_DATE", "W1_D4_LUNCH_MENU", "W1_D4_DINNER_MENU",
+    "W1_D5_DATE", "W1_D5_LUNCH_MENU", "W1_D5_DINNER_MENU",
+    "W2_D1_DATE", "W2_D1_LUNCH_MENU", "W2_D1_DINNER_MENU",
+    "W2_D2_DATE", "W2_D2_LUNCH_MENU", "W2_D2_DINNER_MENU",
+    "W2_D3_DATE", "W2_D3_LUNCH_MENU", "W2_D3_DINNER_MENU",
+    "W2_D4_DATE", "W2_D4_LUNCH_MENU", "W2_D4_DINNER_MENU",
+    "W2_D5_DATE", "W2_D5_LUNCH_MENU", "W2_D5_DINNER_MENU",
+    "PERIOD_TITLE", "ORIGIN_INFO", "NOTICE", "W1_LUNCH_TIME_INFO", "W2_LUNCH_TIME_INFO", "DINNER_TIME_INFO",
+]
+
+
 class TestHwpxValidation:
     def test_valid_hwpx(self, tmp_path):
-        data = make_minimal_hwpx(["D1_DATE", "D1_LUNCH", "D1_DINNER", "D10_DATE", "D10_LUNCH", "D10_DINNER"])
+        data = make_minimal_hwpx(MEAL_PLAN_PLACEHOLDERS)
         path = tmp_path / "test.hwpx"
         path.write_bytes(data)
         result = validate_hwpx(path, "MEAL_PLAN")
         assert result["sections"] == 1
-        assert "D1_DATE" in result["placeholders"]
+        assert "W1_D1_DATE" in result["placeholders"]
 
     def test_missing_required_file(self, tmp_path):
         buf = io.BytesIO()
@@ -198,7 +246,7 @@ class TestTemplateManagement:
     def test_upload_and_list_template(self, tmp_path):
         db = make_db()
         user = make_user(db)
-        data = make_minimal_hwpx(["D1_DATE", "D1_LUNCH", "D1_DINNER", "D10_DATE", "D10_LUNCH", "D10_DINNER"])
+        data = make_minimal_hwpx(MEAL_PLAN_PLACEHOLDERS)
         with patch("app.routers.master_data.settings") as mock_settings:
             mock_settings.template_dir = tmp_path / "templates"
             file = self._make_upload_file(data)
@@ -211,7 +259,7 @@ class TestTemplateManagement:
         assert result["version"] == 1
         assert result["file_size"] > 0
         assert len(result["checksum_sha256"]) == 64
-        assert "D1_DATE" in result["placeholder_summary"]["placeholders"]
+        assert "W1_D1_DATE" in result["placeholder_summary"]["placeholders"]
 
         templates = list_templates(db, user)
         assert len(templates) == 1
@@ -219,7 +267,7 @@ class TestTemplateManagement:
     def test_activate_deactivates_previous(self, tmp_path):
         db = make_db()
         user = make_user(db)
-        data = make_minimal_hwpx(["D1_DATE", "D1_LUNCH", "D1_DINNER", "D10_DATE", "D10_LUNCH", "D10_DINNER"])
+        data = make_minimal_hwpx(MEAL_PLAN_PLACEHOLDERS)
         with patch("app.routers.master_data.settings") as mock_settings:
             mock_settings.template_dir = tmp_path / "templates"
             file1 = self._make_upload_file(data, "v1.hwpx")
@@ -239,7 +287,7 @@ class TestTemplateManagement:
     def test_delete_active_template_blocked(self, tmp_path):
         db = make_db()
         user = make_user(db)
-        data = make_minimal_hwpx(["D1_DATE", "D1_LUNCH", "D1_DINNER", "D10_DATE", "D10_LUNCH", "D10_DINNER"])
+        data = make_minimal_hwpx(MEAL_PLAN_PLACEHOLDERS)
         with patch("app.routers.master_data.settings") as mock_settings:
             mock_settings.template_dir = tmp_path / "templates"
             file = self._make_upload_file(data)
@@ -253,7 +301,7 @@ class TestTemplateManagement:
     def test_delete_inactive_template(self, tmp_path):
         db = make_db()
         user = make_user(db)
-        data = make_minimal_hwpx(["D1_DATE", "D1_LUNCH", "D1_DINNER", "D10_DATE", "D10_LUNCH", "D10_DINNER"])
+        data = make_minimal_hwpx(MEAL_PLAN_PLACEHOLDERS)
         with patch("app.routers.master_data.settings") as mock_settings:
             mock_settings.template_dir = tmp_path / "templates"
             file = self._make_upload_file(data)
@@ -265,7 +313,7 @@ class TestTemplateManagement:
     def test_activate_validates_first(self, tmp_path):
         db = make_db()
         user = make_user(db)
-        data = make_minimal_hwpx(["D1_DATE", "D1_LUNCH", "D1_DINNER", "D10_DATE", "D10_LUNCH", "D10_DINNER"])
+        data = make_minimal_hwpx(MEAL_PLAN_PLACEHOLDERS)
         with patch("app.routers.master_data.settings") as mock_settings:
             mock_settings.template_dir = tmp_path / "templates"
             file = self._make_upload_file(data)
