@@ -13,7 +13,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .config import settings
 from .db import Base, SessionLocal, engine
 from .models import MealTypeSetting, User
-from .routers import auth, documents, master, master_data, setup, stats, templates, workspace
+from .routers import admin, auth, documents, master, master_data, orders, setup, statistics, stats, templates, users, workspace
 from .security import hash_password
 from .schema_upgrade import upgrade_existing_schema
 
@@ -28,9 +28,13 @@ app.include_router(setup.router)
 app.include_router(master.router)
 app.include_router(workspace.router)
 app.include_router(stats.router)
+app.include_router(statistics.router)
 app.include_router(templates.router)
 app.include_router(master_data.router)
 app.include_router(documents.router)
+app.include_router(users.router)
+app.include_router(admin.router)
+app.include_router(orders.router)
 
 
 @app.on_event("startup")
@@ -45,8 +49,11 @@ def startup() -> None:
                     username=settings.admin_username,
                     password_hash=hash_password(settings.admin_password),
                     display_name=settings.admin_display_name,
+                    role="admin",
                 )
             )
+        elif not user.role or user.role == "user":
+            user.role = "admin"
         defaults = [
             ("LUNCH", "중식", 400, time(11, 40), 1),
             ("DINNER", "석식", 100, time(17, 30), 2),
@@ -77,10 +84,24 @@ def login_page(request: Request):
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
-    if not request.session.get("user_id"):
+    user_id = request.session.get("user_id")
+    if not user_id:
         return RedirectResponse("/login", status_code=302)
-    return views.TemplateResponse(
-        request=request,
-        name="app.html",
-        context={"app_name": settings.app_name, "display_name": settings.admin_display_name},
-    )
+    db = SessionLocal()
+    try:
+        user = db.get(User, int(user_id))
+        if not user or not user.active:
+            request.session.clear()
+            return RedirectResponse("/login", status_code=302)
+        return views.TemplateResponse(
+            request=request,
+            name="app.html",
+            context={
+                "app_name": settings.app_name,
+                "display_name": user.display_name,
+                "role": user.role,
+                "must_change_password": user.must_change_password,
+            },
+        )
+    finally:
+        db.close()

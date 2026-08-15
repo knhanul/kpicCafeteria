@@ -12,9 +12,43 @@ def upgrade_existing_schema(engine: Engine) -> None:
     before the new multi-recipe model can be used.
     """
     inspector = inspect(engine)
+    dialect = engine.dialect.name
+
+    # --- User table migration (runs even if recipes table doesn't exist yet) ---
+    if "users" in inspector.get_table_names():
+        user_cols = {col["name"] for col in inspector.get_columns("users")}
+        user_additions_pg = {
+            "role": "VARCHAR(20) DEFAULT 'user'",
+            "must_change_password": "BOOLEAN DEFAULT FALSE",
+            "password_changed_at": "TIMESTAMPTZ",
+            "last_login_at": "TIMESTAMPTZ",
+            "updated_at": "TIMESTAMPTZ",
+        }
+        user_additions_sqlite = {
+            "role": "VARCHAR(20) DEFAULT 'user'",
+            "must_change_password": "BOOLEAN DEFAULT 0",
+            "password_changed_at": "DATETIME",
+            "last_login_at": "DATETIME",
+            "updated_at": "DATETIME",
+        }
+        additions = user_additions_pg if dialect == "postgresql" else user_additions_sqlite
+        with engine.begin() as connection:
+            for name, decl in additions.items():
+                if name not in user_cols:
+                    if dialect == "postgresql":
+                        connection.execute(text(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {name} {decl}"))
+                    else:
+                        connection.execute(text(f"ALTER TABLE users ADD COLUMN {name} {decl}"))
+            # Set role='admin' for existing users with no role (NULL or empty)
+            if dialect == "postgresql":
+                connection.execute(text("UPDATE users SET role = 'user' WHERE role IS NULL OR role = ''"))
+                connection.execute(text("UPDATE users SET must_change_password = FALSE WHERE must_change_password IS NULL"))
+            else:
+                connection.execute(text("UPDATE users SET role = 'user' WHERE role IS NULL OR role = ''"))
+                connection.execute(text("UPDATE users SET must_change_password = 0 WHERE must_change_password IS NULL"))
+
     if "recipes" not in inspector.get_table_names():
         return
-    dialect = engine.dialect.name
     with engine.begin() as connection:
         if dialect == "postgresql":
             connection.execute(text("ALTER TABLE recipes DROP CONSTRAINT IF EXISTS recipes_menu_id_key"))
@@ -77,6 +111,7 @@ def upgrade_existing_schema(engine: Engine) -> None:
                 msmi_cols = {col["name"]: col for col in inspector.get_columns("meal_service_menu_ingredients")}
                 if "source_row" in msmi_cols:
                     connection.execute(text("ALTER TABLE meal_service_menu_ingredients ALTER COLUMN source_row TYPE TEXT"))
+                connection.execute(text("CREATE INDEX IF NOT EXISTS ix_meal_service_menu_ingredients_ingredient_id ON meal_service_menu_ingredients(ingredient_id)"))
         elif dialect == "sqlite":
             # SQLite cannot drop the legacy UNIQUE(menu_id) constraint in place.
             # Fresh test databases work normally. Existing SQLite users should export,
@@ -135,3 +170,7 @@ def upgrade_existing_schema(engine: Engine) -> None:
                 ms_columns = {column["name"] for column in inspector.get_columns("meal_services")}
                 if "concept_title" not in ms_columns:
                     connection.execute(text("ALTER TABLE meal_services ADD COLUMN concept_title VARCHAR(80)"))
+
+            # --- meal_service_menu_ingredients.ingredient_id index (SQLite) ---
+            if "meal_service_menu_ingredients" in inspector.get_table_names():
+                connection.execute(text("CREATE INDEX IF NOT EXISTS ix_meal_service_menu_ingredients_ingredient_id ON meal_service_menu_ingredients(ingredient_id)"))

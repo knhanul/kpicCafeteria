@@ -33,7 +33,12 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(300))
     display_name: Mapped[str] = mapped_column(String(100), default="영양사")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    role: Mapped[str] = mapped_column(String(20), default="user")
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class MealTypeSetting(Base):
@@ -196,7 +201,9 @@ class MealServiceMenuIngredient(Base):
     meal_service_menu_id: Mapped[int] = mapped_column(
         ForeignKey("meal_service_menus.id", ondelete="CASCADE"), index=True
     )
-    ingredient_id: Mapped[int | None] = mapped_column(ForeignKey("ingredients.id", ondelete="SET NULL"), nullable=True)
+    ingredient_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ingredients.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     sort_order: Mapped[int] = mapped_column(Integer, default=1)
     ingredient_name_snapshot: Mapped[str] = mapped_column(String(200))
     quantity_total: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -301,3 +308,76 @@ class AuditLog(Base):
     entity_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class BackupRecord(Base):
+    __tablename__ = "backup_records"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    stored_filename: Mapped[str] = mapped_column(String(255))
+    file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    backup_type: Mapped[str] = mapped_column(String(20), default="manual")
+    status: Mapped[str] = mapped_column(String(30), default="completed")
+    checksum_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+
+class DataArchive(Base):
+    __tablename__ = "data_archives"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    stored_filename: Mapped[str] = mapped_column(String(255))
+    file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="completed")
+    date_from: Mapped[date | None] = mapped_column(Date, nullable=True)
+    date_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class OrderGroup(Base):
+    __tablename__ = "order_groups"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ingredient_id: Mapped[int | None] = mapped_column(ForeignKey("ingredients.id", ondelete="SET NULL"), nullable=True, index=True)
+    ingredient_name_snapshot: Mapped[str] = mapped_column(String(200))
+    order_quantity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    order_unit: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    order_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    total_required_quantity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    required_unit: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+
+class OrderItem(Base):
+    __tablename__ = "order_items"
+    __table_args__ = (
+        UniqueConstraint("service_date", "ingredient_id", name="uq_order_item_date_ingredient"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    service_date: Mapped[date] = mapped_column(Date, index=True)
+    ingredient_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ingredients.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    ingredient_name_snapshot: Mapped[str] = mapped_column(String(200))
+    required_quantity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    required_unit: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    order_quantity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    order_unit: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    order_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    order_group_id: Mapped[int | None] = mapped_column(
+        ForeignKey("order_groups.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    ingredient: Mapped[Ingredient | None] = relationship()
+    order_group: Mapped[OrderGroup | None] = relationship()

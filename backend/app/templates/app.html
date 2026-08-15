@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-<div id="app-shell" class="app-shell">
+<div id="app-shell" class="app-shell" data-must-change-password="{{ must_change_password }}">
   <aside class="sidebar" id="sidebar">
     <div class="brand">
       <img src="/static/assets/ci.png" alt="기관 로고">
@@ -15,19 +15,36 @@
     </div>
     <nav class="side-nav">
       <button data-view="workspace" class="active">주간 급식 운영</button>
+      <button data-view="orders">발주 관리</button>
       <button data-view="master">메뉴·재료 기준정보</button>
-      <button data-view="statistics">통계 보기</button>
+      <button data-view="dashboard">운영 대시보드</button>
+      <div class="side-nav-group">
+        <button type="button" class="side-nav-toggle" data-group="stats">통계 분석 <span class="group-caret">▾</span></button>
+        <div class="side-nav-sub">
+          <button data-view="stats-meals">식수 통계</button>
+          <button data-view="stats-menus">메뉴 통계</button>
+          <button data-view="stats-ingredients">식재료 통계</button>
+          <button data-view="stats-operations">운영 기록 통계</button>
+        </div>
+      </div>
     </nav>
     <div class="side-nav-divider"></div>
     <nav class="side-nav side-nav-sub">
       <button data-view="master-data">기본 데이터 관리</button>
+      {% if role == "admin" %}
+      <button data-view="users">사용자 관리</button>
+      <button data-view="backup">시스템 데이터 백업</button>
+      <button data-view="archive">Excel 데이터 아카이브</button>
+      {% endif %}
     </nav>
     <div class="sidebar-spacer"></div>
     <div class="sidebar-user">
       <span>👤 {{ display_name }}</span>
-      <button id="logout-button" class="ghost-button">로그아웃</button>
+      <div class="sidebar-user-actions">
+        <button id="change-password-button" class="ghost-button">비밀번호 변경</button>
+        <button id="logout-button" class="ghost-button">로그아웃</button>
+      </div>
     </div>
-    <div class="sidebar-foot">제약보다 정보 제공과 복구 중심</div>
   </aside>
 
   <section class="main-area">
@@ -72,6 +89,29 @@
       </div>
     </main>
 
+    <main id="view-orders" class="view">
+      <div class="page-card">
+        <div class="section-heading"><div><h2>발주 관리</h2><p>식단에 포함된 재료의 필요량을 자동으로 확인하고 발주량·발주일·배송일을 관리합니다. 필요량은 식단 기준으로 자동 계산되며, 발주량은 실제 주문 상황에 맞게 수정할 수 있습니다.</p></div></div>
+        <div class="orders-toolbar">
+          <label class="field">시작일<input type="date" id="orders-date-from"></label>
+          <label class="field">종료일<input type="date" id="orders-date-to"></label>
+          <button class="primary-button" id="orders-query-btn">조회</button>
+          <span class="orders-period-label" id="orders-period-label"></span>
+          <span class="orders-save-state" id="orders-save-state"></span>
+        </div>
+        <div class="orders-toolbar orders-toolbar-row2">
+          <div class="mode-tabs" id="orders-view-tabs">
+            <button data-order-view="ingredient" class="active">재료별</button>
+            <button data-order-view="date">사용일별</button>
+          </div>
+          <label class="field orders-status-filter">상태<select id="orders-status-filter"><option value="">전체</option><option value="pending">미처리</option><option value="ordered">발주완료</option><option value="skipped">발주안함</option></select></label>
+          <input id="orders-search" placeholder="재료명 검색">
+        </div>
+        <div id="orders-bulk-bar" class="orders-bulk-bar hidden"></div>
+        <div id="orders-root"></div>
+      </div>
+    </main>
+
     <main id="view-master" class="view">
       <div class="page-card">
         <div class="section-heading"><div><h2>메뉴·재료 기준정보</h2><p>목록과 편집 패널을 한 화면에서 사용합니다. 메뉴에는 재료 구성이 다른 여러 레시피를 등록할 수 있습니다.</p></div></div>
@@ -88,17 +128,69 @@
       </div>
     </main>
 
-    <main id="view-statistics" class="view">
+    <main id="view-dashboard" class="view">
       <div class="page-card">
-        <div class="section-heading"><div><h2>식단 구성 대시보드</h2><p>식단 작성 화면과 분리하여 메뉴 반복, 단백질원, 재료 구성과 실제 식수 결과를 확인합니다.</p></div></div>
-        <div class="dashboard-toolbar">
-          <label>시작일 <input id="stats-start" type="date"></label>
-          <label>종료일 <input id="stats-end" type="date"></label>
-          <button id="stats-this-week" class="ghost-button">이번 주</button>
-          <button id="stats-four-weeks" class="ghost-button">최근 4주</button>
-          <button id="stats-search" class="primary-button">통계 조회</button>
+        <div class="section-heading"><div><h2>운영 대시보드</h2><p>이번 달 급식 운영 상태를 한눈에 확인합니다.</p></div></div>
+        <div id="dashboard-root"></div>
+      </div>
+    </main>
+
+    <main id="view-stats-meals" class="view">
+      <div class="page-card">
+        <div class="section-heading"><div><h2>식수 통계</h2><p>계획·실제 식수와 편차를 분석합니다.</p></div></div>
+        <div id="stats-meals-root"></div>
+      </div>
+    </main>
+
+    <main id="view-stats-menus" class="view">
+      <div class="page-card">
+        <div class="section-heading"><div><h2>메뉴 통계</h2><p>메뉴 사용 횟수와 반복·미사용 메뉴를 분석합니다.</p></div></div>
+        <div id="stats-menus-root"></div>
+      </div>
+    </main>
+
+    <main id="view-stats-ingredients" class="view">
+      <div class="page-card">
+        <div class="section-heading"><div><h2>식재료 통계</h2><p>재료군·개별 재료의 사용량을 분석합니다.</p></div></div>
+        <div id="stats-ingredients-root"></div>
+      </div>
+    </main>
+
+    <main id="view-stats-operations" class="view">
+      <div class="page-card">
+        <div class="section-heading"><div><h2>운영 기록 통계</h2><p>식단 작성·조리지시서·보존식·실제 식수 완료율을 확인합니다.</p></div></div>
+        <div id="stats-operations-root"></div>
+      </div>
+    </main>
+
+    <main id="view-users" class="view">
+      <div class="page-card">
+        <div class="section-heading"><div><h2>사용자 관리</h2><p>사용자 계정을 등록하고 권한과 상태를 관리합니다.</p></div></div>
+        <div id="users-root"></div>
+      </div>
+    </main>
+
+    <main id="view-backup" class="view">
+      <div class="page-card">
+        <div class="section-heading">
+          <div><h2>시스템 데이터 백업</h2><p>현재 구내식당 시스템의 모든 업무 데이터를 백업파일로 저장합니다. 문제가 발생했을 때 시스템 데이터를 복구하는 데 사용할 수 있으므로 정기적으로 별도 저장장치에 보관하는 것을 권장합니다.</p></div>
+          <button class="primary-button" id="create-backup-btn">지금 백업</button>
         </div>
-        <div id="statistics-content"></div>
+        <div id="backup-root"></div>
+      </div>
+    </main>
+
+    <main id="view-archive" class="view">
+      <div class="page-card">
+        <div class="section-heading">
+          <div><h2>Excel 데이터 아카이브</h2><p>식단, 조리지시, 보존식 및 기준정보를 Excel 파일로 저장합니다. Excel에서 직접 내용을 확인할 수 있으며 장기보관용 자료로 사용할 수 있습니다. 이 파일은 시스템에 직접 복구하는 백업파일은 아닙니다.</p></div>
+          <div class="archive-controls">
+            <label class="field">시작일<input type="date" id="archive-date-from"></label>
+            <label class="field">종료일<input type="date" id="archive-date-to"></label>
+            <button class="primary-button" id="create-archive-btn">Excel 아카이브 생성</button>
+          </div>
+        </div>
+        <div id="archive-root"></div>
       </div>
     </main>
   </section>

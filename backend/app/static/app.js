@@ -12,6 +12,7 @@ const state = {
   documentPreview: null,
   masterMenuQuery: '', masterMenuOffset: 0, masterMenuHasMore: false, masterMenuLoading: false,
   masterIngredientQuery: '', masterIngredientOffset: 0, masterIngredientHasMore: false, masterIngredientLoading: false,
+  ordersItems: [], ordersView: 'ingredient', ordersSelection: new Set(), ordersExpanded: new Set(),
 };
 
 const $ = (selector, root=document) => root.querySelector(selector);
@@ -295,12 +296,14 @@ function createTimeInput24({value, onChange, stepMinutes=5, disabled=false, requ
 async function init() {
   state.codes = await api('/api/master/codes');
   bindGlobal();
+  const mustChange = $('#app-shell')?.dataset.mustChangePassword === 'True' || $('#app-shell')?.dataset.mustChangePassword === 'true';
+  if (mustChange) { openChangePasswordModal(true); return; }
   switchView(state.view);
   await loadWorkspace();
 }
 
 function bindGlobal() {
-  $$('.side-nav button').forEach(button=>button.addEventListener('click',()=>switchView(button.dataset.view)));
+  $$('.side-nav button[data-view]').forEach(button=>button.addEventListener('click',()=>switchView(button.dataset.view)));
   $$('.mode-tabs button').forEach(button=>button.addEventListener('click',()=>setMode(button.dataset.mode)));
   $$('.master-tabs:not(.md-tabs) button').forEach(button=>button.addEventListener('click',()=>{state.masterTab=button.dataset.master;state.masterSelectionId=null;state.selectedRecipeId=null; $$('.master-tabs:not(.md-tabs) button').forEach(x=>x.classList.toggle('active',x===button)); loadMaster();}));
   $$('#master-data-tabs button').forEach(button=>button.addEventListener('click',()=>{state.masterDataTab=button.dataset.mdTab;state.masterDataSelectionId=null;$$('#master-data-tabs button').forEach(x=>x.classList.toggle('active',x===button));loadMasterData();}));
@@ -310,9 +313,15 @@ function bindGlobal() {
   $('#focus-toggle').addEventListener('click',()=>toggleFocus(true)); $('#focus-exit').addEventListener('click',()=>toggleFocus(false));
   $('#document-preview').addEventListener('click',previewCurrentDocument);
   $('#logout-button').addEventListener('click',async()=>{await api('/api/auth/logout',{method:'POST'});location.href='/login';});
-  $('#stats-search').addEventListener('click',loadDashboardStats);
-  $('#stats-this-week').addEventListener('click',()=>setStatsRange(7));
-  $('#stats-four-weeks').addEventListener('click',()=>setStatsRange(28));
+  $('#change-password-button')?.addEventListener('click',()=>openChangePasswordModal(false));
+  $('#create-backup-btn')?.addEventListener('click',createBackup);
+  $('#create-archive-btn')?.addEventListener('click',createArchive);
+  $('#orders-query-btn')?.addEventListener('click',loadOrders);
+  $$('#orders-view-tabs button').forEach(button=>button.addEventListener('click',()=>{state.ordersView=button.dataset.orderView;$$('#orders-view-tabs button').forEach(x=>x.classList.toggle('active',x===button));renderOrders();}));
+  $('#orders-status-filter')?.addEventListener('change',renderOrders);
+  const ordersSearch=$('#orders-search');
+  if(ordersSearch){let composing=false;ordersSearch.addEventListener('compositionstart',()=>{composing=true;});ordersSearch.addEventListener('compositionend',e=>{composing=false;renderOrders();});ordersSearch.addEventListener('input',()=>{if(!composing)renderOrders();});}
+  $$('.side-nav-toggle').forEach(btn=>btn.addEventListener('click',toggleStatsGroup));
   document.addEventListener('keydown',event=>{
     if(event.key==='Escape' && state.focus) toggleFocus(false);
     if(event.altKey && event.key==='ArrowLeft'){event.preventDefault();moveWeek(-1);}
@@ -323,11 +332,24 @@ function bindGlobal() {
 function switchView(view) {
   state.view=view; $$('.view').forEach(x=>x.classList.toggle('active',x.id===`view-${view}`));
   $$('.side-nav button').forEach(x=>x.classList.toggle('active',x.dataset.view===view));
-  const titles={workspace:'',master:'메뉴·재료 기준정보','master-data':'기본 데이터 관리',statistics:'통계 보기'};
+  const titles={workspace:'',orders:'발주 관리',master:'메뉴·재료 기준정보',dashboard:'운영 대시보드','master-data':'기본 데이터 관리','stats-meals':'식수 통계','stats-menus':'메뉴 통계','stats-ingredients':'식재료 통계','stats-operations':'운영 기록 통계','users':'사용자 관리','backup':'시스템 데이터 백업','archive':'Excel 데이터 아카이브'};
   $('#page-title').textContent=titles[view]||'';
   $('#top-header').classList.toggle('hidden', view==='workspace');
-  if(view==='master') loadMaster(); if(view==='master-data') loadMasterData(); if(view==='statistics') initStatsDashboard();
+  if(view==='orders') initOrders();
+  if(view==='master') loadMaster();
+  if(view==='master-data') loadMasterData();
+  if(view==='dashboard') initDashboard();
+  if(view==='stats-meals') initStatsPage('meals');
+  if(view==='stats-menus') initStatsPage('menus');
+  if(view==='stats-ingredients') initStatsPage('ingredients');
+  if(view==='stats-operations') initStatsPage('operations');
+  if(view==='users') initUsers();
+  if(view==='backup') initBackup();
+  if(view==='archive') initArchive();
+  if(view.startsWith('stats-')) expandStatsGroup();
 }
+function toggleStatsGroup(e){ const group=e.currentTarget.closest('.side-nav-group'); if(group) group.classList.toggle('collapsed'); }
+function expandStatsGroup(){ const group=$('.side-nav-group[data-group="stats"]'); if(group) group.classList.remove('collapsed'); }
 
 function setMode(mode) {
   state.mode=mode; $$('.mode-tabs button').forEach(x=>x.classList.toggle('active',x.dataset.mode===mode));
@@ -1225,6 +1247,599 @@ function renderFullStatistics(){
     </div>`;
 }
 
+/* ---------- 통계 공통 컴포넌트 (Phase 1) ---------- */
+const PERIOD_PRESETS = {
+  'this-month': { label: '이번 달' },
+  '3m': { label: '최근 3개월' },
+  '6m': { label: '최근 6개월' },
+  '12m': { label: '최근 12개월' },
+  'year': { label: '올해' },
+  'custom': { label: '직접 선택' },
+};
+function periodRange(preset, ref=new Date()) {
+  const end = new Date(ref); end.setHours(12,0,0,0);
+  let start;
+  if (preset === 'this-month') start = new Date(end.getFullYear(), end.getMonth(), 1);
+  else if (preset === 'year') start = new Date(end.getFullYear(), 0, 1);
+  else if (preset === 'custom') return null;
+  else { const months = { '3m':3, '6m':6, '12m':12 }[preset] || 3; start = new Date(end.getFullYear(), end.getMonth()-months+1, 1); }
+  return { start: isoDate(start), end: isoDate(end) };
+}
+function renderPeriodSelector(container, { preset='6m', onApply }) {
+  container.innerHTML = `<div class="period-selector">
+    <div class="period-presets">${Object.entries(PERIOD_PRESETS).map(([key,p])=>`<button type="button" class="period-preset${key===preset?' active':''}" data-preset="${key}">${p.label}</button>`).join('')}</div>
+    <div class="period-custom${preset==='custom'?'':' hidden'}"><label>시작일 <input type="date" id="period-start"></label><label>종료일 <input type="date" id="period-end"></label><button type="button" class="primary-button" id="period-apply">조회</button></div>
+  </div>`;
+  const apply = (key) => {
+    if (key === 'custom') { container.querySelector('.period-custom').classList.remove('hidden'); return; }
+    container.querySelector('.period-custom').classList.add('hidden');
+    $$('.period-preset', container).forEach(b=>b.classList.toggle('active', b.dataset.preset===key));
+    const range = periodRange(key);
+    if (range) onApply(range.start, range.end, key);
+  };
+  $$('.period-preset', container).forEach(b=>b.addEventListener('click', ()=>apply(b.dataset.preset)));
+  $('#period-apply', container)?.addEventListener('click', ()=>{
+    const start = $('#period-start', container).value, end = $('#period-end', container).value;
+    if (!start || !end) { toast('기간을 입력해 주세요.', true); return; }
+    onApply(start, end, 'custom');
+  });
+}
+function kpiCard({label, value, sub='', hint='', tone=''}) {
+  return `<div class="kpi-card${tone?` tone-${tone}`:''}"><span class="kpi-label">${label}</span><strong class="kpi-value">${value}</strong>${sub?`<span class="kpi-sub">${sub}</span>`:''}${hint?`<small class="kpi-hint">${hint}</small>`:''}</div>`;
+}
+function chartContainer({title, subtitle='', id='', actions='', body='', empty='데이터가 없습니다.'}) {
+  return `<section class="chart-container"${id?` id="${id}"`:''}><header class="chart-head"><div><h3>${title}</h3>${subtitle?`<p>${subtitle}</p>`:''}</div>${actions?`<div class="chart-actions">${actions}</div>`:''}</header><div class="chart-body">${body||`<div class="stats-empty">${empty}</div>`}</div></section>`;
+}
+function openDetailDrawer({title, subtitle='', body='', footer=''}) {
+  closeDetailDrawer();
+  const backdrop = document.createElement('div');
+  backdrop.className = 'detail-drawer-backdrop';
+  backdrop.innerHTML = `<aside class="detail-drawer" role="dialog" aria-label="${escapeHtml(title)}">
+    <header class="drawer-head"><div><h3>${escapeHtml(title)}</h3>${subtitle?`<small>${escapeHtml(subtitle)}</small>`:''}</div><button type="button" class="icon-button" id="drawer-close" aria-label="닫기">×</button></header>
+    <div class="drawer-body">${body}</div>
+    ${footer?`<footer class="drawer-foot">${footer}</footer>`:''}
+  </aside>`;
+  document.body.append(backdrop);
+  backdrop.addEventListener('click', e=>{ if (e.target === backdrop) closeDetailDrawer(); });
+  $('#drawer-close', backdrop).addEventListener('click', closeDetailDrawer);
+  requestAnimationFrame(()=>backdrop.classList.add('open'));
+}
+function closeDetailDrawer() { $$('.detail-drawer-backdrop').forEach(x=>x.remove()); }
+function downloadCsv(rows, cols, filename) {
+  const header = cols.map(c=>`"${String(c.label).replace(/"/g,'""')}"`).join(',');
+  const lines = rows.map(r=>cols.map(c=>{ const v = c.render ? c.render(r[c.key], r) : r[c.key]; return `"${String(v ?? '').replace(/"/g,'""')}"`; }).join(','));
+  const csv = '\uFEFF' + [header, ...lines].join('\r\n');
+  triggerDownload(new Blob([csv], {type:'text/csv;charset=utf-8;'}), `${filename}.csv`);
+}
+function renderStatisticsDataTable(container, {columns, rows, pageSize=10, filename='statistics'}) {
+  const st = { q:'', sortKey:null, sortDir:1, page:0, pageSize, hidden:new Set() };
+  const filtered = () => {
+    let list = rows.slice();
+    if (st.q) { const t = st.q.toLowerCase(); list = list.filter(r=>columns.some(c=>!st.hidden.has(c.key) && String(r[c.key] ?? '').toLowerCase().includes(t))); }
+    if (st.sortKey) { const k = st.sortKey; list.sort((a,b)=>{ const av=a[k] ?? '', bv=b[k] ?? ''; const cmp = (typeof av==='number' && typeof bv==='number') ? av-bv : String(av).localeCompare(String(bv), 'ko'); return cmp * st.sortDir; }); }
+    return list;
+  };
+  const updateTable = () => {
+    const list = filtered();
+    const pages = Math.max(1, Math.ceil(list.length / st.pageSize));
+    st.page = Math.min(st.page, pages - 1);
+    const slice = list.slice(st.page * st.pageSize, (st.page + 1) * st.pageSize);
+    const visibleCols = columns.filter(c=>!st.hidden.has(c.key));
+    const tableWrap = $('.stats-table-wrap', container);
+    const footWrap = $('.stats-table-foot', container);
+    if (tableWrap) tableWrap.innerHTML = `<table class="data-table stats-table"><thead><tr>${visibleCols.map(c=>`<th data-sort="${c.key}" class="${c.sortable===false?'':'sortable'}">${c.label}${st.sortKey===c.key?(st.sortDir>0?' ▲':' ▼'):''}</th>`).join('')}</tr></thead><tbody>${slice.length ? slice.map(r=>`<tr>${visibleCols.map(c=>`<td>${c.render ? c.render(r[c.key], r) : (r[c.key] ?? '-')}</td>`).join('')}</tr>`).join('') : `<tr><td colspan="${visibleCols.length}" class="stats-empty">데이터가 없습니다.</td></tr>`}</tbody></table>`;
+    if (footWrap) footWrap.innerHTML = `<span>총 ${list.length}건</span><div class="stats-pager"><button type="button" class="ghost-button" id="stats-page-prev" ${st.page===0?'disabled':''}>‹</button><span>${st.page+1} / ${pages}</span><button type="button" class="ghost-button" id="stats-page-next" ${st.page>=pages-1?'disabled':''}>›</button></div>`;
+    $('#stats-page-prev', container)?.addEventListener('click', ()=>{ st.page--; updateTable(); });
+    $('#stats-page-next', container)?.addEventListener('click', ()=>{ st.page++; updateTable(); });
+    $$('.stats-table th.sortable', container).forEach(th=>th.addEventListener('click', ()=>{
+      const key = th.dataset.sort;
+      if (st.sortKey === key) st.sortDir *= -1; else { st.sortKey = key; st.sortDir = 1; }
+      st.page = 0; updateTable();
+    }));
+    st._lastList = list;
+    st._lastVisibleCols = visibleCols;
+  };
+  const initRender = () => {
+    const visibleCols = columns.filter(c=>!st.hidden.has(c.key));
+    container.innerHTML = `<div class="stats-table-toolbar">
+      <input type="search" id="stats-table-search" placeholder="검색" value="${escapeHtml(st.q)}">
+      <div class="stats-table-actions">
+        <div class="stats-columns-wrap"><button type="button" class="ghost-button" id="stats-table-cols-btn">열 선택</button><div class="stats-columns-pop hidden" id="stats-table-cols-pop">${columns.map(c=>`<label><input type="checkbox" data-col="${c.key}" ${st.hidden.has(c.key)?'':'checked'}> ${c.label}</label>`).join('')}</div></div>
+        <select id="stats-table-size"><option value="10" ${st.pageSize===10?'selected':''}>10개</option><option value="25" ${st.pageSize===25?'selected':''}>25개</option><option value="50" ${st.pageSize===50?'selected':''}>50개</option></select>
+        <button type="button" class="ghost-button" id="stats-table-csv">CSV 다운로드</button>
+      </div>
+    </div>
+    <div class="stats-table-wrap"></div>
+    <div class="stats-table-foot"></div>`;
+    const si = $('#stats-table-search', container);
+    let composing = false;
+    si.addEventListener('compositionstart', () => { composing = true; });
+    si.addEventListener('compositionend', e => { composing = false; st.q = e.target.value; st.page = 0; updateTable(); });
+    si.addEventListener('input', e => { if (composing) return; st.q = e.target.value; st.page = 0; updateTable(); });
+    $('#stats-table-csv', container).addEventListener('click', ()=>downloadCsv(st._lastList || filtered(), st._lastVisibleCols || columns.filter(c=>!st.hidden.has(c.key)), filename));
+    $('#stats-table-size', container).addEventListener('change', e=>{ st.pageSize = Number(e.target.value); st.page = 0; updateTable(); });
+    const colsBtn = $('#stats-table-cols-btn', container), colsPop = $('#stats-table-cols-pop', container);
+    colsBtn.addEventListener('click', e=>{ e.stopPropagation(); colsPop.classList.toggle('hidden'); });
+    $$('#stats-table-cols-pop input[type="checkbox"]', container).forEach(cb=>cb.addEventListener('change', ()=>{
+      const key = cb.dataset.col;
+      if (cb.checked) st.hidden.delete(key); else st.hidden.add(key);
+      st.page = 0; updateTable();
+    }));
+    updateTable();
+  };
+  initRender();
+}
+async function initDashboard() {
+  const root = $('#dashboard-root'); if (!root) return;
+  root.innerHTML = `<div id="dashboard-period"></div><div class="stats-meal-type"><button type="button" data-meal="all" class="active">전체</button><button type="button" data-meal="lunch">중식</button><button type="button" data-meal="dinner">석식</button></div><div id="dashboard-content"><div class="empty-editor">불러오는 중입니다.</div></div>`;
+  const periodRoot = $('#dashboard-period'), content = $('#dashboard-content');
+  const current = { start: null, end: null, mealType: 'all' };
+  const load = async () => {
+    if (!current.start || !current.end) return;
+    content.innerHTML = '<div class="empty-editor">통계를 계산하고 있습니다.</div>';
+    try {
+      const data = await api(`/api/statistics/dashboard?start_date=${current.start}&end_date=${current.end}&meal_type=${current.mealType}`);
+      renderDashboard(content, data, current);
+    } catch (e) { content.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`; }
+  };
+  renderPeriodSelector(periodRoot, { preset: 'this-month', onApply: (start, end, preset) => { current.start = start; current.end = end; load(); } });
+  $$('.stats-meal-type button', root).forEach(btn => btn.addEventListener('click', () => {
+    current.mealType = btn.dataset.meal;
+    $$('.stats-meal-type button', root).forEach(x => x.classList.toggle('active', x === btn));
+    load();
+  }));
+  const range = periodRange('this-month');
+  if (range) { current.start = range.start; current.end = range.end; load(); }
+}
+function renderDashboard(root, data, current) {
+  const k = data.kpis;
+  const tone = (rate) => rate === null ? '' : (Math.abs(rate) >= 15 ? 'danger' : (Math.abs(rate) >= 10 ? 'warn' : ''));
+  const kpis = [
+    kpiCard({ label: '운영일수', value: `${k.operating_days}일`, sub: `${data.start_date} ~ ${data.end_date}` }),
+  ];
+  if (current.mealType === 'all' || current.mealType === 'lunch') {
+    const b = k.lunch;
+    kpis.push(kpiCard({ label: '중식 실제 식수', value: b && b.actual_sum !== null ? `${numberText(b.actual_sum)}명` : '-', sub: b ? `계획 ${numberText(b.planned_sum)}명${b.deviation_rate !== null ? ` · ${b.deviation_rate > 0 ? '+' : ''}${b.deviation_rate}%` : ''}` : '', hint: b ? `입력률 ${b.input_rate ?? '-'}%` : '', tone: b ? tone(b.deviation_rate) : '' }));
+  }
+  if (current.mealType === 'all' || current.mealType === 'dinner') {
+    const b = k.dinner;
+    kpis.push(kpiCard({ label: '석식 실제 식수', value: b && b.actual_sum !== null ? `${numberText(b.actual_sum)}명` : '-', sub: b ? `계획 ${numberText(b.planned_sum)}명${b.deviation_rate !== null ? ` · ${b.deviation_rate > 0 ? '+' : ''}${b.deviation_rate}%` : ''}` : '', hint: b ? `입력률 ${b.input_rate ?? '-'}%` : '', tone: b ? tone(b.deviation_rate) : '' }));
+  }
+  kpis.push(kpiCard({ label: '사용 메뉴', value: `${k.unique_menu_count}종`, sub: '기간 내 고유 메뉴' }));
+  const maxVal = Math.max(1, ...data.trend.map(m => Math.max(m.planned, m.actual)));
+  const trendBars = data.trend.map(m => `<div class="trend-month"><div class="trend-bars"><div class="trend-bar planned" title="계획 ${numberText(m.planned)}명" style="height:${m.planned / maxVal * 100}%"></div><div class="trend-bar actual" title="실제 ${numberText(m.actual)}명" style="height:${m.actual / maxVal * 100}%"></div></div><span class="trend-label">${m.month.slice(5)}</span></div>`).join('');
+  const trendHtml = `<div class="trend-chart">${trendBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div><div class="trend-legend"><span><i class="planned"></i>계획</span><span><i class="actual"></i>실제</span></div>`;
+  const a = data.anomalies;
+  const mealAnomalyHtml = a.meal.length ? a.meal.slice(0, 5).map(x => `<button type="button" class="anomaly-item" data-anomaly-type="meal" data-anomaly="${x.date}|${x.meal_type_name}"><div class="anomaly-top"><span class="anomaly-date">${x.date} ${x.meal_type_name}</span><span class="anomaly-badge level-${x.level === '중요' ? 'important' : 'check'}">${x.level}</span></div><div class="anomaly-meta">${x.type} · 계획 ${numberText(x.planned_count)}명 → 실제 ${numberText(x.actual_count)}명${x.deviation_rate !== null ? ` · 계획 대비 ${x.deviation_rate > 0 ? '+' : ''}${x.deviation_rate}%` : ''}</div></button>`).join('') : '<div class="stats-empty">식수 이상이 없습니다.</div>';
+  const repeatHtml = a.menu_repeats.length ? a.menu_repeats.map(x => `<div class="anomaly-item static"><div class="anomaly-top"><span class="anomaly-date">${escapeHtml(x.menu_name)}</span><span class="anomaly-badge level-check">${x.type}</span></div><div class="anomaly-meta">${x.window_days}일 내 ${x.count}회 사용</div></div>`).join('') : '<div class="stats-empty">반복 메뉴가 없습니다.</div>';
+  const ingHtml = a.ingredient_changes.length ? a.ingredient_changes.map(x => `<div class="anomaly-item static"><div class="anomaly-top"><span class="anomaly-date">${escapeHtml(x.group)}</span><span class="anomaly-badge level-${x.level === '중요' ? 'important' : 'check'}">${x.level}</span></div><div class="anomaly-meta">${x.current_kg}kg · 전월 대비 ${x.rate > 0 ? '+' : ''}${x.rate}%</div></div>`).join('') : '<div class="stats-empty">사용량 변화가 없습니다.</div>';
+  const gapHtml = a.record_gaps.length ? a.record_gaps.slice(0, 5).map(x => `<div class="anomaly-item static"><div class="anomaly-top"><span class="anomaly-date">${x.date} ${x.meal_type_name}</span><span class="anomaly-badge level-important">누락</span></div><div class="anomaly-meta">${x.type}</div></div>`).join('') : '<div class="stats-empty">기록 누락이 없습니다.</div>';
+  const menuMax = Math.max(1, ...data.menu_usage.map(x => x.count));
+  const menuBars = data.menu_usage.map(x => `<div class="stat-line"><span>${escapeHtml(x.menu_name)}</span><strong>${x.count}회</strong></div><div class="bar"><span style="width:${x.count / menuMax * 100}%"></span></div>`).join('');
+  const repeatBars = data.repeated_menus.map(x => `<div class="stat-line"><span>${escapeHtml(x.menu_name)}</span><strong>기간 ${x.period_count}회 · 이전 ${x.previous_4_weeks}회</strong></div>`).join('');
+  const groupMax = Math.max(1, ...data.ingredient_groups.map(x => x.usage_rows));
+  const groupBars = data.ingredient_groups.map(x => `<div class="stat-line"><span>${escapeHtml(x.group)}</span><strong>${x.usage_rows}건 · ${x.estimated_kg}kg</strong></div><div class="bar"><span style="width:${x.usage_rows / groupMax * 100}%"></span></div>`).join('');
+  const workflowRows = [['조리지시서 출력', data.workflow.cooking_output], ['보존식 기록 완료', data.workflow.preservation_completed], ['실제 식수 입력', data.workflow.actual_recorded]].map(([label, count]) => `<div class="stat-line"><span>${label}</span><strong>${count}건</strong></div>`).join('');
+  root.innerHTML = `
+    <div class="kpi-grid">${kpis.join('')}</div>
+    <div class="chart-grid">
+      ${chartContainer({ title: '월별 계획 식수 / 실제 식수 추세', subtitle: '최근 12개월', body: trendHtml })}
+      ${chartContainer({ title: '확인할 특이점', subtitle: '식수 이상 · 메뉴 반복 · 사용량 변화 · 기록 누락', body: `<div class="anomaly-groups"><div class="anomaly-group"><h4>식수 이상</h4>${mealAnomalyHtml}</div><div class="anomaly-group"><h4>메뉴 반복</h4>${repeatHtml}</div><div class="anomaly-group"><h4>사용량 변화</h4>${ingHtml}</div><div class="anomaly-group"><h4>기록 누락</h4>${gapHtml}</div></div>` })}
+      ${chartContainer({ title: '메뉴 사용 현황', subtitle: 'TOP 5', body: `<div class="stat-list">${menuBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>`, actions: `<button type="button" class="link-button" id="dashboard-menu-detail">상세 보기</button>` })}
+      ${chartContainer({ title: '최근 반복 메뉴', subtitle: '기간/직전 4주 사용 이력', body: `<div class="stat-list">${repeatBars || '<div class="stats-empty">반복 메뉴가 없습니다.</div>'}</div>` })}
+      ${chartContainer({ title: '식재료 사용 현황', subtitle: '주요 재료군', body: `<div class="stat-list">${groupBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
+      ${chartContainer({ title: '업무 기록 현황', subtitle: '완료 현황', body: `<div class="stat-list">${workflowRows}</div>` })}
+    </div>`;
+  $$('[data-anomaly-type="meal"]', root).forEach(btn => btn.addEventListener('click', () => {
+    const [date, mealName] = btn.dataset.anomaly.split('|');
+    openDetailDrawer({ title: '식수 이상 상세', subtitle: `${date} ${mealName}`, body: '<div id="drawer-backdata"></div>', footer: '<button type="button" class="primary-button" id="drawer-close-btn">닫기</button>' });
+    renderStatisticsDataTable($('#drawer-backdata'), { columns: [
+      { key: 'date', label: '날짜' },
+      { key: 'meal_type_name', label: '구분' },
+      { key: 'planned_count', label: '계획', render: v => numberText(v) },
+      { key: 'actual_count', label: '실제', render: v => v === null ? '-' : numberText(v) },
+      { key: 'deviation_rate', label: '편차율', render: v => v === null ? '계산 불가' : `${v > 0 ? '+' : ''}${v}%` },
+      { key: 'usual_median', label: '평소 중앙값', render: v => v === null ? '비교 데이터 부족' : numberText(v) },
+      { key: 'usual_deviation_rate', label: '평소 대비', render: (v, r) => r.usual_median === null ? '-' : `${v > 0 ? '+' : ''}${v}%` },
+    ], rows: data.anomalies.meal.filter(x => x.date === date && x.meal_type_name === mealName), pageSize: 10, filename: 'dashboard_meal_anomaly' });
+    $('#drawer-close-btn').addEventListener('click', closeDetailDrawer);
+  }));
+  $('#dashboard-menu-detail', root)?.addEventListener('click', () => {
+    openDetailDrawer({ title: '메뉴 사용 현황', subtitle: `${data.start_date} ~ ${data.end_date}`, body: '<div id="drawer-backdata"></div>', footer: '<button type="button" class="primary-button" id="drawer-close-btn">닫기</button>' });
+    renderStatisticsDataTable($('#drawer-backdata'), { columns: [
+      { key: 'menu_name', label: '메뉴명' },
+      { key: 'count', label: '사용 횟수' },
+    ], rows: data.menu_usage, pageSize: 10, filename: 'menu_usage' });
+    $('#drawer-close-btn').addEventListener('click', closeDetailDrawer);
+  });
+}
+function initStatsPage(key) {
+  if (key === 'meals') { initMealsStats(); return; }
+  if (key === 'menus') { initMenusStats(); return; }
+  if (key === 'ingredients') { initIngredientsStats(); return; }
+  if (key === 'operations') { initOperationsStats(); return; }
+}
+async function initMealsStats() {
+  const root = $('#stats-meals-root'); if (!root) return;
+  root.innerHTML = `<div id="stats-meals-period"></div><div class="stats-meal-type"><button type="button" data-meal="all" class="active">전체</button><button type="button" data-meal="lunch">중식</button><button type="button" data-meal="dinner">석식</button></div><div id="stats-meals-content"><div class="empty-editor">불러오는 중입니다.</div></div>`;
+  const periodRoot = $('#stats-meals-period'), content = $('#stats-meals-content');
+  const current = { start: null, end: null, mealType: 'all' };
+  const load = async () => {
+    if (!current.start || !current.end) return;
+    content.innerHTML = '<div class="empty-editor">통계를 계산하고 있습니다.</div>';
+    try {
+      const [data, trend] = await Promise.all([
+        api(`/api/statistics/meals?start_date=${current.start}&end_date=${current.end}&meal_type=${current.mealType}`),
+        api(`/api/statistics/meals/trend?start_date=${current.start}&end_date=${current.end}&meal_type=${current.mealType}`),
+      ]);
+      renderMealsStats(content, data, trend, current);
+    } catch (e) { content.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`; }
+  };
+  renderPeriodSelector(periodRoot, { preset: '6m', onApply: (start, end, preset) => { current.start = start; current.end = end; load(); } });
+  $$('.stats-meal-type button', root).forEach(btn => btn.addEventListener('click', () => {
+    current.mealType = btn.dataset.meal;
+    $$('.stats-meal-type button', root).forEach(x => x.classList.toggle('active', x === btn));
+    load();
+  }));
+  const range = periodRange('6m');
+  if (range) { current.start = range.start; current.end = range.end; load(); }
+}
+function renderMealsStats(root, data, trend, current) {
+  const s = data.summary;
+  const tone = (rate) => rate === null ? '' : (Math.abs(rate) >= 15 ? 'danger' : (Math.abs(rate) >= 10 ? 'warn' : ''));
+  const kpis = [
+    kpiCard({ label: '계획 식수 합계', value: `${numberText(s.planned_sum)}명`, sub: `운영일 ${s.service_count}일` }),
+    kpiCard({ label: '실제 식수 합계', value: s.actual_sum === null ? '-' : `${numberText(s.actual_sum)}명`, sub: `입력 ${s.input_count}일`, hint: s.input_rate !== null ? `입력률 ${s.input_rate}%` : '입력 데이터 없음' }),
+    kpiCard({ label: '계획 대비 차이', value: s.diff === null ? '-' : `${s.diff >= 0 ? '+' : ''}${numberText(s.diff)}명`, tone: tone(s.deviation_rate) }),
+    kpiCard({ label: '계획 대비 편차율', value: s.deviation_rate !== null ? `${s.deviation_rate > 0 ? '+' : ''}${s.deviation_rate}%` : '계산 불가', tone: tone(s.deviation_rate) }),
+  ];
+  const breakdownHtml = current.mealType === 'all' ? `<div class="kpi-grid">${['lunch', 'dinner'].map(k => {
+    const b = data.breakdown[k]; if (!b) return '';
+    return kpiCard({ label: `${b.meal_type_name} 실제 식수`, value: b.actual_sum === null ? '-' : `${numberText(b.actual_sum)}명`, sub: `계획 ${numberText(b.planned_sum)}명${b.deviation_rate !== null ? ` · ${b.deviation_rate > 0 ? '+' : ''}${b.deviation_rate}%` : ' · 계산 불가'}`, hint: `입력률 ${b.input_rate ?? '-'}%`, tone: tone(b.deviation_rate) });
+  }).join('')}</div>` : '';
+  const maxVal = Math.max(1, ...trend.trend.map(m => Math.max(m.planned, m.actual)));
+  const trendBars = trend.trend.map(m => `<div class="trend-month"><div class="trend-bars"><div class="trend-bar planned" title="계획 ${numberText(m.planned)}명" style="height:${m.planned / maxVal * 100}%"></div><div class="trend-bar actual" title="실제 ${numberText(m.actual)}명" style="height:${m.actual / maxVal * 100}%"></div></div><span class="trend-label">${m.month.slice(5)}</span></div>`).join('');
+  const trendHtml = `<div class="trend-chart">${trendBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div><div class="trend-legend"><span><i class="planned"></i>계획</span><span><i class="actual"></i>실제</span></div>`;
+  const wdMax = Math.max(1, ...data.weekday_averages.map(w => Math.max(w.planned_average || 0, w.actual_average || 0)));
+  const wdBars = data.weekday_averages.map(w => `<div class="stat-line"><span>${w.weekday}</span><strong>${w.actual_average ?? '-'}명</strong></div><div class="bar"><span style="width:${(w.actual_average || 0) / wdMax * 100}%"></span></div><small class="muted">계획 평균 ${w.planned_average ?? '-'}명 · 입력 ${w.actual_records}/${w.records}일</small>`).join('');
+  const devRows = data.backdata.filter(r => r.deviation_rate !== null).sort((a, b) => Math.abs(b.deviation_rate) - Math.abs(a.deviation_rate)).slice(0, 15);
+  const devMax = Math.max(1, ...devRows.map(r => Math.abs(r.deviation_rate)));
+  const devBars = devRows.map(r => `<div class="stat-line deviation-line"><span>${r.date.slice(5).replace('-', '/')} ${r.meal_type_name}</span><strong>${r.deviation_rate > 0 ? '+' : ''}${r.deviation_rate}%</strong></div><div class="deviation-bar ${r.deviation_rate >= 0 ? 'positive' : 'negative'}" style="width:${Math.abs(r.deviation_rate) / devMax * 100}%"></div>`).join('');
+  const anomalyHtml = data.anomalies.length ? `<div class="anomaly-list">${data.anomalies.map(a => `<button type="button" class="anomaly-item" data-anomaly="${a.date}|${a.meal_type_name}"><div class="anomaly-top"><span class="anomaly-date">${a.date} ${a.meal_type_name}</span><span class="anomaly-badge level-${a.level === '중요' ? 'important' : 'check'}">${a.level}</span></div><div class="anomaly-meta">${a.type} · 계획 ${numberText(a.planned_count)}명 → 실제 ${numberText(a.actual_count)}명${a.deviation_rate !== null ? ` · 계획 대비 ${a.deviation_rate > 0 ? '+' : ''}${a.deviation_rate}%` : ''}${a.usual_median !== null ? ` · 평소 중앙값 ${numberText(a.usual_median)}명 (${a.usual_deviation_rate > 0 ? '+' : ''}${a.usual_deviation_rate}%)` : (a.insufficient_comparison ? ' · 비교 데이터 부족' : '')}</div></button>`).join('')}</div>` : '<div class="stats-empty">특이 일자가 없습니다.</div>';
+  const backdataCols = [
+    { key: 'date', label: '날짜' },
+    { key: 'weekday', label: '요일' },
+    { key: 'meal_type_name', label: '구분' },
+    { key: 'planned_count', label: '계획', render: v => numberText(v) },
+    { key: 'actual_count', label: '실제', render: v => v === null ? '-' : numberText(v) },
+    { key: 'diff', label: '차이', render: v => v === null ? '-' : `${v > 0 ? '+' : ''}${numberText(v)}` },
+    { key: 'deviation_rate', label: '편차율', render: v => v === null ? '계산 불가' : `${v > 0 ? '+' : ''}${v}%` },
+    { key: 'usual_median', label: '평소 중앙값', render: v => v === null ? '비교 데이터 부족' : numberText(v) },
+    { key: 'usual_deviation_rate', label: '평소 대비', render: (v, r) => r.usual_median === null ? '-' : `${v > 0 ? '+' : ''}${v}%` },
+    { key: 'input', label: '입력', render: v => v ? '✓' : '미입력' },
+  ];
+  root.innerHTML = `
+    <div class="kpi-grid">${kpis.join('')}</div>
+    ${breakdownHtml}
+    <div class="chart-grid">
+      ${chartContainer({ title: '월별 계획 식수 / 실제 식수 추세', subtitle: `${current.start} ~ ${current.end}`, body: trendHtml })}
+      ${chartContainer({ title: '요일별 평균 식수', subtitle: '실제 식수 기준', body: `<div class="stat-list">${wdBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
+      ${chartContainer({ title: '계획 대비 편차 분포', subtitle: '특이값 강조', body: `<div class="stat-list deviation-list">${devBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
+      ${chartContainer({ title: '식수 특이 일자', subtitle: '계획/평소 대비 ±10% 이상', body: anomalyHtml, actions: `<button type="button" class="link-button" id="meals-backdata-btn">백데이터 보기</button>` })}
+    </div>
+    <div id="meals-backdata"></div>`;
+  $$('.anomaly-item', root).forEach(btn => btn.addEventListener('click', () => {
+    const [date, mealName] = btn.dataset.anomaly.split('|');
+    openDetailDrawer({ title: '식수 특이 일자 상세', subtitle: `${date} ${mealName}`, body: '<div id="drawer-backdata"></div>', footer: '<button type="button" class="primary-button" id="drawer-close-btn">닫기</button>' });
+    renderStatisticsDataTable($('#drawer-backdata'), { columns: backdataCols, rows: data.backdata.filter(r => r.date === date && r.meal_type_name === mealName), pageSize: 10, filename: 'meal_anomaly_backdata' });
+    $('#drawer-close-btn').addEventListener('click', closeDetailDrawer);
+  }));
+  $('#meals-backdata-btn', root)?.addEventListener('click', () => {
+    openDetailDrawer({ title: '식수 백데이터', subtitle: `${current.start} ~ ${current.end}`, body: '<div id="drawer-backdata"></div>', footer: '<button type="button" class="primary-button" id="drawer-close-btn">닫기</button>' });
+    renderStatisticsDataTable($('#drawer-backdata'), { columns: backdataCols, rows: data.backdata, pageSize: 10, filename: 'meal_backdata' });
+    $('#drawer-close-btn').addEventListener('click', closeDetailDrawer);
+  });
+}
+
+async function initMenusStats() {
+  const root = $('#stats-menus-root'); if (!root) return;
+  root.innerHTML = `<div id="stats-menus-period"></div><div class="stats-meal-type"><button type="button" data-meal="all" class="active">전체</button><button type="button" data-meal="lunch">중식</button><button type="button" data-meal="dinner">석식</button></div><div class="stats-unused-days"><label>장기 미사용 기준 <select id="stats-unused-days"><option value="30">30일</option><option value="60">60일</option><option value="90" selected>90일</option><option value="180">180일</option></select></label></div><div id="stats-menus-content"><div class="empty-editor">불러오는 중입니다.</div></div>`;
+  const periodRoot = $('#stats-menus-period'), content = $('#stats-menus-content');
+  const current = { start: null, end: null, mealType: 'all', unusedDays: 90 };
+  const load = async () => {
+    if (!current.start || !current.end) return;
+    content.innerHTML = '<div class="empty-editor">통계를 계산하고 있습니다.</div>';
+    try {
+      const data = await api(`/api/statistics/menus?start_date=${current.start}&end_date=${current.end}&meal_type=${current.mealType}&unused_days=${current.unusedDays}`);
+      renderMenusStats(content, data, current);
+    } catch (e) { content.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`; }
+  };
+  renderPeriodSelector(periodRoot, { preset: '6m', onApply: (start, end, preset) => { current.start = start; current.end = end; load(); } });
+  $$('.stats-meal-type button', root).forEach(btn => btn.addEventListener('click', () => {
+    current.mealType = btn.dataset.meal;
+    $$('.stats-meal-type button', root).forEach(x => x.classList.toggle('active', x === btn));
+    load();
+  }));
+  $('#stats-unused-days', root).addEventListener('change', e => { current.unusedDays = Number(e.target.value); load(); });
+  const range = periodRange('6m');
+  if (range) { current.start = range.start; current.end = range.end; load(); }
+}
+function renderMenusStats(root, data, current) {
+  const s = data.summary;
+  const kpis = [
+    kpiCard({ label: '고유 메뉴 수', value: `${s.unique_menu_count}종`, sub: '기간 내 사용 메뉴' }),
+    kpiCard({ label: '총 메뉴 사용 횟수', value: `${s.total_usage_count}회`, sub: '식단 내 메뉴 행 기준' }),
+    kpiCard({ label: '신규 메뉴 수', value: `${s.new_menu_count}종`, sub: '기간 이전 사용 기록 없음' }),
+    kpiCard({ label: '반복 메뉴 수', value: `${s.repeat_menu_count}종`, sub: '14일 2회 / 28일 3회' }),
+    kpiCard({ label: '장기 미사용 메뉴', value: `${s.unused_menu_count}종`, sub: `${current.unusedDays}일 기준` }),
+  ];
+  const topMax = Math.max(1, ...data.top_menus.map(x => x.usage_count));
+  const topBars = data.top_menus.map(x => {
+    const clickable = x.menu_id !== null;
+    return `<button type="button" class="menu-top-item" ${clickable ? `data-menu-id="${x.menu_id}"` : ''} data-menu-name="${escapeHtml(x.menu_name)}" ${clickable ? '' : 'disabled'}><div class="stat-line"><span>${escapeHtml(x.menu_name)}</span><strong>${x.usage_count}회</strong></div><div class="bar"><span style="width:${x.usage_count / topMax * 100}%"></span></div><small class="muted">중식 ${x.lunch_count}회 · 석식 ${x.dinner_count}회 · 최근 ${x.last_used}</small></button>`;
+  }).join('');
+  const repeatHtml = data.repeats.length ? data.repeats.map(x => `<div class="stat-line"><span>${escapeHtml(x.menu_name)}</span><strong>${x.type} ${x.count}회</strong></div>`).join('') : '<div class="stats-empty">반복 메뉴가 없습니다.</div>';
+  const unusedHtml = data.unused_menus.length ? data.unused_menus.slice(0, 10).map(x => `<div class="stat-line"><span>${escapeHtml(x.menu_name)}</span><strong>${x.days_since_last !== null ? `${x.days_since_last}일` : '사용 이력 없음'}</strong></div>`).join('') : '<div class="stats-empty">장기 미사용 메뉴가 없습니다.</div>';
+  const backdataCols = [
+    { key: 'date', label: '날짜' },
+    { key: 'weekday', label: '요일' },
+    { key: 'meal_type_name', label: '구분' },
+    { key: 'role', label: '역할' },
+    { key: 'menu_name', label: '메뉴명' },
+    { key: 'menu_id', label: '메뉴 ID', render: v => v ?? '-' },
+    { key: 'planned_count', label: '계획', render: v => numberText(v) },
+    { key: 'actual_count', label: '실제', render: v => v === null ? '-' : numberText(v) },
+    { key: 'previous_used_date', label: '이전 사용일', render: v => v ?? '-' },
+    { key: 'days_since_previous', label: '경과일', render: v => v === null ? '-' : `${v}일` },
+  ];
+  root.innerHTML = `
+    <div class="kpi-grid">${kpis.join('')}</div>
+    <div class="chart-grid">
+      ${chartContainer({ title: '메뉴 사용 TOP', subtitle: '클릭하면 상세 분석', body: `<div class="menu-top-list">${topBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
+      ${chartContainer({ title: '반복 메뉴', subtitle: '단기 14일 2회 · 과다 28일 3회', body: `<div class="stat-list">${repeatHtml}</div>` })}
+      ${chartContainer({ title: '장기 미사용 메뉴', subtitle: `${current.unusedDays}일 기준`, body: `<div class="stat-list">${unusedHtml}</div>` })}
+      ${chartContainer({ title: '백데이터', subtitle: '메뉴 사용 이력', body: '<div class="stats-empty">백데이터 보기 버튼으로 확인합니다.</div>', actions: `<button type="button" class="link-button" id="menus-backdata-btn">백데이터 보기</button>` })}
+    </div>`;
+  $$('.menu-top-item', root).forEach(btn => btn.addEventListener('click', () => {
+    if (!btn.dataset.menuId) return;
+    openMenuDetailDrawer(Number(btn.dataset.menuId), btn.dataset.menuName, current);
+  }));
+  $('#menus-backdata-btn', root)?.addEventListener('click', () => {
+    openDetailDrawer({ title: '메뉴 백데이터', subtitle: `${current.start} ~ ${current.end}`, body: '<div id="drawer-backdata"></div>', footer: '<button type="button" class="primary-button" id="drawer-close-btn">닫기</button>' });
+    renderStatisticsDataTable($('#drawer-backdata'), { columns: backdataCols, rows: data.backdata, pageSize: 10, filename: 'menu_backdata' });
+    $('#drawer-close-btn').addEventListener('click', closeDetailDrawer);
+  });
+}
+async function openMenuDetailDrawer(menuId, menuName, current) {
+  openDetailDrawer({ title: menuName, subtitle: `${current.start} ~ ${current.end}`, body: '<div class="empty-editor">불러오는 중입니다.</div>', footer: '<button type="button" class="primary-button" id="drawer-close-btn">닫기</button>' });
+  $('#drawer-close-btn').addEventListener('click', closeDetailDrawer);
+  try {
+    const data = await api(`/api/statistics/menus/${menuId}?start_date=${current.start}&end_date=${current.end}&meal_type=${current.mealType}`);
+    renderMenuDetailDrawer(data);
+  } catch (e) {
+    const body = $('.drawer-body'); if (body) body.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`;
+  }
+}
+function renderMenuDetailDrawer(data) {
+  const s = data.summary;
+  const body = $('.drawer-body'); if (!body) return;
+  const monthlyMax = Math.max(1, ...data.monthly_usage.map(m => m.count));
+  const monthlyBars = data.monthly_usage.map(m => `<div class="stat-line"><span>${m.month}</span><strong>${m.count}회</strong></div><div class="bar"><span style="width:${m.count / monthlyMax * 100}%"></span></div>`).join('');
+  const historyHtml = data.recent_history.slice().reverse().map(r => `<div class="stat-line"><span>${r.date} ${r.meal_type_name}</span><strong>계획 ${numberText(r.planned_count)}명${r.actual_count !== null ? ` · 실제 ${numberText(r.actual_count)}명` : ''}</strong></div>`).join('');
+  const coHtml = data.co_used.map(c => `<div class="stat-line"><span>${escapeHtml(c.menu_name)}</span><strong>${c.count}회</strong></div>`).join('');
+  const backdataCols = [
+    { key: 'date', label: '날짜' },
+    { key: 'weekday', label: '요일' },
+    { key: 'meal_type_name', label: '구분' },
+    { key: 'role', label: '역할' },
+    { key: 'planned_count', label: '계획', render: v => numberText(v) },
+    { key: 'actual_count', label: '실제', render: v => v === null ? '-' : numberText(v) },
+    { key: 'previous_used_date', label: '이전 사용일', render: v => v ?? '-' },
+    { key: 'days_since_previous', label: '경과일', render: v => v === null ? '-' : `${v}일` },
+  ];
+  body.innerHTML = `
+    <div class="kpi-grid">
+      ${kpiCard({ label: '사용 횟수', value: `${s.usage_count}회`, sub: `중식 ${s.lunch_count}회 · 석식 ${s.dinner_count}회` })}
+      ${kpiCard({ label: '최근 사용일', value: s.last_used ?? '-', sub: `최초 ${s.first_used ?? '-'}` })}
+      ${kpiCard({ label: '평균 재사용 간격', value: s.avg_interval !== null ? `${s.avg_interval}일` : '-', sub: '연속 사용 간격 평균' })}
+    </div>
+    <div class="chart-grid">
+      ${chartContainer({ title: '월별 사용 횟수', body: `<div class="stat-list">${monthlyBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
+      ${chartContainer({ title: '최근 사용 이력', body: `<div class="stat-list">${historyHtml || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
+      ${chartContainer({ title: '함께 사용된 메뉴', body: `<div class="stat-list">${coHtml || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
+      ${chartContainer({ title: '백데이터', body: '<div id="drawer-backdata"></div>' })}
+    </div>`;
+  renderStatisticsDataTable($('#drawer-backdata'), { columns: backdataCols, rows: data.backdata, pageSize: 10, filename: `menu_${data.menu_id}_backdata` });
+}
+
+async function initIngredientsStats() {
+  const root = $('#stats-ingredients-root'); if (!root) return;
+  root.innerHTML = `<div id="stats-ingredients-period"></div><div class="stats-meal-type"><button type="button" data-meal="all" class="active">전체</button><button type="button" data-meal="lunch">중식</button><button type="button" data-meal="dinner">석식</button></div><div class="stats-unused-days"><label>장기 미사용 기준 <select id="stats-ing-unused-days"><option value="30">30일</option><option value="60">60일</option><option value="90" selected>90일</option><option value="180">180일</option></select></label></div><div id="stats-ingredients-content"><div class="empty-editor">불러오는 중입니다.</div></div>`;
+  const periodRoot = $('#stats-ingredients-period'), content = $('#stats-ingredients-content');
+  const current = { start: null, end: null, mealType: 'all', unusedDays: 90 };
+  const load = async () => {
+    if (!current.start || !current.end) return;
+    content.innerHTML = '<div class="empty-editor">통계를 계산하고 있습니다.</div>';
+    try {
+      const data = await api(`/api/statistics/ingredients?start_date=${current.start}&end_date=${current.end}&meal_type=${current.mealType}&unused_days=${current.unusedDays}`);
+      renderIngredientsStats(content, data, current);
+    } catch (e) { content.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`; }
+  };
+  renderPeriodSelector(periodRoot, { preset: '6m', onApply: (start, end, preset) => { current.start = start; current.end = end; load(); } });
+  $$('.stats-meal-type button', root).forEach(btn => btn.addEventListener('click', () => {
+    current.mealType = btn.dataset.meal;
+    $$('.stats-meal-type button', root).forEach(x => x.classList.toggle('active', x === btn));
+    load();
+  }));
+  $('#stats-ing-unused-days', root).addEventListener('change', e => { current.unusedDays = Number(e.target.value); load(); });
+  const range = periodRange('6m');
+  if (range) { current.start = range.start; current.end = range.end; load(); }
+}
+function renderIngredientsStats(root, data, current) {
+  const s = data.summary;
+  const kpis = [
+    kpiCard({ label: '고유 재료 수', value: `${s.unique_ingredient_count}종`, sub: '기간 내 사용 재료' }),
+    kpiCard({ label: '총 사용 횟수', value: `${s.total_usage_count}회`, sub: '식단 내 재료 행 기준' }),
+    kpiCard({ label: '신규 재료 수', value: `${s.new_ingredient_count}종`, sub: '기간 이전 사용 기록 없음' }),
+    kpiCard({ label: '장기 미사용 재료', value: `${s.unused_ingredient_count}종`, sub: `${current.unusedDays}일 기준` }),
+  ];
+  const topMax = Math.max(1, ...data.top_ingredients.map(x => x.usage_count));
+  const topBars = data.top_ingredients.map(x => {
+    const clickable = x.ingredient_id !== null;
+    return `<button type="button" class="menu-top-item" ${clickable ? `data-ing-id="${x.ingredient_id}"` : ''} data-ing-name="${escapeHtml(x.ingredient_name)}" ${clickable ? '' : 'disabled'}><div class="stat-line"><span>${escapeHtml(x.ingredient_name)}</span><strong>${x.usage_count}회</strong></div><div class="bar"><span style="width:${x.usage_count / topMax * 100}%"></span></div><small class="muted">${x.quantity_g !== null ? `${(x.quantity_g / 1000).toFixed(1)}kg` : '-'} · 중식 ${x.lunch_count}회 · 석식 ${x.dinner_count}회 · 최근 ${x.last_used}</small></button>`;
+  }).join('');
+  const unusedHtml = data.unused_ingredients.length ? data.unused_ingredients.slice(0, 10).map(x => `<div class="stat-line"><span>${escapeHtml(x.ingredient_name)}</span><strong>${x.days_since_last !== null ? `${x.days_since_last}일` : '사용 이력 없음'}</strong></div>`).join('') : '<div class="stats-empty">장기 미사용 재료가 없습니다.</div>';
+  const backdataCols = [
+    { key: 'date', label: '날짜' },
+    { key: 'weekday', label: '요일' },
+    { key: 'meal_type_name', label: '구분' },
+    { key: 'ingredient_name', label: '재료명' },
+    { key: 'ingredient_id', label: '재료 ID', render: v => v ?? '-' },
+    { key: 'quantity_g', label: '사용량(g)', render: v => v === null ? '-' : numberText(v) },
+    { key: 'planned_count', label: '계획', render: v => numberText(v) },
+    { key: 'actual_count', label: '실제', render: v => v === null ? '-' : numberText(v) },
+    { key: 'previous_used_date', label: '이전 사용일', render: v => v ?? '-' },
+    { key: 'days_since_previous', label: '경과일', render: v => v === null ? '-' : `${v}일` },
+  ];
+  root.innerHTML = `
+    <div class="kpi-grid">${kpis.join('')}</div>
+    <div class="chart-grid">
+      ${chartContainer({ title: '재료 사용 TOP', subtitle: '클릭하면 상세 분석', body: `<div class="menu-top-list">${topBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
+      ${chartContainer({ title: '장기 미사용 재료', subtitle: `${current.unusedDays}일 기준`, body: `<div class="stat-list">${unusedHtml}</div>` })}
+      ${chartContainer({ title: '백데이터', subtitle: '재료 사용 이력', body: '<div class="stats-empty">백데이터 보기 버튼으로 확인합니다.</div>', actions: `<button type="button" class="link-button" id="ingredients-backdata-btn">백데이터 보기</button>` })}
+    </div>`;
+  $$('.menu-top-item', root).forEach(btn => btn.addEventListener('click', () => {
+    if (!btn.dataset.ingId) return;
+    openIngredientDetailDrawer(Number(btn.dataset.ingId), btn.dataset.ingName, current);
+  }));
+  $('#ingredients-backdata-btn', root)?.addEventListener('click', () => {
+    openDetailDrawer({ title: '재료 백데이터', subtitle: `${current.start} ~ ${current.end}`, body: '<div id="drawer-backdata"></div>', footer: '<button type="button" class="primary-button" id="drawer-close-btn">닫기</button>' });
+    renderStatisticsDataTable($('#drawer-backdata'), { columns: backdataCols, rows: data.backdata, pageSize: 10, filename: 'ingredient_backdata' });
+    $('#drawer-close-btn').addEventListener('click', closeDetailDrawer);
+  });
+}
+async function openIngredientDetailDrawer(ingredientId, ingredientName, current) {
+  openDetailDrawer({ title: ingredientName, subtitle: `${current.start} ~ ${current.end}`, body: '<div class="empty-editor">불러오는 중입니다.</div>', footer: '<button type="button" class="primary-button" id="drawer-close-btn">닫기</button>' });
+  $('#drawer-close-btn').addEventListener('click', closeDetailDrawer);
+  try {
+    const data = await api(`/api/statistics/ingredients/${ingredientId}?start_date=${current.start}&end_date=${current.end}&meal_type=${current.mealType}`);
+    renderIngredientDetailDrawer(data);
+  } catch (e) {
+    const body = $('.drawer-body'); if (body) body.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`;
+  }
+}
+function renderIngredientDetailDrawer(data) {
+  const s = data.summary;
+  const body = $('.drawer-body'); if (!body) return;
+  const monthlyMax = Math.max(1, ...data.monthly_usage.map(m => m.count));
+  const monthlyBars = data.monthly_usage.map(m => `<div class="stat-line"><span>${m.month}</span><strong>${m.count}회</strong></div><div class="bar"><span style="width:${m.count / monthlyMax * 100}%"></span></div>`).join('');
+  const historyHtml = data.recent_history.slice().reverse().map(r => `<div class="stat-line"><span>${r.date} ${r.meal_type_name}</span><strong>${escapeHtml(r.menu_name ?? '-')}${r.quantity_g !== null ? ` · ${(r.quantity_g / 1000).toFixed(1)}kg` : ''}${r.actual_count !== null ? ` · 실제 ${numberText(r.actual_count)}명` : ''}</strong></div>`).join('');
+  const coHtml = data.co_used.map(c => `<div class="stat-line"><span>${escapeHtml(c.ingredient_name)}</span><strong>${c.count}회</strong></div>`).join('');
+  const backdataCols = [
+    { key: 'date', label: '날짜' },
+    { key: 'weekday', label: '요일' },
+    { key: 'meal_type_name', label: '구분' },
+    { key: 'quantity_g', label: '사용량(g)', render: v => v === null ? '-' : numberText(v) },
+    { key: 'planned_count', label: '계획', render: v => numberText(v) },
+    { key: 'actual_count', label: '실제', render: v => v === null ? '-' : numberText(v) },
+    { key: 'previous_used_date', label: '이전 사용일', render: v => v ?? '-' },
+    { key: 'days_since_previous', label: '경과일', render: v => v === null ? '-' : `${v}일` },
+  ];
+  body.innerHTML = `
+    <div class="kpi-grid">
+      ${kpiCard({ label: '사용 횟수', value: `${s.usage_count}회`, sub: `중식 ${s.lunch_count}회 · 석식 ${s.dinner_count}회` })}
+      ${kpiCard({ label: '총 사용량', value: `${(s.quantity_g / 1000).toFixed(1)}kg`, sub: `재료군 ${escapeHtml(data.stat_group)}` })}
+      ${kpiCard({ label: '최근 사용일', value: s.last_used ?? '-', sub: `최초 ${s.first_used ?? '-'}` })}
+      ${kpiCard({ label: '평균 재사용 간격', value: s.avg_interval !== null ? `${s.avg_interval}일` : '-', sub: '연속 사용 간격 평균' })}
+    </div>
+    <div class="chart-grid">
+      ${chartContainer({ title: '월별 사용 횟수', body: `<div class="stat-list">${monthlyBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
+      ${chartContainer({ title: '최근 사용 이력', body: `<div class="stat-list">${historyHtml || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
+      ${chartContainer({ title: '함께 사용된 재료', body: `<div class="stat-list">${coHtml || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
+      ${chartContainer({ title: '백데이터', body: '<div id="drawer-backdata"></div>' })}
+    </div>`;
+  renderStatisticsDataTable($('#drawer-backdata'), { columns: backdataCols, rows: data.backdata, pageSize: 10, filename: `ingredient_${data.ingredient_id}_backdata` });
+}
+
+async function initOperationsStats() {
+  const root = $('#stats-operations-root'); if (!root) return;
+  root.innerHTML = `<div id="stats-operations-period"></div><div class="stats-meal-type"><button type="button" data-meal="all" class="active">전체</button><button type="button" data-meal="lunch">중식</button><button type="button" data-meal="dinner">석식</button></div><div id="stats-operations-content"><div class="empty-editor">불러오는 중입니다.</div></div>`;
+  const periodRoot = $('#stats-operations-period'), content = $('#stats-operations-content');
+  const current = { start: null, end: null, mealType: 'all' };
+  const load = async () => {
+    if (!current.start || !current.end) return;
+    content.innerHTML = '<div class="empty-editor">통계를 계산하고 있습니다.</div>';
+    try {
+      const data = await api(`/api/statistics/operations?start_date=${current.start}&end_date=${current.end}&meal_type=${current.mealType}`);
+      renderOperationsStats(content, data, current);
+    } catch (e) { content.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`; }
+  };
+  renderPeriodSelector(periodRoot, { preset: '6m', onApply: (start, end, preset) => { current.start = start; current.end = end; load(); } });
+  $$('.stats-meal-type button', root).forEach(btn => btn.addEventListener('click', () => {
+    current.mealType = btn.dataset.meal;
+    $$('.stats-meal-type button', root).forEach(x => x.classList.toggle('active', x === btn));
+    load();
+  }));
+  const range = periodRange('6m');
+  if (range) { current.start = range.start; current.end = range.end; load(); }
+}
+function renderOperationsStats(root, data, current) {
+  const s = data.summary;
+  const rateTone = (rate) => rate === null ? '' : (rate < 70 ? 'danger' : (rate < 90 ? 'warn' : ''));
+  const kpis = [
+    kpiCard({ label: '운영 배식 건수', value: `${s.service_count}건`, sub: `${current.start} ~ ${current.end}` }),
+    kpiCard({ label: '실제 식수 입력률', value: s.actual_input_rate !== null ? `${s.actual_input_rate}%` : '-', sub: `입력 ${s.actual_input_count}건`, tone: rateTone(s.actual_input_rate) }),
+    kpiCard({ label: '보존식 기록 완료율', value: s.preservation_rate !== null ? `${s.preservation_rate}%` : '-', sub: `완료 ${s.preservation_count}건`, tone: rateTone(s.preservation_rate) }),
+    kpiCard({ label: '식단표 출력률', value: s.meal_plan_output_rate !== null ? `${s.meal_plan_output_rate}%` : '-', sub: `출력 ${s.meal_plan_output_count}건`, tone: rateTone(s.meal_plan_output_rate) }),
+    kpiCard({ label: '조리지시서 출력률', value: s.cooking_output_rate !== null ? `${s.cooking_output_rate}%` : '-', sub: `출력 ${s.cooking_output_count}건`, tone: rateTone(s.cooking_output_rate) }),
+  ];
+  const breakdownHtml = current.mealType === 'all' ? `<div class="kpi-grid">${['lunch', 'dinner'].map(k => {
+    const b = data.breakdown[k]; if (!b) return '';
+    return kpiCard({ label: `${b.meal_type_name} 완료율`, value: `${b.actual_input_rate ?? '-'}%`, sub: `식수 입력 ${b.actual_input_count}/${b.service_count}건`, hint: `보존식 ${b.preservation_rate ?? '-'}% · 식단표 ${b.meal_plan_output_rate ?? '-'}% · 조리지시서 ${b.cooking_output_rate ?? '-'}%`, tone: rateTone(b.actual_input_rate) });
+  }).join('')}</div>` : '';
+  const trendMax = Math.max(1, ...data.trend.map(m => Math.max(m.actual_input_rate || 0, m.preservation_rate || 0, m.meal_plan_output_rate || 0, m.cooking_output_rate || 0)));
+  const trendBars = data.trend.map(m => `<div class="trend-month"><div class="trend-bars"><div class="trend-bar actual" title="식수 입력 ${m.actual_input_rate ?? '-'}%" style="height:${(m.actual_input_rate || 0) / trendMax * 100}%"></div><div class="trend-bar preservation" title="보존식 ${m.preservation_rate ?? '-'}%" style="height:${(m.preservation_rate || 0) / trendMax * 100}%"></div><div class="trend-bar meal-plan" title="식단표 ${m.meal_plan_output_rate ?? '-'}%" style="height:${(m.meal_plan_output_rate || 0) / trendMax * 100}%"></div><div class="trend-bar cooking" title="조리지시서 ${m.cooking_output_rate ?? '-'}%" style="height:${(m.cooking_output_rate || 0) / trendMax * 100}%"></div></div><span class="trend-label">${m.month.slice(5)}</span></div>`).join('');
+  const trendHtml = `<div class="trend-chart">${trendBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div><div class="trend-legend"><span><i class="actual"></i>식수 입력</span><span><i class="preservation"></i>보존식</span><span><i class="meal-plan"></i>식단표</span><span><i class="cooking"></i>조리지시서</span></div>`;
+  const gaps = data.anomalies.record_gaps;
+  const gapGroups = {};
+  gaps.forEach(g => { gapGroups[g.type] = (gapGroups[g.type] || 0) + 1; });
+  const gapHtml = Object.entries(gapGroups).length ? Object.entries(gapGroups).map(([type, count]) => `<div class="stat-line"><span>${type}</span><strong>${count}건</strong></div>`).join('') : '<div class="stats-empty">기록 누락이 없습니다.</div>';
+  const lateHtml = data.anomalies.late_inputs.length ? data.anomalies.late_inputs.slice(0, 10).map(x => `<div class="stat-line"><span>${x.date} ${x.meal_type_name}</span><strong>${x.actual_count}명 · 입력 ${x.recorded_at ? x.recorded_at.slice(0, 10) : '-'}</strong></div>`).join('') : '<div class="stats-empty">지연 입력이 없습니다.</div>';
+  const p = data.preservation;
+  const managerHtml = p.by_manager.length ? p.by_manager.map(m => `<div class="stat-line"><span>${escapeHtml(m.manager_name)}</span><strong>${m.count}건</strong></div>`).join('') : '<div class="stats-empty">보존식 기록이 없습니다.</div>';
+  const tempHtml = p.temperature_records.length ? p.temperature_records.slice(0, 10).map(t => `<div class="stat-line"><span>${t.date} ${t.meal_type_name}</span><strong>${escapeHtml(t.temperature)}</strong></div>`).join('') : '<div class="stats-empty">온도 기록이 없습니다.</div>';
+  const backdataCols = [
+    { key: 'date', label: '날짜' },
+    { key: 'weekday', label: '요일' },
+    { key: 'meal_type_name', label: '구분' },
+    { key: 'planned_count', label: '계획', render: v => numberText(v) },
+    { key: 'actual_count', label: '실제', render: v => v === null ? '-' : numberText(v) },
+    { key: 'actual_input', label: '식수 입력', render: v => v ? '✓' : '미입력' },
+    { key: 'actual_recorded_at', label: '입력 시각', render: v => v ? v.slice(0, 16).replace('T', ' ') : '-' },
+    { key: 'meal_plan_output', label: '식단표', render: v => v ? '✓' : '미출력' },
+    { key: 'cooking_output', label: '조리지시서', render: v => v ? '✓' : '미출력' },
+    { key: 'preservation_completed', label: '보존식', render: v => v ? '✓' : '미완료' },
+    { key: 'preservation_manager', label: '보존식 담당', render: v => v ?? '-' },
+    { key: 'preservation_temperature', label: '냉동고 온도', render: v => v ?? '-' },
+  ];
+  root.innerHTML = `
+    <div class="kpi-grid">${kpis.join('')}</div>
+    ${breakdownHtml}
+    <div class="chart-grid">
+      ${chartContainer({ title: '월별 기록 완료율 추세', subtitle: `${current.start} ~ ${current.end}`, body: trendHtml })}
+      ${chartContainer({ title: '기록 누락 현황', subtitle: '미입력·미출력·미완료 건수', body: `<div class="stat-list">${gapHtml}</div>` })}
+      ${chartContainer({ title: '실제 식수 지연 입력', subtitle: '배식 다음 날 이후 입력', body: `<div class="stat-list">${lateHtml}</div>` })}
+      ${chartContainer({ title: '보존식 담당자별 기록', subtitle: `수거 ${p.collected_count}건 · 폐기 ${p.disposed_count}건`, body: `<div class="stat-list">${managerHtml}</div>` })}
+      ${chartContainer({ title: '냉동고 온도 기록', subtitle: '최근 10건', body: `<div class="stat-list">${tempHtml}</div>` })}
+      ${chartContainer({ title: '백데이터', subtitle: '배식별 운영 상태', body: '<div class="stats-empty">백데이터 보기 버튼으로 확인합니다.</div>', actions: `<button type="button" class="link-button" id="operations-backdata-btn">백데이터 보기</button>` })}
+    </div>`;
+  $('#operations-backdata-btn', root)?.addEventListener('click', () => {
+    openDetailDrawer({ title: '운영 기록 백데이터', subtitle: `${current.start} ~ ${current.end}`, body: '<div id="drawer-backdata"></div>', footer: '<button type="button" class="primary-button" id="drawer-close-btn">닫기</button>' });
+    renderStatisticsDataTable($('#drawer-backdata'), { columns: backdataCols, rows: data.backdata, pageSize: 10, filename: 'operation_backdata' });
+    $('#drawer-close-btn').addEventListener('click', closeDetailDrawer);
+  });
+}
+
 function previewCurrentDocument(){
   openDocumentPreviewDialog();
 }
@@ -1484,4 +2099,716 @@ async function renderIngredientMasterPanel(id=null){
   if(id)$('#archive-ingredient').addEventListener('click',async()=>{if(!confirm('재료를 삭제(미사용 처리)할까요? 과거 식단 기록은 유지됩니다.'))return;try{await api(`/api/master/ingredients/${id}`,{method:'DELETE'});state.masterSelectionId=null;state.ingredientCache=[];toast('재료를 삭제 처리했습니다.');loadMaster();}catch(e){toast(e.message,true);}});
 }
 
-async function loadMoreMasterMenus(){ if(state.masterMenuHasMore && !state.masterMenuLoading){ state.masterMenuLoading=true; const PAGE=50; const q=state.masterMenuQuery; const offset=state.masterMenuOffset+PAGE; try{ const data=await api(`/api/master/menus?q=${encodeURIComponent(q)}&offset=${offset}&limit=${PAGE}`); if(state.masterMenuQuery!==q)return; const tbody=$('#master-content .master-list-wrap tbody'); if(!tbody)return; state.masterMenuOffset=offset; state.masterMenuHasMore=data.has_more; tbody.insertAdjacentHTML('beforeend', data.items.map(r=>`<tr data-menu-master='${r.id}' class='${r.id===state.masterSelectionId?'selected-row':''}'><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.role)}</td><td>${r.recipe_count}개</td><td>${r.active?'사용':'미사용'}</td></tr>`).join('')); }catch(e){ toast(e.message,true); } finally{ state.masterMenuLoading=false; } } } async function loadMoreMasterIngredients(){ if(state.masterIngredientHasMore && !state.masterIngredientLoading){ state.masterIngredientLoading=true; const PAGE=50; const q=state.masterIngredientQuery; const offset=state.masterIngredientOffset+PAGE; try{ const data=await api(`/api/master/ingredients?q=${encodeURIComponent(q)}&offset=${offset}&limit=${PAGE}`); if(state.masterIngredientQuery!==q)return; const tbody=$('#master-content .master-list-wrap tbody'); if(!tbody)return; state.masterIngredientOffset=offset; state.masterIngredientHasMore=data.has_more; tbody.insertAdjacentHTML('beforeend', data.items.map(r=>`<tr data-ingredient-master='${r.id}' class='${r.id===state.masterSelectionId?'selected-row':''}'><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.stat_group)}</td><td>${escapeHtml(r.default_unit||'')}</td><td>${r.active?'사용':'미사용'}</td></tr>`).join('')); }catch(e){ toast(e.message,true); } finally{ state.masterIngredientLoading=false; } } } document.addEventListener('DOMContentLoaded',()=>init().catch(e=>toast(e.message,true)));
+async function loadMoreMasterMenus(){ if(state.masterMenuHasMore && !state.masterMenuLoading){ state.masterMenuLoading=true; const PAGE=50; const q=state.masterMenuQuery; const offset=state.masterMenuOffset+PAGE; try{ const data=await api(`/api/master/menus?q=${encodeURIComponent(q)}&offset=${offset}&limit=${PAGE}`); if(state.masterMenuQuery!==q)return; const tbody=$('#master-content .master-list-wrap tbody'); if(!tbody)return; state.masterMenuOffset=offset; state.masterMenuHasMore=data.has_more; tbody.insertAdjacentHTML('beforeend', data.items.map(r=>`<tr data-menu-master='${r.id}' class='${r.id===state.masterSelectionId?'selected-row':''}'><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.role)}</td><td>${r.recipe_count}개</td><td>${r.active?'사용':'미사용'}</td></tr>`).join('')); }catch(e){ toast(e.message,true); } finally{ state.masterMenuLoading=false; } } } async function loadMoreMasterIngredients(){ if(state.masterIngredientHasMore && !state.masterIngredientLoading){ state.masterIngredientLoading=true; const PAGE=50; const q=state.masterIngredientQuery; const offset=state.masterIngredientOffset+PAGE; try{ const data=await api(`/api/master/ingredients?q=${encodeURIComponent(q)}&offset=${offset}&limit=${PAGE}`); if(state.masterIngredientQuery!==q)return; const tbody=$('#master-content .master-list-wrap tbody'); if(!tbody)return; state.masterIngredientOffset=offset; state.masterIngredientHasMore=data.has_more; tbody.insertAdjacentHTML('beforeend', data.items.map(r=>`<tr data-ingredient-master='${r.id}' class='${r.id===state.masterSelectionId?'selected-row':''}'><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.stat_group)}</td><td>${escapeHtml(r.default_unit||'')}</td><td>${r.active?'사용':'미사용'}</td></tr>`).join('')); }catch(e){ toast(e.message,true); } finally{ state.masterIngredientLoading=false; } } }
+
+// ==================== 사용자 관리 ====================
+
+function fmtDateTime(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  return new Intl.DateTimeFormat('ko-KR', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }).format(d);
+}
+
+async function initUsers() {
+  const root = $('#users-root');
+  if (!root) return;
+  root.innerHTML = '<div class="empty-editor">불러오는 중입니다.</div>';
+  try {
+    await loadUsersList('');
+  } catch (e) {
+    root.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+let _usersSearchTimer = null;
+async function loadUsersList(q) {
+  const root = $('#users-root');
+  if (!root) return;
+  const data = await api(`/api/users?q=${encodeURIComponent(q)}`);
+  const rows = data.items;
+  root.innerHTML = `<div class="table-tools">
+    <input id="users-search" placeholder="사용자 ID 또는 이름 검색" value="${escapeHtml(q)}">
+    <button class="secondary-button" id="new-user">＋ 사용자 등록</button>
+  </div>
+  <div class="table-wrap"><table class="data-table"><thead><tr>
+    <th>사용자 ID</th><th>사용자명</th><th>권한</th><th>상태</th><th>최근 로그인</th><th>비밀번호 변경일</th><th>계정 생성일</th><th>작업</th>
+  </tr></thead><tbody>${rows.map(r=>`<tr data-user-id="${r.id}">
+    <td>${escapeHtml(r.username)}</td>
+    <td>${escapeHtml(r.display_name)}</td>
+    <td>${r.role==='admin'?'관리자':'일반사용자'}</td>
+    <td>${r.active?'사용':'<span class="badge badge-warn">사용중지</span>'}</td>
+    <td>${fmtDateTime(r.last_login_at)}</td>
+    <td>${fmtDateTime(r.password_changed_at)}</td>
+    <td>${fmtDateTime(r.created_at)}</td>
+    <td class="user-actions-cell">
+      <button class="ghost-button" data-act="edit" data-user-id="${r.id}">수정</button>
+      <button class="ghost-button" data-act="reset" data-user-id="${r.id}">비밀번호 초기화</button>
+      ${r.active?'<button class="ghost-button" data-act="deactivate" data-user-id="'+r.id+'">사용중지</button>':'<button class="ghost-button" data-act="activate" data-user-id="'+r.id+'">사용 재개</button>'}
+    </td>
+  </tr>`).join('')}</tbody></table></div>`;
+
+  const si = $('#users-search', root);
+  let composing = false;
+  si.addEventListener('compositionstart', () => { composing = true; });
+  si.addEventListener('compositionend', e => { composing = false; clearTimeout(_usersSearchTimer); _usersSearchTimer = setTimeout(() => loadUsersList(e.target.value), 200); });
+  si.addEventListener('input', e => { if (composing) return; clearTimeout(_usersSearchTimer); _usersSearchTimer = setTimeout(() => loadUsersList(e.target.value), 200); });
+  $('#new-user', root).addEventListener('click', () => openUserCreateModal());
+  $$('.user-actions-cell button', root).forEach(btn => btn.addEventListener('click', () => {
+    const act = btn.dataset.act;
+    const uid = Number(btn.dataset.userId);
+    const user = rows.find(r => r.id === uid);
+    if (act === 'edit') openUserEditModal(user);
+    else if (act === 'reset') openResetPasswordModal(user);
+    else if (act === 'deactivate') confirmDeactivate(user);
+    else if (act === 'activate') confirmActivate(user);
+  }));
+}
+
+function openUserCreateModal() {
+  modal(`<h3>사용자 등록</h3>
+  <form id="user-create-form" class="stack-form">
+    <label>사용자 ID<input id="uc-username" required autocomplete="off"></label>
+    <label>사용자명<input id="uc-display-name" autocomplete="off"></label>
+    <label>권한<select id="uc-role"><option value="user">일반사용자</option><option value="admin">관리자</option></select></label>
+    <label>초기 비밀번호<input id="uc-password" type="password" required autocomplete="new-password"></label>
+    <label>초기 비밀번호 확인<input id="uc-password-confirm" type="password" required autocomplete="new-password"></label>
+    <div class="form-hint">최소 8자 이상, 사용자 ID와 다른 비밀번호를 입력하세요.</div>
+    <div id="uc-error" class="form-error" aria-live="polite"></div>
+    <div class="save-bar"><span></span><button type="submit" class="primary-button">등록</button></div>
+  </form>`);
+  $('#user-create-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const err = $('#uc-error'); err.textContent = '';
+    try {
+      const body = {
+        username: $('#uc-username').value,
+        display_name: $('#uc-display-name').value,
+        role: $('#uc-role').value,
+        password: $('#uc-password').value,
+        password_confirm: $('#uc-password-confirm').value,
+      };
+      await api('/api/users', json('POST', body));
+      closeModal();
+      toast('사용자가 등록되었습니다.');
+      await loadUsersList($('#users-search')?.value || '');
+    } catch (ex) { err.textContent = ex.message; }
+  });
+}
+
+function openUserEditModal(user) {
+  modal(`<h3>사용자 수정</h3>
+  <form id="user-edit-form" class="stack-form">
+    <label>사용자 ID<input value="${escapeHtml(user.username)}" disabled></label>
+    <label>사용자명<input id="ue-display-name" value="${escapeHtml(user.display_name)}" autocomplete="off"></label>
+    <label>권한<select id="ue-role"><option value="user" ${user.role==='user'?'selected':''}>일반사용자</option><option value="admin" ${user.role==='admin'?'selected':''}>관리자</option></select></label>
+    <label>계정 상태<select id="ue-active"><option value="true" ${user.active?'selected':''}>사용</option><option value="false" ${!user.active?'selected':''}>사용중지</option></select></label>
+    <div id="ue-error" class="form-error" aria-live="polite"></div>
+    <div class="save-bar"><span></span><button type="submit" class="primary-button">저장</button></div>
+  </form>`);
+  $('#user-edit-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const err = $('#ue-error'); err.textContent = '';
+    try {
+      const body = {
+        display_name: $('#ue-display-name').value,
+        role: $('#ue-role').value,
+        active: $('#ue-active').value === 'true',
+      };
+      await api(`/api/users/${user.id}`, json('PUT', body));
+      closeModal();
+      toast('사용자 정보가 수정되었습니다.');
+      await loadUsersList($('#users-search')?.value || '');
+    } catch (ex) { err.textContent = ex.message; }
+  });
+}
+
+function openResetPasswordModal(user) {
+  modal(`<h3>비밀번호 초기화</h3>
+  <p class="modal-info">${escapeHtml(user.display_name)} (${escapeHtml(user.username)}) 사용자의 비밀번호를 초기화합니다.</p>
+  <p class="modal-warn">초기화 후 사용자는 다음 로그인 시 새 비밀번호를 설정해야 합니다.</p>
+  <form id="reset-pw-form" class="stack-form">
+    <label>새 임시 비밀번호<input id="rp-password" type="password" required autocomplete="new-password"></label>
+    <label>임시 비밀번호 확인<input id="rp-password-confirm" type="password" required autocomplete="new-password"></label>
+    <div class="form-hint">최소 8자 이상, 사용자 ID와 다른 비밀번호를 입력하세요.</div>
+    <div id="rp-error" class="form-error" aria-live="polite"></div>
+    <div class="save-bar"><button type="button" class="ghost-button" id="rp-cancel">취소</button><button type="submit" class="primary-button">비밀번호 초기화</button></div>
+  </form>`);
+  $('#rp-cancel').addEventListener('click', closeModal);
+  $('#reset-pw-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const err = $('#rp-error'); err.textContent = '';
+    try {
+      const body = {
+        password: $('#rp-password').value,
+        password_confirm: $('#rp-password-confirm').value,
+      };
+      await api(`/api/users/${user.id}/reset-password`, json('POST', body));
+      closeModal();
+      toast('비밀번호가 초기화되었습니다.');
+      await loadUsersList($('#users-search')?.value || '');
+    } catch (ex) { err.textContent = ex.message; }
+  });
+}
+
+async function confirmDeactivate(user) {
+  modal(`<h3>계정 사용중지</h3>
+  <p>${escapeHtml(user.display_name)} (${escapeHtml(user.username)}) 사용자를 사용중지 하시겠습니까?</p>
+  <p class="modal-warn">사용중지된 계정은 로그인할 수 없습니다. 기존 업무 기록은 유지됩니다.</p>
+  <div class="save-bar"><button type="button" class="ghost-button" id="da-cancel">취소</button><button type="button" class="danger-button" id="da-confirm">사용중지</button></div>`);
+  $('#da-cancel').addEventListener('click', closeModal);
+  $('#da-confirm').addEventListener('click', async () => {
+    try {
+      await api(`/api/users/${user.id}`, json('PUT', { active: false }));
+      closeModal();
+      toast('사용자 계정이 사용중지되었습니다.');
+      await loadUsersList($('#users-search')?.value || '');
+    } catch (ex) { closeModal(); toast(ex.message, true); }
+  });
+}
+
+async function confirmActivate(user) {
+  try {
+    await api(`/api/users/${user.id}`, json('PUT', { active: true }));
+    toast('사용자 계정이 사용 재개되었습니다.');
+    await loadUsersList($('#users-search')?.value || '');
+  } catch (ex) { toast(ex.message, true); }
+}
+
+function openChangePasswordModal(forced) {
+  modal(`<h3>${forced?'비밀번호 변경':'비밀번호 변경'}</h3>
+  ${forced?'<p class="modal-warn">보안을 위해 비밀번호를 변경해야 합니다. 비밀번호를 변경하기 전에는 다른 업무 화면을 사용할 수 없습니다.</p>':''}
+  <form id="change-pw-form" class="stack-form">
+    <label>현재 비밀번호<input id="cp-current" type="password" required autocomplete="current-password"></label>
+    <label>새 비밀번호<input id="cp-new" type="password" required autocomplete="new-password"></label>
+    <label>새 비밀번호 확인<input id="cp-confirm" type="password" required autocomplete="new-password"></label>
+    <div class="form-hint">최소 8자 이상, 사용자 ID와 다른 비밀번호를 입력하세요.</div>
+    <div id="cp-error" class="form-error" aria-live="polite"></div>
+    <div class="save-bar"><span></span><button type="submit" class="primary-button">비밀번호 변경</button></div>
+  </form>`);
+  if (forced) {
+    $('.modal-backdrop').removeEventListener('click', ()=>{});
+    $('.modal-backdrop').addEventListener('click', e => { if (e.target.classList.contains('modal-backdrop')) { /* prevent close */ } });
+  }
+  $('#change-pw-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const err = $('#cp-error'); err.textContent = '';
+    try {
+      const body = {
+        current_password: $('#cp-current').value,
+        new_password: $('#cp-new').value,
+        new_password_confirm: $('#cp-confirm').value,
+      };
+      await api('/api/auth/change-password', json('POST', body));
+      closeModal();
+      toast('비밀번호가 변경되었습니다.');
+      if (forced) {
+        location.href = '/';
+      }
+    } catch (ex) { err.textContent = ex.message; }
+  });
+}
+
+// ==================== 시스템 데이터 백업 ====================
+
+function fmtFileSize(bytes) {
+  if (!bytes) return '-';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+  return (bytes / 1073741824).toFixed(2) + ' GB';
+}
+
+async function initBackup() {
+  await loadBackupList();
+}
+
+async function loadBackupList() {
+  const root = $('#backup-root');
+  if (!root) return;
+  root.innerHTML = '<div class="empty-editor">불러오는 중입니다.</div>';
+  try {
+    const data = await api('/api/admin/backups');
+    const rows = data.items;
+    if (!rows.length) {
+      root.innerHTML = '<div class="empty-editor">생성된 백업파일이 없습니다. 상단의 [지금 백업] 버튼을 눌러 백업을 생성하세요.</div>';
+      return;
+    }
+    root.innerHTML = `<div class="table-wrap"><table class="data-table"><thead><tr>
+      <th>생성일시</th><th>구분</th><th>파일크기</th><th>상태</th><th>작업</th>
+    </tr></thead><tbody>${rows.map(r=>`<tr data-backup-id="${r.id}">
+      <td>${fmtDateTime(r.created_at)}</td>
+      <td>${r.backup_type==='auto'?'자동':'수동'}</td>
+      <td>${fmtFileSize(r.file_size)}</td>
+      <td>${r.status==='completed'?'<span class="badge badge-ok">정상</span>':'<span class="badge badge-warn">오류</span>'}</td>
+      <td>
+        <button class="ghost-button" data-act="download" data-id="${r.id}">다운로드</button>
+        ${r.backup_type==='manual'?`<button class="ghost-button" data-act="delete" data-id="${r.id}">삭제</button>`:''}
+      </td>
+    </tr>`).join('')}</tbody></table></div>`;
+    $$('button[data-act]', root).forEach(btn => btn.addEventListener('click', () => {
+      const act = btn.dataset.act;
+      const id = btn.dataset.id;
+      if (act === 'download') downloadBackup(id);
+      else if (act === 'delete') confirmDeleteBackup(id, btn.closest('tr'));
+    }));
+  } catch (e) {
+    root.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function createBackup() {
+  const btn = $('#create-backup-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '백업 생성 중...'; }
+  try {
+    await api('/api/admin/backups', { method: 'POST' });
+    toast('시스템 데이터 백업이 생성되었습니다.');
+    await loadBackupList();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '지금 백업'; }
+  }
+}
+
+function downloadBackup(id) {
+  window.location.href = `/api/admin/backups/${id}/download`;
+  toast('다운로드를 시작했습니다. 중요한 백업파일은 PC 외의 별도 저장장치에도 보관하는 것을 권장합니다.');
+}
+
+async function confirmDeleteBackup(id, row) {
+  modal(`<h3>백업파일 삭제</h3>
+  <p>이 백업파일을 삭제하시겠습니까? 삭제 후 복구할 수 없습니다.</p>
+  <div class="save-bar"><button type="button" class="ghost-button" id="bd-cancel">취소</button><button type="button" class="danger-button" id="bd-confirm">삭제</button></div>`);
+  $('#bd-cancel').addEventListener('click', closeModal);
+  $('#bd-confirm').addEventListener('click', async () => {
+    try {
+      await api(`/api/admin/backups/${id}`, { method: 'DELETE' });
+      closeModal();
+      toast('백업파일이 삭제되었습니다.');
+      await loadBackupList();
+    } catch (e) { closeModal(); toast(e.message, true); }
+  });
+}
+
+// ==================== Excel 데이터 아카이브 ====================
+
+async function initArchive() {
+  await loadArchiveList();
+}
+
+async function loadArchiveList() {
+  const root = $('#archive-root');
+  if (!root) return;
+  root.innerHTML = '<div class="empty-editor">불러오는 중입니다.</div>';
+  try {
+    const data = await api('/api/admin/archives');
+    const rows = data.items;
+    if (!rows.length) {
+      root.innerHTML = '<div class="empty-editor">생성된 Excel 아카이브가 없습니다. 상단의 [Excel 아카이브 생성] 버튼을 눌러 생성하세요.</div>';
+      return;
+    }
+    root.innerHTML = `<div class="table-wrap"><table class="data-table"><thead><tr>
+      <th>생성일시</th><th>조회기간</th><th>파일크기</th><th>상태</th><th>작업</th>
+    </tr></thead><tbody>${rows.map(r=>`<tr data-archive-id="${r.id}">
+      <td>${fmtDateTime(r.created_at)}</td>
+      <td>${r.date_from && r.date_to ? r.date_from + ' ~ ' + r.date_to : '전체 데이터'}</td>
+      <td>${fmtFileSize(r.file_size)}</td>
+      <td>${r.status==='completed'?'<span class="badge badge-ok">다운로드 가능</span>':'<span class="badge badge-warn">만료</span>'}</td>
+      <td>
+        ${r.status==='completed'?`<button class="ghost-button" data-act="download" data-id="${r.id}">다운로드</button>`:''}
+        <button class="ghost-button" data-act="delete" data-id="${r.id}">삭제</button>
+      </td>
+    </tr>`).join('')}</tbody></table></div>`;
+    $$('button[data-act]', root).forEach(btn => btn.addEventListener('click', () => {
+      const act = btn.dataset.act;
+      const id = btn.dataset.id;
+      if (act === 'download') downloadArchive(id);
+      else if (act === 'delete') confirmDeleteArchive(id);
+    }));
+  } catch (e) {
+    root.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function createArchive() {
+  const btn = $('#create-archive-btn');
+  const dateFrom = $('#archive-date-from')?.value || '';
+  const dateTo = $('#archive-date-to')?.value || '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Excel 생성 중...'; }
+  try {
+    let url = '/api/admin/archives';
+    const params = [];
+    if (dateFrom) params.push(`date_from=${dateFrom}`);
+    if (dateTo) params.push(`date_to=${dateTo}`);
+    if (params.length) url += '?' + params.join('&');
+    const result = await api(url, { method: 'POST' });
+    toast('Excel 데이터 아카이브가 생성되었습니다.');
+    await loadArchiveList();
+    modal(`<h3>Excel 아카이브 생성 완료</h3>
+    <p class="modal-info">파일명: ${escapeHtml(result.filename)}</p>
+    <p class="modal-info">파일 크기: ${fmtFileSize(result.file_size)}</p>
+    <p class="modal-warn">이 파일은 24시간 후 서버에서 자동 삭제됩니다. 미리 다운로드하여 보관하세요.</p>
+    <div class="save-bar"><span></span><button type="button" class="primary-button" id="archive-download-now">다운로드</button></div>`);
+    $('#archive-download-now').addEventListener('click', () => {
+      closeModal();
+      downloadArchive(result.id);
+    });
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Excel 아카이브 생성'; }
+  }
+}
+
+function downloadArchive(id) {
+  window.location.href = `/api/admin/archives/${id}/download`;
+  toast('Excel 파일 다운로드를 시작했습니다.');
+}
+
+async function confirmDeleteArchive(id) {
+  modal(`<h3>아카이브 삭제</h3>
+  <p>이 Excel 아카이브 파일을 삭제하시겠습니까?</p>
+  <div class="save-bar"><button type="button" class="ghost-button" id="ad-cancel">취소</button><button type="button" class="danger-button" id="ad-confirm">삭제</button></div>`);
+  $('#ad-cancel').addEventListener('click', closeModal);
+  $('#ad-confirm').addEventListener('click', async () => {
+    try {
+      await api(`/api/admin/archives/${id}`, { method: 'DELETE' });
+      closeModal();
+      toast('아카이브 파일이 삭제되었습니다.');
+      await loadArchiveList();
+    } catch (e) { closeModal(); toast(e.message, true); }
+  });
+}
+
+// ==================== 발주 관리 ====================
+
+const ORDER_STATUS_LABELS = { pending: '미처리', ordered: '발주완료', skipped: '발주안함' };
+
+function orderRowKey(r) {
+  return `${r.service_date}|${r.ingredient_id != null ? r.ingredient_id : 'n:' + r.ingredient_name}`;
+}
+
+function ordersUnitOptions(selected) {
+  const units = state.codes?.units || ['kg','g','L','ml','개','봉','팩','판','통','캔','병','박스','단','묶음','장','줄','포','관','밧트'];
+  return units.map(u => `<option ${u===selected?'selected':''}>${escapeHtml(u)}</option>`).join('');
+}
+
+function ordersStatusOptions(selected) {
+  return Object.entries(ORDER_STATUS_LABELS).map(([value,label]) => `<option value="${value}" ${value===selected?'selected':''}>${label}</option>`).join('');
+}
+
+function ordersWeekdayLabel(dateStr) {
+  const d = new Date(dateStr + 'T12:00:00');
+  return ['일','월','화','수','목','금','토'][d.getDay()];
+}
+
+function ordersMenuUsageLabel(r) {
+  if (!r.menus || !r.menus.length) return '—';
+  const names = r.menus.map(m => `${m.menu_name}(${m.meal_type_name || m.meal_type || ''})`);
+  if (names.length <= 2) return names.join(', ');
+  return `${names.slice(0, 2).join(', ')} 외 ${names.length - 2}개`;
+}
+
+function ordersMenuDetailHtml(r) {
+  if (!r.menus || !r.menus.length) return '<span class="muted">식단에서 제외된 항목입니다.</span>';
+  return r.menus.map(m => {
+    const dateLabel = m.service_date ? `${m.service_date.slice(5).replace('-', '/')}(${ordersWeekdayLabel(m.service_date)})` : '';
+    const mealLabel = m.meal_type_name || m.meal_type || '';
+    return `<span class="order-menu-chip">${escapeHtml(dateLabel)} ${escapeHtml(mealLabel)} · ${escapeHtml(m.menu_name)} ${numberText(m.quantity)}${escapeHtml(m.unit || '')}</span>`;
+  }).join('');
+}
+
+async function initOrders() {
+  const from = $('#orders-date-from'), to = $('#orders-date-to');
+  if (from && !from.value) {
+    const start = mondayOf(new Date());
+    from.value = isoDate(start);
+    to.value = isoDate(addDays(start, 13));
+  }
+  await loadOrders();
+}
+
+async function loadOrders() {
+  const root = $('#orders-root');
+  if (!root) return;
+  const from = $('#orders-date-from')?.value, to = $('#orders-date-to')?.value;
+  if (!from || !to) { toast('조회기간을 지정해 주세요.', true); return; }
+  root.innerHTML = '<div class="empty-editor">불러오는 중입니다.</div>';
+  try {
+    const data = await api(`/api/orders?start_date=${from}&end_date=${to}`);
+    state.ordersItems = data.items;
+    state.ordersSelection = new Set();
+    state.ordersExpanded = new Set();
+    $('#orders-period-label').textContent = `${compactPeriodLabel(data.start_date, data.end_date)} · 재료 ${data.items.length}건`;
+    renderOrders();
+  } catch (e) {
+    root.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderOrders() {
+  const root = $('#orders-root');
+  if (!root) return;
+  const view = state.ordersView || 'ingredient';
+  const statusFilter = $('#orders-status-filter')?.value || '';
+  const q = ($('#orders-search')?.value || '').trim().toLowerCase();
+  let items = state.ordersItems.filter(r => {
+    if (statusFilter && r.status !== statusFilter) return false;
+    if (q && !r.ingredient_name.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  if (view === 'ingredient') {
+    items.sort((a, b) => a.ingredient_name.localeCompare(b.ingredient_name, 'ko') || a.service_date.localeCompare(b.service_date));
+  } else {
+    items.sort((a, b) => a.service_date.localeCompare(b.service_date) || a.ingredient_name.localeCompare(b.ingredient_name, 'ko'));
+  }
+  if (!items.length) {
+    root.innerHTML = '<div class="empty-editor">조회기간에 발주 대상 재료가 없습니다.</div>';
+    updateOrdersBulkBar();
+    return;
+  }
+  let prevGroup = null;
+  const bodyRows = items.map(r => {
+    const key = orderRowKey(r);
+    const group = view === 'ingredient' ? r.ingredient_name : r.service_date;
+    const groupStart = group !== prevGroup;
+    prevGroup = group;
+    const groupClass = groupStart ? ' order-group-start' : '';
+    const expanded = state.ordersExpanded.has(key);
+    const groupBadge = r.order_group_id ? '<span class="badge badge-ok order-group-badge">묶음발주</span>' : '';
+    const inPlanNote = r.in_plan ? '' : '<span class="badge badge-warn">식단 제외</span>';
+    const detailInner = expanded ? ordersMenuDetailHtml(r) : '';
+    return `<tr data-order-key="${key}" class="${groupClass}">
+      <td class="col-check"><input type="checkbox" class="order-check" data-key="${key}" ${state.ordersSelection.has(key)?'checked':''}></td>
+      <td class="order-ingredient-cell"><strong>${escapeHtml(r.ingredient_name)}</strong> ${groupBadge} ${inPlanNote}</td>
+      <td class="order-required">${numberText(r.required_quantity)}${escapeHtml(r.required_unit || '')}</td>
+      <td class="order-date-cell">${r.service_date.replaceAll('-', '.')}</td>
+      <td class="order-menus-cell"><button type="button" class="link-button menu-usage-toggle" data-key="${key}">${escapeHtml(ordersMenuUsageLabel(r))} ${r.menus && r.menus.length ? '▾' : ''}</button></td>
+      <td class="order-qty-cell"><input type="number" step="0.01" min="0" class="order-qty" value="${r.order_quantity ?? ''}"><select class="order-unit">${ordersUnitOptions(r.order_unit || r.required_unit || '')}</select></td>
+      <td><input type="date" class="order-date" value="${r.order_date || ''}"></td>
+      <td><input type="date" class="order-delivery" value="${r.delivery_date || ''}"></td>
+      <td><select class="order-status">${ordersStatusOptions(r.status)}</select></td>
+    </tr>
+    <tr class="order-menu-detail ${expanded?'':'hidden'}" data-detail-key="${key}"><td colspan="9"><div class="order-menu-detail-inner">${detailInner}</div></td></tr>`;
+  }).join('');
+  root.innerHTML = `<div class="table-wrap orders-table-wrap"><table class="data-table orders-table"><thead><tr>
+    <th class="col-check"><input type="checkbox" id="orders-check-all" ${items.length && items.every(r=>state.ordersSelection.has(orderRowKey(r)))?'checked':''}></th>
+    <th>재료</th><th>필요량</th><th>사용일</th><th>사용 메뉴</th><th>발주량</th><th>발주일</th><th>배송일</th><th>상태</th>
+  </tr></thead><tbody>${bodyRows}</tbody></table></div>`;
+  bindOrdersTableEvents();
+  updateOrdersBulkBar();
+}
+
+function bindOrdersTableEvents() {
+  const root = $('#orders-root');
+  if (!root) return;
+  $('#orders-check-all')?.addEventListener('change', e => {
+    $$('.order-check', root).forEach(cb => cb.checked = e.target.checked);
+    syncOrdersSelection();
+  });
+  $$('.order-check', root).forEach(cb => cb.addEventListener('change', syncOrdersSelection));
+  $$('.menu-usage-toggle', root).forEach(btn => btn.addEventListener('click', () => {
+    const key = btn.dataset.key;
+    const detail = $(`.order-menu-detail[data-detail-key="${key}"]`);
+    if (detail) {
+      const inner = $('.order-menu-detail-inner', detail);
+      if (inner && !inner.dataset.rendered) {
+        const item = state.ordersItems.find(r => orderRowKey(r) === key);
+        if (item) inner.innerHTML = ordersMenuDetailHtml(item);
+        if (inner) inner.dataset.rendered = '1';
+      }
+      detail.classList.toggle('hidden');
+      if (state.ordersExpanded.has(key)) state.ordersExpanded.delete(key); else state.ordersExpanded.add(key);
+    }
+  }));
+  $$('.order-qty', root).forEach(input => input.addEventListener('change', () => scheduleOrderSave(input.closest('tr'))));
+  $$('.order-unit', root).forEach(sel => sel.addEventListener('change', () => scheduleOrderSave(sel.closest('tr'))));
+  $$('.order-date', root).forEach(input => input.addEventListener('change', () => scheduleOrderSave(input.closest('tr'))));
+  $$('.order-delivery', root).forEach(input => input.addEventListener('change', () => scheduleOrderSave(input.closest('tr'))));
+  $$('.order-status', root).forEach(sel => sel.addEventListener('change', () => scheduleOrderSave(sel.closest('tr'))));
+}
+
+function syncOrdersSelection() {
+  const sel = new Set();
+  $$('.order-check:checked', $('#orders-root')).forEach(cb => sel.add(cb.dataset.key));
+  state.ordersSelection = sel;
+  updateOrdersBulkBar();
+}
+
+function updateOrdersBulkBar() {
+  const bar = $('#orders-bulk-bar');
+  if (!bar) return;
+  const sel = state.ordersSelection;
+  if (!sel.size) { bar.classList.add('hidden'); bar.innerHTML = ''; return; }
+  const selectedItems = state.ordersItems.filter(r => sel.has(orderRowKey(r)));
+  const names = new Set(selectedItems.map(r => r.ingredient_name));
+  const sameIngredient = names.size === 1;
+  const totalRequired = selectedItems.reduce((s, r) => s + (r.required_quantity || 0), 0);
+  const unit = selectedItems[0]?.required_unit || '';
+  const label = sameIngredient
+    ? `${selectedItems[0].ingredient_name} ${selectedItems.length}건 선택 · 필요량 합계 ${numberText(totalRequired)}${escapeHtml(unit)}`
+    : `${selectedItems.length}개 항목 선택`;
+  bar.innerHTML = `<span class="orders-bulk-label">${escapeHtml(label)}</span>
+    ${sameIngredient ? '<button class="primary-button" id="orders-group-btn">선택 항목 묶어 발주</button>' : ''}
+    <button class="ghost-button" id="orders-bulk-date">발주일 변경</button>
+    <button class="ghost-button" id="orders-bulk-delivery">배송일 변경</button>
+    <button class="ghost-button" id="orders-bulk-ordered">발주 완료</button>
+    <button class="ghost-button" id="orders-bulk-skipped">발주 안함</button>
+    <button class="ghost-button" id="orders-bulk-clear">선택 해제</button>`;
+  bar.classList.remove('hidden');
+  $('#orders-group-btn')?.addEventListener('click', openGroupOrderModal);
+  $('#orders-bulk-date')?.addEventListener('click', () => openBulkDateModal('order_date'));
+  $('#orders-bulk-delivery')?.addEventListener('click', () => openBulkDateModal('delivery_date'));
+  $('#orders-bulk-ordered')?.addEventListener('click', () => applyBulkStatus('ordered'));
+  $('#orders-bulk-skipped')?.addEventListener('click', () => applyBulkStatus('skipped'));
+  $('#orders-bulk-clear')?.addEventListener('click', () => {
+    $$('.order-check', $('#orders-root')).forEach(cb => cb.checked = false);
+    syncOrdersSelection();
+  });
+}
+
+let _orderSaveTimer = null;
+function scheduleOrderSave(tr) {
+  clearTimeout(_orderSaveTimer);
+  _orderSaveTimer = setTimeout(() => saveOrderRow(tr), 600);
+}
+
+function flashOrdersSaveState(message) {
+  const el = $('#orders-save-state');
+  if (!el) return;
+  el.textContent = message;
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => { el.textContent = ''; }, 1800);
+}
+
+async function saveOrderRow(tr) {
+  const key = tr.dataset.orderKey;
+  const item = state.ordersItems.find(r => orderRowKey(r) === key);
+  if (!item) return;
+  const body = {
+    service_date: item.service_date,
+    ingredient_id: item.ingredient_id,
+    ingredient_name: item.ingredient_name,
+    required_quantity: item.required_quantity,
+    required_unit: item.required_unit,
+    order_quantity: $('.order-qty', tr).value === '' ? null : Number($('.order-qty', tr).value),
+    order_unit: $('.order-unit', tr).value,
+    order_date: $('.order-date', tr).value || null,
+    delivery_date: $('.order-delivery', tr).value || null,
+    status: $('.order-status', tr).value,
+  };
+  try {
+    await api('/api/orders/items', json('PUT', { items: [body] }));
+    item.order_quantity = body.order_quantity;
+    item.order_unit = body.order_unit;
+    item.order_date = body.order_date;
+    item.delivery_date = body.delivery_date;
+    item.status = body.status;
+    flashOrdersSaveState('저장됨');
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+function openGroupOrderModal() {
+  const items = state.ordersItems.filter(r => state.ordersSelection.has(orderRowKey(r)));
+  if (!items.length) return;
+  const first = items[0];
+  const dates = [...new Set(items.map(r => r.service_date))].sort();
+  const totalRequired = items.reduce((s, r) => s + (r.required_quantity || 0), 0);
+  const unit = first.required_unit || '';
+  const orderDate = dates[0] ? isoDate(addDays(dates[0], -1)) : '';
+  modal(`<div class="modal-head"><h3>${escapeHtml(first.ingredient_name)} 묶음 발주</h3><button class="icon-button" onclick="closeModal()">×</button></div>
+  <div class="stack-form">
+    <p class="modal-info">선택 사용분 ${items.length}건 · 사용기간 ${dates[0]} ~ ${dates[dates.length - 1]}</p>
+    <p class="modal-info">필요량 합계 <strong>${numberText(totalRequired)}${escapeHtml(unit)}</strong></p>
+    <label>발주량<input id="og-quantity" type="number" step="0.01" min="0" value="${totalRequired}"></label>
+    <label>단위<select id="og-unit">${ordersUnitOptions(unit)}</select></label>
+    <label>발주일<input id="og-order-date" type="date" value="${orderDate}"></label>
+    <label>배송일<input id="og-delivery-date" type="date" value="${dates[0]}"></label>
+    <div id="og-error" class="form-error" aria-live="polite"></div>
+    <div class="save-bar"><button type="button" class="ghost-button" id="og-cancel">취소</button><button type="button" class="primary-button" id="og-confirm">발주 완료</button></div>
+  </div>`);
+  $('#og-cancel').addEventListener('click', closeModal);
+  $('#og-confirm').addEventListener('click', async () => {
+    const err = $('#og-error'); err.textContent = '';
+    try {
+      await api('/api/orders/group', json('POST', {
+        items: items.map(orderItemBody),
+        order_quantity: $('#og-quantity').value === '' ? null : Number($('#og-quantity').value),
+        order_unit: $('#og-unit').value,
+        order_date: $('#og-order-date').value || null,
+        delivery_date: $('#og-delivery-date').value || null,
+      }));
+      closeModal();
+      toast(`${first.ingredient_name} 묶음 발주가 완료되었습니다.`);
+      await loadOrders();
+    } catch (e) { err.textContent = e.message; }
+  });
+}
+
+function openBulkDateModal(field) {
+  const items = state.ordersItems.filter(r => state.ordersSelection.has(orderRowKey(r)));
+  if (!items.length) return;
+  const label = field === 'order_date' ? '발주일' : '배송일';
+  modal(`<div class="modal-head"><h3>${label} 일괄 변경</h3><button class="icon-button" onclick="closeModal()">×</button></div>
+  <div class="stack-form">
+    <p class="modal-info">선택한 ${items.length}개 항목의 ${label}을 일괄 변경합니다.</p>
+    <label>${label}<input id="bd-date" type="date"></label>
+    <div id="bd-error" class="form-error" aria-live="polite"></div>
+    <div class="save-bar"><button type="button" class="ghost-button" id="bd-cancel">취소</button><button type="button" class="primary-button" id="bd-confirm">변경</button></div>
+  </div>`);
+  $('#bd-cancel').addEventListener('click', closeModal);
+  $('#bd-confirm').addEventListener('click', async () => {
+    const err = $('#bd-error'); err.textContent = '';
+    const value = $('#bd-date').value;
+    if (!value) { err.textContent = `${label}을 선택해 주세요.`; return; }
+    try {
+      await bulkUpdateOrders({ [field]: value });
+      closeModal();
+      toast(`${items.length}개 항목의 ${label}을 변경했습니다.`);
+      await loadOrders();
+    } catch (e) { err.textContent = e.message; }
+  });
+}
+
+function orderItemBody(r) {
+  return {
+    service_date: r.service_date,
+    ingredient_id: r.ingredient_id,
+    ingredient_name: r.ingredient_name,
+    required_quantity: r.required_quantity,
+    required_unit: r.required_unit,
+    order_quantity: r.order_quantity,
+    order_unit: r.order_unit,
+    order_date: r.order_date,
+    delivery_date: r.delivery_date,
+    status: r.status,
+  };
+}
+
+async function bulkUpdateOrders(extra) {
+  const items = state.ordersItems.filter(r => state.ordersSelection.has(orderRowKey(r)));
+  const body = { items: items.map(orderItemBody), ...extra };
+  return api('/api/orders/bulk', json('PUT', body));
+}
+
+function applyBulkStatus(status) {
+  const items = state.ordersItems.filter(r => state.ordersSelection.has(orderRowKey(r)));
+  if (!items.length) return;
+  const label = ORDER_STATUS_LABELS[status];
+  modal(`<div class="modal-head"><h3>${label} 처리</h3><button class="icon-button" onclick="closeModal()">×</button></div>
+  <p class="modal-info">선택한 ${items.length}개 항목을 <strong>${label}</strong> 상태로 변경합니다.</p>
+  <div class="save-bar"><button type="button" class="ghost-button" id="bs-cancel">취소</button><button type="button" class="primary-button" id="bs-confirm">${label}</button></div>`);
+  $('#bs-cancel').addEventListener('click', closeModal);
+  $('#bs-confirm').addEventListener('click', async () => {
+    try {
+      await bulkUpdateOrders({ status });
+      closeModal();
+      toast(`${items.length}개 항목을 ${label} 처리했습니다.`);
+      await loadOrders();
+    } catch (e) { closeModal(); toast(e.message, true); }
+  });
+}
+
+document.addEventListener('DOMContentLoaded',()=>init().catch(e=>toast(e.message,true)));

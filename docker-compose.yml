@@ -26,9 +26,11 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://cafeteria:cafeteria@db:5432/cafeteria}
       STORAGE_ROOT: /app/storage
+      DATA_EXPORT_ROOT: /app/data
       TZ: Asia/Seoul
     volumes:
       - ./storage:/app/storage
+      - ./data:/app/data
       # HWPX templates are stored under /app/storage/templates/ and persisted via the storage volume above.
     depends_on:
       db:

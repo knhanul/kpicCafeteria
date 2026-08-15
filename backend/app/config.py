@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     admin_display_name: str = "영양사"
     database_url: str = "sqlite:///./cafeteria.db"
     storage_root: Path = Path("./storage")
+    data_export_root: Path = Path("./data")
     public_base_url: str = "http://localhost"
     timezone: str = "Asia/Seoul"
 
@@ -27,7 +28,25 @@ class Settings(BaseSettings):
     def generated_dir(self) -> Path:
         return self.storage_root / "generated"
 
+    @property
+    def backup_dir(self) -> Path:
+        return self.data_export_root / "backup"
+
+    @property
+    def backup_auto_dir(self) -> Path:
+        return self.backup_dir / "auto"
+
+    @property
+    def backup_manual_dir(self) -> Path:
+        return self.backup_dir / "manual"
+
+    @property
+    def archive_dir(self) -> Path:
+        return self.data_export_root / "archive"
+
 
 settings = Settings()
 for path in (settings.storage_root, settings.import_dir, settings.template_dir, settings.generated_dir):
+    path.mkdir(parents=True, exist_ok=True)
+for path in (settings.backup_auto_dir, settings.backup_manual_dir, settings.archive_dir):
     path.mkdir(parents=True, exist_ok=True)

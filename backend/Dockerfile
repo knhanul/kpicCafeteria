@@ -10,6 +10,7 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install -r /app/requirements.txt
 RUN apt-get update && apt-get install -y --no-install-recommends \
+      postgresql-client \
       fonts-noto-cjk fonts-unifont fontconfig curl \
       libnss3 libnspr4 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 \
       libcups2 libdrm2 libxcb1 libxkbcommon0 libx11-6 libxcomposite1 \
