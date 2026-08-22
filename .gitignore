@@ -1,4 +1,5 @@
 .env
+.venv/
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -11,3 +12,5 @@ storage/templates/*
 !storage/templates/.gitkeep
 backup/
 dist/
+cafeteria_latest.zip
+data/archive/
