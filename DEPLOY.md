@@ -85,229 +85,147 @@ cp .env.example .env
 
 ## 4. 서버 배포 (운영)
 
-### 4.1 서버 준비
-
-- Docker 및 Docker Compose v2 설치
-- 방화벽에서 80번 포트 개방 (또는 리버스 프록시 사용)
-
-### 4.2 소스 코드 전달
-
-```bash
-# Git에서 클론
-git clone <repository-url> /opt/kpicCafeteria
-cd /opt/kpicCafeteria
-
-# 또는 기존 zip 파일을 서버로 전송 후 압축 해제
-unzip cafeteria_latest.zip -d /opt/kpicCafeteria
-cd /opt/kpicCafeteria
-```
-
-### 4.3 환경 설정
-
-```bash
-cp .env.example .env
-vi .env
-```
-
-운영 환경에 맞게 다음 항목을 변경합니다:
-
-```ini
-APP_SECRET=<랜덤 문자열 32자 이상>
-ADMIN_PASSWORD=<강력한 비밀번호>
-PUBLIC_BASE_URL=http://<서버-IP-또는-도메인>
-```
-
-### 4.4 빌드 및 시작
-
-```bash
-docker compose up --build -d
-docker compose ps
-```
-
-### 4.5 접속 확인
-
-```
-http://<서버-IP-또는-도메인>
-```
-
-### 4.6 HTTPS 적성 (선택)
-
-nginx 컨테이너 앞에 리버스 프록시(예: Caddy, Traefik)를 두거나, `nginx/default.conf`에 SSL 인증서를 추가합니다.
-
-**Caddy 예시:**
-
-```caddyfile
-cafeteria.example.com {
-    reverse_proxy localhost:80
-}
-```
-
-**nginx 직접 SSL 적용 시:**
-
-1. `nginx/` 폴더에 인증서 파일 추가
-2. `nginx/default.conf`에 443 리스너 및 SSL 설정 추가
-3. `docker-compose.yml`의 nginx 포트에 `443:443` 추가
-4. `docker compose up -d`로 재시작
-
-## 5. 최초 데이터 구축
-
-1. 로그인 (`.env`의 `ADMIN_USERNAME` / `ADMIN_PASSWORD`)
-2. 좌측 **기본 데이터 관리** 메뉴 → **기초 데이터 구축** 탭
-3. 로컬 XLSX 파일 선택
-4. **파일 검증** 실행
-5. 최초 구축은 **기존 업무데이터 교체** 선택
-6. **기초데이터 생성** 실행
-
-## 6. 데이터 백업 및 복원
-
-### 6.1 백업
+### 개발 PC
 
 ```powershell
-.\scripts\backup.ps1
+# 1) ZIP 생성
+
+cd C:\Pjt\kpicCafeteria
+.\scripts\make-deploy-zip.ps1
+
+# 2) 서버 업로드
+
+scp ".\dist\kpicCafeteria-update.zip" root@8.219.243.65:/tmp/cafeteria-update.zip
 ```
 
-`backup/cafeteria_YYYYMMDD_HHMMSS.sql` 파일이 생성됩니다.
+### 서버
 
-수동 백업:
+set -euo pipefail
 
-```bash
-docker compose exec -T db pg_dump -U cafeteria cafeteria > backup.sql
-```
+cd /opt/cafeteria
 
-### 6.2 복원
+# --------------------------------------
+# 1. 배포 ID
+# --------------------------------------
 
-```bash
-docker compose exec -T db psql -U cafeteria cafeteria < backup.sql
-```
+TS=$(date +%Y%m%d-%H%M%S)
+BACKUP_DIR=/opt/cafeteria-backups
 
-### 6.3 데이터 볼륨
+mkdir -p "$BACKUP_DIR"
 
-PostgreSQL 데이터는 `postgres_data` Docker 볼륨에 저장됩니다. 컨테이너를 삭제해도 데이터는 유지됩니다.
 
-```bash
-# 볼륨 확인
-docker volume ls | grep postgres_data
+# --------------------------------------
+# 2. 환경설정 백업
+# --------------------------------------
 
-# 볼륨까지 완전 삭제 (주의: 모든 데이터 손실)
-docker compose down -v
-```
+cp .env "$BACKUP_DIR/env-$TS"
+chmod 600 "$BACKUP_DIR/env-$TS"
 
-## 7. 업데이트 (버전 갱신)
 
-```bash
-# 1. 백업
-.\scripts\backup.ps1    # Windows
-./scripts/backup.ps1   # 또는 수동 pg_dump
+# --------------------------------------
+# 3. DB 백업
+# --------------------------------------
 
-# 2. 소스 코드 갱신
-git pull origin main
-# 또는 새 zip 파일로 덮어쓰기
+docker compose exec -T db \
+  pg_dump -U cafeteria cafeteria \
+  | gzip > "$BACKUP_DIR/db-$TS.sql.gz"
 
-# 3. 재빌드 및 재시작
-docker compose up --build -d
+test -s "$BACKUP_DIR/db-$TS.sql.gz"
+gzip -t "$BACKUP_DIR/db-$TS.sql.gz"
 
-# 4. 확인
+
+# --------------------------------------
+# 4. 현재 소스 백업
+# --------------------------------------
+
+tar \
+  --exclude='.venv' \
+  --exclude='.git' \
+  --exclude='data' \
+  --exclude='storage' \
+  -czf "$BACKUP_DIR/source-$TS.tar.gz" \
+  -C /opt/cafeteria .
+
+
+# --------------------------------------
+# 5. 새 배포본 압축 해제
+# --------------------------------------
+
+rm -rf /tmp/cafeteria-update
+mkdir -p /tmp/cafeteria-update
+
+unzip -q /tmp/cafeteria-update.zip \
+  -d /tmp/cafeteria-update
+
+
+# --------------------------------------
+# 6. 배포본 검증
+# --------------------------------------
+
+test -f /tmp/cafeteria-update/docker-compose.yml
+test -d /tmp/cafeteria-update/backend
+
+
+# --------------------------------------
+# 7. 소스 반영
+# --------------------------------------
+
+rsync -a --delete \
+  --exclude='.env' \
+  --exclude='data/' \
+  --exclude='storage/' \
+  --exclude='.git/' \
+  --exclude='.venv/' \
+  /tmp/cafeteria-update/ \
+  /opt/cafeteria/
+
+
+# --------------------------------------
+# 8. Docker 설정 검증
+# --------------------------------------
+
+cd /opt/cafeteria
+
+docker compose config -q
+
+
+# --------------------------------------
+# 9. 이미지 빌드
+# --------------------------------------
+
+docker compose build
+
+
+# --------------------------------------
+# 10. 서비스 반영
+# --------------------------------------
+
+docker compose up -d --remove-orphans
+
+
+# --------------------------------------
+# 11. 상태 확인
+# --------------------------------------
+
 docker compose ps
-docker compose logs -f app
-```
 
-## 8. 테스트 실행
+docker compose logs --tail=100 app
 
-```bash
-docker compose exec app pytest -q
-```
 
-## 9. 문제 해결
+# --------------------------------------
+# 12. 내부 Health Check
+# --------------------------------------
 
-### 컨테이너가 시작되지 않는 경우
+curl --fail --silent --show-error \
+  http://127.0.0.1:8080/health
 
-```bash
-# 로그 확인
-docker compose logs app
-docker compose logs db
-docker compose logs nginx
 
-# 컨테이너 상태 확인
-docker compose ps -a
-```
+# --------------------------------------
+# 13. 외부 Health Check
+# --------------------------------------
 
-### DB 연결 오류
+curl --fail --silent --show-error \
+  https://post.nuni.co.kr/health
 
-```bash
-# DB 헬스체크 확인
-docker compose ps db
-
-# DB에 직접 접속
-docker compose exec db psql -U cafeteria -d cafeteria
-```
-
-### 포트 충돌
-
-80번 포트가 사용 중인 경우 `docker-compose.yml`의 nginx 포트를 변경합니다:
-
-```yaml
-nginx:
-  ports:
-    - "8080:80"   # 8080으로 변경
-```
-
-### 앱 재시작 (이미지 재빌드 없이)
-
-```bash
-docker compose restart app
-```
-
-### 캐시 초기화 후 재빌드
-
-```bash
-docker compose build --no-cache app
-docker compose up -d
-```
-
-## 10. 아키텍처 개요
-
-```
-Client (Browser)
-    │
-    ▼
-Nginx (port 80) ── reverse proxy ──▶ FastAPI App (port 8000)
-                                        │
-                                        ▼
-                                    PostgreSQL 16
-                                        │
-                                        ▼
-                                    postgres_data (volume)
-
-App Container:
-  - uvicorn (FastAPI)
-  - Playwright Chromium (PDF 생성)
-  - Noto CJK 폰트 (한글 렌더링)
-```
-
-## 11. 주요 파일 구조
-
-```
-kpicCafeteria/
-├── .env.example          환경 변수 템플릿
-├── docker-compose.yml    컨테이너 오케스트레이션
-├── nginx/
-│   └── default.conf      nginx 리버스 프록시 설정
-├── backend/
-│   ├── Dockerfile        앱 컨테이너 이미지 정의
-│   ├── entrypoint.sh     컨테이너 시작 스크립트
-│   ├── requirements.txt  Python 의존성
-│   └── app/
-│       ├── main.py       FastAPI 앱 진입점
-│       ├── routers/      API 라우터
-│       ├── models.py     SQLAlchemy 모델
-│       ├── templates/    Jinja2 HTML 템플릿
-│       └── static/       CSS, JavaScript
-├── scripts/
-│   ├── start.ps1         Windows 시작 스크립트
-│   ├── start.sh          Linux/macOS 시작 스크립트
-│   ├── stop.ps1          중지 스크립트
-│   ├── logs.ps1          로그 확인 스크립트
-│   └── backup.ps1        백업 스크립트
-├── storage/              업로드, 템플릿, 생성 파일 (볼륨 마운트)
-└── data/                 데이터 내보내기 (볼륨 마운트)
-```
+echo
+echo "Deployment successful: $TS"
