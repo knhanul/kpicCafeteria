@@ -115,7 +115,7 @@ class MealPlanDocumentBuilder(BaseDocumentBuilder[MealPlanDocumentDTO]):
             meal_count=service.planned_count,
             service_time=service.service_time,
             concept_title=service.concept_title,
-            menus=[menu.menu_name_snapshot for menu in service.menus],
+            menus=[f"★ {menu.menu_name_snapshot}" if menu.is_representative else menu.menu_name_snapshot for menu in service.menus],
         )
 
 
@@ -166,8 +166,8 @@ class CookingInstructionDocumentBuilder(BaseDocumentBuilder[CookingInstructionDo
         return CookingInstructionMenuDTO(
             name=menu.menu_name_snapshot,
             ingredients=ingredients,
-            instruction=menu.cooking_instruction or "",
-            note=menu.cooking_note or menu.note or "",
+            instruction="",
+            note=menu.note or "",
         )
 
     def _build_ingredient(self, item: MealServiceMenuIngredient) -> CookingInstructionIngredientDTO:

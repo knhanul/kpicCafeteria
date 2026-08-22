@@ -49,6 +49,9 @@ def upgrade_existing_schema(engine: Engine) -> None:
 
     if "recipes" not in inspector.get_table_names():
         return
+    legacy_service_menu_columns = {
+        col["name"] for col in inspector.get_columns("meal_service_menus")
+    } if "meal_service_menus" in inspector.get_table_names() else set()
     with engine.begin() as connection:
         if dialect == "postgresql":
             connection.execute(text("ALTER TABLE recipes DROP CONSTRAINT IF EXISTS recipes_menu_id_key"))
@@ -112,6 +115,11 @@ def upgrade_existing_schema(engine: Engine) -> None:
                 if "source_row" in msmi_cols:
                     connection.execute(text("ALTER TABLE meal_service_menu_ingredients ALTER COLUMN source_row TYPE TEXT"))
                 connection.execute(text("CREATE INDEX IF NOT EXISTS ix_meal_service_menu_ingredients_ingredient_id ON meal_service_menu_ingredients(ingredient_id)"))
+            # Legacy per-menu cooking instructions were replaced by MealServiceMenu.note.
+            if "meal_service_menus" in inspector.get_table_names():
+                for column in ("cooking_instruction", "cooking_note"):
+                    if column in legacy_service_menu_columns:
+                        connection.execute(text(f"ALTER TABLE meal_service_menus DROP COLUMN IF EXISTS {column}"))
         elif dialect == "sqlite":
             # SQLite cannot drop the legacy UNIQUE(menu_id) constraint in place.
             # Fresh test databases work normally. Existing SQLite users should export,
@@ -174,3 +182,7 @@ def upgrade_existing_schema(engine: Engine) -> None:
             # --- meal_service_menu_ingredients.ingredient_id index (SQLite) ---
             if "meal_service_menu_ingredients" in inspector.get_table_names():
                 connection.execute(text("CREATE INDEX IF NOT EXISTS ix_meal_service_menu_ingredients_ingredient_id ON meal_service_menu_ingredients(ingredient_id)"))
+            if "meal_service_menus" in inspector.get_table_names():
+                for column in ("cooking_instruction", "cooking_note"):
+                    if column in {col["name"] for col in inspector.get_columns("meal_service_menus")}:
+                        connection.execute(text(f"ALTER TABLE meal_service_menus DROP COLUMN {column}"))

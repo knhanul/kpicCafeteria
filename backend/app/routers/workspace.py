@@ -39,6 +39,10 @@ class ServiceUpdateBody(BaseModel):
     note: str | None = None
 
 
+class PostServiceNoteBody(BaseModel):
+    note: str | None = None
+
+
 class AddMenuBody(BaseModel):
     menu_id: int
     recipe_id: int | None = None
@@ -51,8 +55,6 @@ class ChangeRecipeBody(BaseModel):
 class ServiceMenuBody(BaseModel):
     note: str | None = None
     is_representative: bool = False
-    cooking_instruction: str | None = None
-    cooking_note: str | None = None
 
 
 class IngredientSnapshotBody(BaseModel):
@@ -185,6 +187,21 @@ def create_service(body: ServiceCreateBody, db: Session = Depends(get_db), user:
 
 @router.get("/services/{service_id}")
 def get_service(service_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    return meal_service_dict(service_detail(db, service_id))
+
+
+@router.put("/services/{service_id}/post-service-note")
+def save_post_service_note(
+    service_id: int,
+    body: PostServiceNoteBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    service = db.get(MealService, service_id)
+    if not service:
+        raise HTTPException(status_code=404, detail="배식을 찾을 수 없습니다.")
+    service.note = body.note.strip() if body.note and body.note.strip() else None
+    db.commit()
     return meal_service_dict(service_detail(db, service_id))
 
 
@@ -411,13 +428,7 @@ def update_service_menu(
     if not item:
         raise HTTPException(status_code=404, detail="식단 메뉴를 찾을 수 없습니다.")
     item.note = body.note
-    item.cooking_instruction = body.cooking_instruction
-    item.cooking_note = body.cooking_note
-    if body.is_representative:
-        for sibling in item.service.menus:
-            sibling.is_representative = sibling.id == item.id
-    else:
-        item.is_representative = False
+    item.is_representative = body.is_representative
     db.commit()
     return meal_service_dict(service_detail(db, item.meal_service_id))
 
@@ -497,19 +508,13 @@ def save_meal_editor(
     service.note = body.note
 
     # 2. Save each menu's note, representative, and ingredients
-    representative_set = False
     for menu_body in body.menus:
         if menu_body.service_menu_id:
             item = db.get(MealServiceMenu, menu_body.service_menu_id)
             if not item or item.meal_service_id != service_id:
                 continue
             item.note = menu_body.note
-            # Representative: only first True wins; unchecking is allowed
-            if menu_body.is_representative and not representative_set:
-                item.is_representative = True
-                representative_set = True
-            else:
-                item.is_representative = False
+            item.is_representative = menu_body.is_representative
 
             # Replace ingredients
             db.query(MealServiceMenuIngredient).filter(

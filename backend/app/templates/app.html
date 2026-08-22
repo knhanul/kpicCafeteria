@@ -15,12 +15,12 @@
     </div>
     <nav class="side-nav">
       <button data-view="workspace" class="active">주간 급식 운영</button>
-      <button data-view="orders">발주 관리</button>
       <button data-view="master">메뉴·재료 기준정보</button>
-      <button data-view="dashboard">운영 대시보드</button>
+      <button data-view="orders">발주 관리</button>
       <div class="side-nav-group">
         <button type="button" class="side-nav-toggle" data-group="stats">통계 분석 <span class="group-caret">▾</span></button>
         <div class="side-nav-sub">
+          <button data-view="dashboard">운영 대시보드</button>
           <button data-view="stats-meals">식수 통계</button>
           <button data-view="stats-menus">메뉴 통계</button>
           <button data-view="stats-ingredients">식재료 통계</button>
@@ -29,13 +29,18 @@
       </div>
     </nav>
     <div class="side-nav-divider"></div>
-    <nav class="side-nav side-nav-sub">
-      <button data-view="master-data">기본 데이터 관리</button>
-      {% if role == "admin" %}
-      <button data-view="users">사용자 관리</button>
-      <button data-view="backup">시스템 데이터 백업</button>
-      <button data-view="archive">Excel 데이터 아카이브</button>
-      {% endif %}
+    <nav class="side-nav">
+      <div class="side-nav-group collapsed" data-group="settings">
+        <button type="button" class="side-nav-toggle" data-group="settings" aria-expanded="false">설정 <span class="group-caret">▾</span></button>
+        <div class="side-nav-sub">
+          <button data-view="master-data">기본 데이터 관리</button>
+          {% if role == "admin" %}
+          <button data-view="users">사용자 관리</button>
+          <button data-view="backup">시스템 데이터 백업</button>
+          <button data-view="archive">Excel 데이터 아카이브</button>
+          {% endif %}
+        </div>
+      </div>
     </nav>
     <div class="sidebar-spacer"></div>
     <div class="sidebar-user">
@@ -114,7 +119,6 @@
 
     <main id="view-master" class="view">
       <div class="page-card">
-        <div class="section-heading"><div><h2>메뉴·재료 기준정보</h2><p>목록과 편집 패널을 한 화면에서 사용합니다. 메뉴에는 재료 구성이 다른 여러 레시피를 등록할 수 있습니다.</p></div></div>
         <div class="master-tabs"><button data-master="menus" class="active">메뉴·레시피</button><button data-master="ingredients">재료</button></div>
         <div id="master-content" class="master-workspace"></div>
       </div>

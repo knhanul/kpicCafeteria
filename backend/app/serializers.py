@@ -38,8 +38,6 @@ def service_menu_dict(item: MealServiceMenu, include_ingredients: bool = True) -
         "sort_order": item.sort_order,
         "note": item.note or "",
         "is_representative": item.is_representative,
-        "cooking_instruction": item.cooking_instruction or "",
-        "cooking_note": item.cooking_note or "",
     }
     if include_ingredients:
         payload["ingredients"] = [ingredient_snapshot_dict(value) for value in item.ingredients]

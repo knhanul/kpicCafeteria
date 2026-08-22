@@ -49,8 +49,6 @@ def add_service(
             recipe_name_snapshot=menu_data.get("recipe_name"),
             recipe_version_snapshot=menu_data.get("recipe_version"),
             note=menu_data.get("note"),
-            cooking_instruction=menu_data.get("instruction"),
-            cooking_note=menu_data.get("cooking_note"),
         )
         db.add(service_menu)
         db.flush()
@@ -179,6 +177,8 @@ def test_cooking_instruction_builder_preserves_ingredient_order_and_nulls():
     assert day.date == service_date
     assert day.lunch.meal_count == 360
     assert day.lunch.menus[0].name == "제육볶음"
+    assert day.lunch.menus[0].instruction == ""
+    assert day.lunch.menus[0].note == "매콤하게"
     assert day.lunch.menus[0].ingredients[0].name == "돼지고기"
     assert day.lunch.menus[0].ingredients[0].quantity == 18.0
     assert day.lunch.menus[0].ingredients[0].quantity_per_100 == 5.0

@@ -1,0 +1,29 @@
+{
+  "contract_version": "1.0",
+  "input_format": "xlsx",
+  "required_sheets": {
+    "01_배식설정": ["배식유형", "기본계획식수", "기본배식시간", "사용여부", "설명"],
+    "02_메뉴기준정보": ["메뉴ID", "메뉴명", "통계집계메뉴명", "메뉴역할", "사용여부", "검토상태"],
+    "03_재료기준정보": ["재료ID", "표준재료명", "통계분석군", "기본단위", "kg환산계수", "분석제외", "사용여부", "검토상태"],
+    "04_재료별칭_선택": ["원재료별칭", "재료ID", "표준재료명", "출처"],
+    "05_메뉴별재료_기준": ["메뉴ID", "메뉴명", "레시피명", "재료ID", "표준재료명", "100인기준수량", "단위", "원본행", "원본비고", "검토상태"],
+    "06_식단이력_이관": ["일자", "배식유형", "계획식수", "배식시간", "메뉴순서", "메뉴ID", "메뉴명", "메뉴비고"],
+    "07_식단재료_이관": ["일자", "배식유형", "메뉴순서", "메뉴ID", "메뉴명", "재료순서", "재료ID", "표준재료명", "원본재료명", "수량", "단위", "원본비고", "원본행"]
+  },
+  "identifiers": {
+    "menu_key": "02_메뉴기준정보.메뉴ID",
+    "ingredient_key": "03_재료기준정보.재료ID",
+    "recipe_key": "05_메뉴별재료_기준.레시피명",
+    "service_key": ["일자", "배식유형"]
+  },
+  "meal_type": {"중식": "LUNCH", "석식": "DINNER", "LUNCH": "LUNCH", "DINNER": "DINNER"},
+  "units": ["kg", "g", "L", "ml", "개", "봉", "팩", "판", "통", "캔", "병", "박스", "단", "묶음", "장", "줄", "포", "관", "밧트"],
+  "rules": {
+    "recipe_quantity": "100인기준수량",
+    "snapshot_total_quantity": "수량",
+    "unknown_ingredient_id": "ERROR_OR_REVIEW_NO_NAME_AUTOMATCH",
+    "unknown_unit": "ERROR_OR_REVIEW_NO_GUESS",
+    "legacy_fields_excluded": ["cooking_instruction", "cooking_note"],
+    "preview_before_apply": true
+  }
+}

@@ -183,8 +183,6 @@ class MealServiceMenu(Base):
     recipe_version_snapshot: Mapped[int | None] = mapped_column(Integer, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_representative: Mapped[bool] = mapped_column(Boolean, default=False)
-    cooking_instruction: Mapped[str | None] = mapped_column(Text, nullable=True)
-    cooking_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     service: Mapped[MealService] = relationship(back_populates="menus")
     menu: Mapped[Menu | None] = relationship(foreign_keys=[menu_id])

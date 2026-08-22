@@ -11,6 +11,8 @@ from app.routers.workspace import (
     MealEditorIngredientBody,
     save_meal_editor,
     ServiceUpdateBody,
+    PostServiceNoteBody,
+    save_post_service_note,
     update_service,
 )
 from app.schema_upgrade import upgrade_existing_schema
@@ -129,6 +131,17 @@ def test_concept_title_saved_via_update_service():
 
     refreshed = db.get(MealService, service.id)
     assert refreshed.concept_title == "명절 특별식"
+
+
+def test_post_service_note_is_saved_on_meal_service():
+    db = make_db()
+    user = make_user(db)
+    service = make_service(db)
+
+    result = save_post_service_note(service.id, PostServiceNoteBody(note="  배식 후 밥 부족  "), db, user)
+
+    assert result["note"] == "배식 후 밥 부족"
+    assert db.get(MealService, service.id).note == "배식 후 밥 부족"
 
 
 def test_batch_save_replaces_ingredients():

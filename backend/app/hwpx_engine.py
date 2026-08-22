@@ -221,7 +221,7 @@ def _text_nodes(root: ET.Element) -> list[ET.Element]:
 
 
 def _iter_paragraphs(root: ET.Element) -> list[ET.Element]:
-    return [node for node in root.iter() if _local(node.tag) == "p"]
+    return [node for node in root.iter() if isinstance(node.tag, str) and _local(node.tag) == "p"]
 
 
 def _normalise_multiline(value: Any) -> str:
@@ -1005,7 +1005,7 @@ class CookingInstructionRenderer(BaseRenderer):
         for name in engine.package.section_names():
             if name not in engine.package.files:
                 continue
-            root = engine.package.read_xml(name)
+            root = _parse_xml_with_comments(engine.package.files[name])
             changed = False
             for paragraph in _iter_paragraphs(root):
                 texts = _own_text_nodes(paragraph)
@@ -1123,8 +1123,8 @@ class CookingInstructionRenderer(BaseRenderer):
         lines: list[str] = []
         if parts:
             lines.append(", ".join(parts))
-        instruction = menu.get("instruction") or menu.get("cooking_instruction") or ""
-        note = menu.get("note") or menu.get("cooking_note") or ""
+        instruction = menu.get("instruction") or ""
+        note = menu.get("note") or ""
         if instruction:
             lines.append(str(instruction))
         return lines
@@ -1132,7 +1132,7 @@ class CookingInstructionRenderer(BaseRenderer):
     def _note_line(self, menu: Any) -> str:
         if not isinstance(menu, dict):
             return ""
-        return str(menu.get("note") or menu.get("cooking_note") or "")
+        return str(menu.get("note") or "")
 
     def _menu_block_text(self, menu: Any) -> str:
         lines = [self._menu_name(menu), *self._ingredient_lines(menu)]
@@ -1160,6 +1160,9 @@ class PreservedFoodRenderer(BaseRenderer):
                 prefix = f"B{slot}"
                 engine.setField(f"{prefix}_DATE_LABEL", self._record_label(record), section_name=section_name)
                 engine.setField(f"{prefix}_SAMPLE_DATETIME", self._sample_datetime(record), section_name=section_name)
+                sample_hour, sample_minute = self._sample_time_parts(record)
+                engine.setField(f"{prefix}_SAMPLE_HOUR", sample_hour, section_name=section_name)
+                engine.setField(f"{prefix}_SAMPLE_MINUTE", sample_minute, section_name=section_name)
                 engine.setField(f"{prefix}_MANAGER", self._value(record, "manager", "manager_name"), section_name=section_name)
                 engine.setMultilineField(f"{prefix}_MENU_LIST", self._menus(record), section_name=section_name)
                 engine.setField(f"{prefix}_FREEZER_TEMP", self._value(record, "freezer_temperature"), section_name=section_name)
@@ -1169,9 +1172,9 @@ class PreservedFoodRenderer(BaseRenderer):
         if not records:
             engine.setField("PERIOD_TITLE", "")
             for field_name in [
-                "B1_DATE_LABEL", "B1_SAMPLE_DATETIME", "B1_MANAGER", "B1_MENU_LIST", "B1_FREEZER_TEMP", "B1_DISCARD_DATETIME", "B1_COLLECTOR", "B1_COLLECTION_TIME",
-                "B2_DATE_LABEL", "B2_SAMPLE_DATETIME", "B2_MANAGER", "B2_MENU_LIST", "B2_FREEZER_TEMP", "B2_DISCARD_DATETIME", "B2_COLLECTOR", "B2_COLLECTION_TIME",
-                "B3_DATE_LABEL", "B3_SAMPLE_DATETIME", "B3_MANAGER", "B3_MENU_LIST", "B3_FREEZER_TEMP", "B3_DISCARD_DATETIME", "B3_COLLECTOR", "B3_COLLECTION_TIME",
+                "B1_DATE_LABEL", "B1_SAMPLE_DATETIME", "B1_SAMPLE_HOUR", "B1_SAMPLE_MINUTE", "B1_MANAGER", "B1_MENU_LIST", "B1_FREEZER_TEMP", "B1_DISCARD_DATETIME", "B1_COLLECTOR", "B1_COLLECTION_TIME",
+                "B2_DATE_LABEL", "B2_SAMPLE_DATETIME", "B2_SAMPLE_HOUR", "B2_SAMPLE_MINUTE", "B2_MANAGER", "B2_MENU_LIST", "B2_FREEZER_TEMP", "B2_DISCARD_DATETIME", "B2_COLLECTOR", "B2_COLLECTION_TIME",
+                "B3_DATE_LABEL", "B3_SAMPLE_DATETIME", "B3_SAMPLE_HOUR", "B3_SAMPLE_MINUTE", "B3_MANAGER", "B3_MENU_LIST", "B3_FREEZER_TEMP", "B3_DISCARD_DATETIME", "B3_COLLECTOR", "B3_COLLECTION_TIME",
             ]:
                 engine.setField(field_name, "")
 
@@ -1185,6 +1188,9 @@ class PreservedFoodRenderer(BaseRenderer):
                 prefix = f"B{slot}"
                 fields[f"{prefix}_DATE_LABEL"] = self._record_label(record)
                 fields[f"{prefix}_SAMPLE_DATETIME"] = self._sample_datetime(record)
+                sample_hour, sample_minute = self._sample_time_parts(record)
+                fields[f"{prefix}_SAMPLE_HOUR"] = sample_hour
+                fields[f"{prefix}_SAMPLE_MINUTE"] = sample_minute
                 fields[f"{prefix}_MANAGER"] = self._value(record, "manager", "manager_name")
                 fields[f"{prefix}_MENU_LIST"] = self._menus(record)
                 fields[f"{prefix}_FREEZER_TEMP"] = self._value(record, "freezer_temperature")
@@ -1203,6 +1209,15 @@ class PreservedFoodRenderer(BaseRenderer):
         if not isinstance(record, dict):
             return ""
         return str(record.get("sample_datetime") or "")
+
+    def _sample_time_parts(self, record: dict[str, Any]) -> tuple[str, str]:
+        value = self._sample_datetime(record)
+        matched = re.search(r"(\d{1,2})시\s*(\d{1,2})분", value)
+        if not matched:
+            matched = re.search(r"(\d{1,2}):(\d{1,2})", value)
+        if not matched:
+            return "", ""
+        return matched.group(1).zfill(2), matched.group(2).zfill(2)
 
     def _discard_datetime(self, record: dict[str, Any]) -> str:
         if not isinstance(record, dict):

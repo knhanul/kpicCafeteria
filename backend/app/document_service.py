@@ -126,7 +126,7 @@ def _meal_plan_payload(services: list[MealService]) -> dict[str, Any]:
             "planned_count": service.planned_count,
             "service_time": service.service_time.strftime("%H:%M") if service.service_time else "",
             "concept_title": service.concept_title,
-            "menus": [item.menu_name_snapshot for item in service.menus],
+            "menus": [f"★ {item.menu_name_snapshot}" if item.is_representative else item.menu_name_snapshot for item in service.menus],
         }
     if not by_date:
         return {"title": "식단표", "weeks": [], "service_ids": []}
@@ -162,8 +162,8 @@ def _cooking_payload(services: list[MealService]) -> dict[str, Any]:
                 {
                     "name": item.menu_name_snapshot,
                     "ingredients": _menu_ingredients(item),
-                    "instruction": item.cooking_instruction or "",
-                    "note": item.cooking_note or item.note or "",
+                    "instruction": "",
+                    "note": item.note or "",
                 }
             )
         days[service.service_date].append(

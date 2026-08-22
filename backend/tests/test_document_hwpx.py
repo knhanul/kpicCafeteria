@@ -127,8 +127,6 @@ def add_service(
             recipe_name_snapshot=menu_data.get("recipe_name"),
             recipe_version_snapshot=menu_data.get("recipe_version"),
             note=menu_data.get("note"),
-            cooking_instruction=menu_data.get("instruction"),
-            cooking_note=menu_data.get("cooking_note"),
         )
         db.add(service_menu)
         db.flush()

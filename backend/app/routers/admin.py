@@ -273,11 +273,10 @@ def _build_excel(db: Session, date_from: date | None, date_to: date | None) -> W
                 s.service_date.isoformat(),
                 s.meal_type,
                 m.menu_name_snapshot,
-                m.cooking_instruction or "",
-                m.cooking_note or "",
+                m.note or "",
             ])
     _add_sheet(wb, "조리지시서", [
-        "날짜", "식사구분", "메뉴명", "조리지시", "조리비고",
+        "날짜", "식사구분", "메뉴명", "메뉴 비고",
     ], cooking_rows)
 
     # 3. 보존식 기록
