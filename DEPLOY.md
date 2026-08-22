@@ -91,11 +91,19 @@ cp .env.example .env
 # 1) ZIP 생성
 
 cd C:\Pjt\kpicCafeteria
-.\scripts\make-deploy-zip.ps1
+
+tar.exe -a -c -f ".\dist\cafeteria-update.zip" `
+  --exclude=".git" `
+  --exclude=".venv" `
+  --exclude=".env" `
+  --exclude="backend/data" `
+  --exclude="backend/storage" `
+  .
 
 # 2) 서버 업로드
 
-scp ".\dist\kpicCafeteria-update.zip" root@8.219.243.65:/tmp/cafeteria-update.zip
+scp ".\dist\cafeteria-update.zip" root@8.219.243.65:/tmp/cafeteria-update.zip
+
 ```
 
 ### 서버

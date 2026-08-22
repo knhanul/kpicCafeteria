@@ -10,3 +10,4 @@ storage/templates/*
 !storage/generated/.gitkeep
 !storage/templates/.gitkeep
 backup/
+dist/
