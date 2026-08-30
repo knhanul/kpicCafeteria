@@ -4,6 +4,7 @@
 
 ## 핵심 원칙
 
+
 ```text
 현재 기준정보             과거 식단 Snapshot
 Menu                      MealServiceMenu.menu_name_snapshot
