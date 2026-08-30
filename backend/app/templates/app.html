@@ -34,8 +34,10 @@
         <button type="button" class="side-nav-toggle" data-group="settings" aria-expanded="false">설정 <span class="group-caret">▾</span></button>
         <div class="side-nav-sub">
           <button data-view="master-data">기본 데이터 관리</button>
-          {% if role == "admin" %}
+          {% if role == "admin" and not desktop_mode %}
           <button data-view="users">사용자 관리</button>
+          {% endif %}
+          {% if role == "admin" %}
           <button data-view="backup">시스템 데이터 백업</button>
           <button data-view="archive">Excel 데이터 아카이브</button>
           {% endif %}
@@ -45,10 +47,12 @@
     <div class="sidebar-spacer"></div>
     <div class="sidebar-user">
       <span>👤 {{ display_name }}</span>
+      {% if not desktop_mode %}
       <div class="sidebar-user-actions">
         <button id="change-password-button" class="ghost-button">비밀번호 변경</button>
         <button id="logout-button" class="ghost-button">로그아웃</button>
       </div>
+      {% endif %}
     </div>
   </aside>
 

@@ -249,7 +249,12 @@ def render_preview_html(preview: DocumentPreview, toolbar: bool = True) -> str:
         "PRESERVATION_RECORD": "documents/preservation.html",
     }
     template = TEMPLATES.get_template(template_map[preview.document_type])
-    return template.render(preview=preview, document=preview.payload, toolbar=toolbar)
+    return template.render(
+        preview=preview,
+        document=preview.payload,
+        toolbar=toolbar,
+        pdf_enabled=not settings.desktop_hwp_only,
+    )
 
 
 def render_pdf(db: Session, preview: DocumentPreview) -> tuple[bytes, str]:

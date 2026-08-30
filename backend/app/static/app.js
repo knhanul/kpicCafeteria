@@ -313,7 +313,7 @@ function bindGlobal() {
   $('#week-date-picker').addEventListener('change',e=>{if(e.target.value){state.weekStart=mondayOf(e.target.value);loadWorkspace();}});
   $('#focus-toggle').addEventListener('click',()=>toggleFocus(true)); $('#focus-exit').addEventListener('click',()=>toggleFocus(false));
   $('#document-preview').addEventListener('click',previewCurrentDocument);
-  $('#logout-button').addEventListener('click',async()=>{await api('/api/auth/logout',{method:'POST'});location.href='/login';});
+  $('#logout-button')?.addEventListener('click',async()=>{await api('/api/auth/logout',{method:'POST'});location.href='/login';});
   $('#change-password-button')?.addEventListener('click',()=>openChangePasswordModal(false));
   $('#create-backup-btn')?.addEventListener('click',createBackup);
   $('#create-archive-btn')?.addEventListener('click',createArchive);

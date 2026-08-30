@@ -8,7 +8,7 @@
 </style>
 </head>
 <body>
-{% if toolbar %}<div class="preview-toolbar"><strong>조리지시서 미리보기</strong><a href="/api/documents/{{ preview.token }}/pdf">PDF 다운로드</a><a href="/api/documents/{{ preview.token }}/hwpx">HWPX 다운로드</a><button onclick="window.close()">닫기</button></div>{% endif %}
+{% if toolbar %}<div class="preview-toolbar"><strong>조리지시서 미리보기</strong>{% if pdf_enabled %}<a href="/api/documents/{{ preview.token }}/pdf">PDF 다운로드</a>{% endif %}<a href="/api/documents/{{ preview.token }}/hwpx">HWPX 다운로드</a><button onclick="window.close()">닫기</button></div>{% endif %}
 {% for day in document.days %}
 <section class="page">
 <h1 class="doc-title">조리지시서</h1>{% if document.period_label %}<div class="date">{{ document.period_label }}</div>{% endif %}<div class="date">{{ day.date_label }} {{ day.weekday }}</div>

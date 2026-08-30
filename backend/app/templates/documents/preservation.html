@@ -7,7 +7,7 @@
 </style>
 </head>
 <body>
-{% if toolbar %}<div class="preview-toolbar"><strong>보존식 기록지 미리보기</strong><a href="/api/documents/{{ preview.token }}/pdf">PDF 다운로드</a><a href="/api/documents/{{ preview.token }}/hwpx">HWPX 다운로드</a><button onclick="window.close()">닫기</button></div>{% endif %}
+{% if toolbar %}<div class="preview-toolbar"><strong>보존식 기록지 미리보기</strong>{% if pdf_enabled %}<a href="/api/documents/{{ preview.token }}/pdf">PDF 다운로드</a>{% endif %}<a href="/api/documents/{{ preview.token }}/hwpx">HWPX 다운로드</a><button onclick="window.close()">닫기</button></div>{% endif %}
 {% set records = document.records %}
 {% for page_start in range(0, (records|length if records|length else 1), 3) %}
 <section class="page">

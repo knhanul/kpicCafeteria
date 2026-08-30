@@ -17,8 +17,28 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
 
 from .db import Base
+
+
+class UTCDateTime(TypeDecorator):
+    impl = DateTime
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        return dialect.type_descriptor(DateTime(timezone=dialect.name != "sqlite"))
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        normalized = value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return normalized.replace(tzinfo=None) if dialect.name == "sqlite" else normalized
+
+    def process_result_value(self, value, _dialect):
+        if value is None:
+            return None
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
 def utcnow() -> datetime:
@@ -35,10 +55,10 @@ class User(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     role: Mapped[str] = mapped_column(String(20), default="user")
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
-    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    password_changed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 class MealTypeSetting(Base):
@@ -52,8 +72,8 @@ class MealTypeSetting(Base):
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
 class Menu(Base):
@@ -66,8 +86,8 @@ class Menu(Base):
     role: Mapped[str] = mapped_column(String(40), default="기타", index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     review_status: Mapped[str] = mapped_column(String(40), default="정상")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
     recipes: Mapped[list[Recipe]] = relationship(
         back_populates="menu", cascade="all, delete-orphan", order_by="Recipe.version"
@@ -86,8 +106,8 @@ class Ingredient(Base):
     analysis_excluded: Mapped[bool] = mapped_column(Boolean, default=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     review_status: Mapped[str] = mapped_column(String(40), default="정상")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
     aliases: Mapped[list[IngredientAlias]] = relationship(back_populates="ingredient", cascade="all, delete-orphan")
 
@@ -118,8 +138,8 @@ class Recipe(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
     menu: Mapped[Menu] = relationship(back_populates="recipes")
     ingredients: Mapped[list[RecipeIngredient]] = relationship(
@@ -154,10 +174,10 @@ class MealService(Base):
     service_time: Mapped[time | None] = mapped_column(Time, nullable=True)
     concept_title: Mapped[str | None] = mapped_column(String(80), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    meal_plan_output_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    cooking_output_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    meal_plan_output_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    cooking_output_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
     menus: Mapped[list[MealServiceMenu]] = relationship(
         back_populates="service", cascade="all, delete-orphan", order_by="MealServiceMenu.sort_order"
@@ -221,15 +241,15 @@ class PreservationRecord(Base):
     meal_service_id: Mapped[int] = mapped_column(
         ForeignKey("meal_services.id", ondelete="CASCADE"), unique=True, index=True
     )
-    collected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    collected_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     manager_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     freezer_temperature: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    disposal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    disposal_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     collector_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     collection_time: Mapped[str | None] = mapped_column(String(20), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
     service: Mapped[MealService] = relationship(back_populates="preservation")
 
@@ -243,7 +263,7 @@ class MealActual(Base):
     )
     actual_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    recorded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    recorded_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
     service: Mapped[MealService] = relationship(back_populates="actual")
 
@@ -265,8 +285,8 @@ class DocumentTemplate(Base):
     is_valid: Mapped[bool] = mapped_column(Boolean, default=False)
     validation_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     placeholder_summary: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
     created_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
 
@@ -278,8 +298,8 @@ class DocumentPreview(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSON)
     service_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
 
 
 class ImportJob(Base):
@@ -292,8 +312,8 @@ class ImportJob(Base):
     status: Mapped[str] = mapped_column(String(30), default="PREVIEWED")
     summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     errors: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 class AuditLog(Base):
@@ -305,7 +325,7 @@ class AuditLog(Base):
     entity_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
     entity_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 class BackupRecord(Base):
@@ -318,7 +338,7 @@ class BackupRecord(Base):
     backup_type: Mapped[str] = mapped_column(String(20), default="manual")
     status: Mapped[str] = mapped_column(String(30), default="completed")
     checksum_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     created_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
 
@@ -332,8 +352,8 @@ class DataArchive(Base):
     status: Mapped[str] = mapped_column(String(30), default="completed")
     date_from: Mapped[date | None] = mapped_column(Date, nullable=True)
     date_to: Mapped[date | None] = mapped_column(Date, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 class OrderGroup(Base):
@@ -348,7 +368,7 @@ class OrderGroup(Base):
     delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     total_required_quantity: Mapped[float | None] = mapped_column(Float, nullable=True)
     required_unit: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     created_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
 
@@ -374,8 +394,8 @@ class OrderItem(Base):
     order_group_id: Mapped[int | None] = mapped_column(
         ForeignKey("order_groups.id", ondelete="SET NULL"), nullable=True, index=True
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
     ingredient: Mapped[Ingredient | None] = relationship()
     order_group: Mapped[OrderGroup | None] = relationship()

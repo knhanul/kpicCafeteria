@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import sqlite3
 import subprocess
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -11,6 +12,7 @@ from fastapi.responses import FileResponse
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 from sqlalchemy import select
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -65,6 +67,26 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _sqlite_database_path(database_url: str) -> Path:
+    database = make_url(database_url).database
+    if not database or database == ":memory:":
+        raise ValueError("파일 기반 SQLite 데이터베이스가 아닙니다.")
+    return Path(database).resolve()
+
+
+def _create_sqlite_backup(database_url: str, destination: Path) -> None:
+    source_path = _sqlite_database_path(database_url)
+    if not source_path.is_file():
+        raise FileNotFoundError(source_path)
+    with sqlite3.connect(source_path) as source, sqlite3.connect(destination) as target:
+        source.backup(target)
+    with sqlite3.connect(destination) as verification:
+        result = verification.execute("PRAGMA integrity_check").fetchone()
+    if not result or result[0] != "ok":
+        destination.unlink(missing_ok=True)
+        raise RuntimeError("SQLite 백업 무결성 검사에 실패했습니다.")
+
+
 # ==================== Backup ====================
 
 @router.get("/backups")
@@ -90,37 +112,42 @@ def list_backups(db: Session = Depends(get_db), user: User = Depends(admin_user)
 
 @router.post("/backups")
 def create_backup(db: Session = Depends(get_db), user: User = Depends(admin_user)):
-    if settings.database_url.startswith("sqlite"):
-        raise HTTPException(status_code=400, detail="SQLite 환경에서는 백업을 지원하지 않습니다.")
-
     now = _utcnow()
     ts = now.strftime("%Y%m%d_%H%M%S")
-    stored_filename = f"cafeteria_db_backup_manual_{ts}.dump"
-    download_filename = f"cafeteria_db_backup_manual_{ts}.dump"
+    extension = "db" if settings.database_url.startswith("sqlite") else "dump"
+    stored_filename = f"cafeteria_db_backup_manual_{ts}.{extension}"
+    download_filename = stored_filename
     dest = settings.backup_manual_dir / stored_filename
 
-    params = _parse_db_url(settings.database_url)
-    env = {
-        "PGPASSWORD": params["password"],
-        "PATH": __import__("os").environ.get("PATH", ""),
-    }
-    cmd = [
-        "pg_dump",
-        "-h", params["host"],
-        "-p", params["port"],
-        "-U", params["user"],
-        "-d", params["dbname"],
-        "-F", "c",
-        "-f", str(dest),
-    ]
-    try:
-        subprocess.run(cmd, env=env, check=True, capture_output=True, timeout=300)
-    except FileNotFoundError:
-        raise HTTPException(status_code=500, detail="백업 도구를 찾을 수 없습니다.")
-    except subprocess.CalledProcessError:
-        raise HTTPException(status_code=500, detail="시스템 데이터 백업에 실패했습니다.")
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=500, detail="시스템 데이터 백업에 실패했습니다.")
+    if settings.database_url.startswith("sqlite"):
+        try:
+            _create_sqlite_backup(settings.database_url, dest)
+        except (OSError, sqlite3.Error, RuntimeError, ValueError):
+            dest.unlink(missing_ok=True)
+            raise HTTPException(status_code=500, detail="시스템 데이터 백업에 실패했습니다.")
+    else:
+        params = _parse_db_url(settings.database_url)
+        env = {
+            "PGPASSWORD": params["password"],
+            "PATH": __import__("os").environ.get("PATH", ""),
+        }
+        cmd = [
+            "pg_dump",
+            "-h", params["host"],
+            "-p", params["port"],
+            "-U", params["user"],
+            "-d", params["dbname"],
+            "-F", "c",
+            "-f", str(dest),
+        ]
+        try:
+            subprocess.run(cmd, env=env, check=True, capture_output=True, timeout=300)
+        except FileNotFoundError:
+            raise HTTPException(status_code=500, detail="백업 도구를 찾을 수 없습니다.")
+        except subprocess.CalledProcessError:
+            raise HTTPException(status_code=500, detail="시스템 데이터 백업에 실패했습니다.")
+        except subprocess.TimeoutExpired:
+            raise HTTPException(status_code=500, detail="시스템 데이터 백업에 실패했습니다.")
 
     file_size = dest.stat().st_size if dest.exists() else None
     if not file_size or file_size == 0:

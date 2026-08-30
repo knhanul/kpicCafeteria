@@ -105,6 +105,22 @@ ADMIN_PASSWORD=change-me
 
 운영 전 반드시 비밀번호와 `APP_SECRET`을 변경하세요.
 
+## Windows PC 버전
+
+PC 버전은 내장 WebView2, 로컬 SQLite, 로그인 없는 단일 사용자 모드로 실행됩니다. 출력은 HWPX만 지원합니다.
+
+```powershell
+# 개발 실행
+.\scripts\start-desktop.ps1
+
+# 실행 파일 빌드
+.\scripts\build-desktop.ps1
+```
+
+빌드 결과는 `desktop-dist\KPICCafeteria\`에 생성됩니다. 최초 실행 후 `기본 데이터 관리`에서 XLSX와 HWPX 양식을 등록합니다.
+
+자세한 내용은 [`docs/desktop-user-guide.md`](docs/desktop-user-guide.md)를 참고하세요.
+
 ## Docker 명령
 
 ```powershell

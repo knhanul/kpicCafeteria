@@ -9,6 +9,7 @@ from pydantic import BaseModel, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..config import settings
 from ..db import get_db
 from ..deps import current_user
 from ..document_service import create_preview, render_pdf, render_preview_html, resolve_services
@@ -70,7 +71,7 @@ def preview_document(
     return {
         "token": preview.token,
         "html_url": f"/preview/{preview.token}",
-        "pdf_url": f"/api/documents/{preview.token}/pdf",
+        "pdf_url": None if settings.desktop_hwp_only else f"/api/documents/{preview.token}/pdf",
         "hwpx_url": f"/api/documents/{preview.token}/hwpx",
     }
 
@@ -120,12 +121,18 @@ def preview_page(token: str, request: Request, db: Session = Depends(get_db)):
     return HTMLResponse(render_preview_html(preview, toolbar=True))
 
 
+def _require_pdf_enabled() -> None:
+    if settings.desktop_hwp_only:
+        raise HTTPException(status_code=404, detail="PC 버전에서는 HWPX 출력만 지원합니다.")
+
+
 @router.get("/api/documents/{token}/pdf")
 def download_pdf(
     token: str,
     db: Session = Depends(get_db),
     user: User = Depends(current_user),
 ):
+    _require_pdf_enabled()
     preview = get_preview_or_404(db, token, user.id)
     try:
         content, filename = render_pdf(db, preview)
@@ -174,6 +181,7 @@ def download_hwpx(
 
 
 def _preview_pdf_by_type(document_type: str, body: PreviewRangeBody, db: Session, _user: User):
+    _require_pdf_enabled()
     template = active_template(db, document_type)
     if not template:
         raise HTTPException(

@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     data_export_root: Path = Path("./data")
     public_base_url: str = "http://localhost"
     timezone: str = "Asia/Seoul"
+    desktop_mode: bool = False
+    desktop_hwp_only: bool = False
+    desktop_username: str = "local-system"
+    desktop_display_name: str = "로컬 사용자"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
