@@ -398,7 +398,7 @@ function renderWeekBoard() {
       <div class="day-body">${day.services.map(service=>`<div class="service-card ${service.id===state.selectedServiceId?'selected':''}" data-service-id="${service.id}">
         <div class="service-top"><span>${service.meal_type_name}</span><span>${service.service_time?service.service_time.slice(0,5):''}</span></div>
         ${service.concept_title?`<div class="service-concept">${escapeHtml(service.concept_title)}</div>`:''}
-        <div class="service-meta">${statusMarkup(service)}${service.note?.trim()?'<span class="service-note-badge">특이사항</span>':''}</div>
+        <div class="service-meta">${statusMarkup(service)}${service.actual_recorded?`<span class="status-dot yes actual-badge">실제 ${numberText(service.actual_count)}명</span>`:''}${service.note?.trim()?'<span class="service-note-badge">특이사항</span>':''}</div>
         <div class="menu-lines">${service.menus.map(m=>`<div class="${m.is_representative?'representative-menu':''}">${m.is_representative?'<span class="representative-mark" title="대표 메뉴">★</span>':''}${escapeHtml(m.name)}</div>`).join('')||'<span class="muted">메뉴 없음</span>'}</div>
       </div>`).join('')}
       </div>
@@ -660,6 +660,10 @@ function renderMealEditor(panel,service) {
         <label class="field">
           <span>배식시간</span>
           <div id="service-time-cell"></div>
+        </label>
+        <label class="field">
+          <span>실제 식수</span>
+          <div class="actual-count-display">${service.actual_recorded?`${numberText(service.actual_count)}명${service.note?.trim()?' · '+escapeHtml(service.note):''}`:'<span class="muted">미입력</span>'}</div>
         </label>
       </div>
     </section>
