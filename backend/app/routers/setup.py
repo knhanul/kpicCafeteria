@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..actual_meal_import import MAX_FILE_SIZE, EXPECTED_FILENAME, ActualMealUploadError, apply_actual_meals, preview_actual_meals, sha256_file
@@ -16,7 +16,7 @@ from ..db import get_db
 from ..deps import admin_user, current_user
 from ..importer import MigrationImporter
 from .admin import create_backup
-from ..models import ImportJob, User
+from ..models import ImportJob, MealActual, MealService, User
 
 router = APIRouter(prefix="/api/setup", tags=["setup"])
 
@@ -158,7 +158,10 @@ def apply_actual_meals_upload(
         db.add(job)
         db.commit()
         source.unlink(missing_ok=True)
-        return {"ok": True, "result": result, "completed_at": job.completed_at.isoformat()}
+        # 반영 검증: DB에 저장된 실제식수 건수 확인
+        verification = db.scalar(select(func.count()).select_from(MealActual).where(MealActual.actual_count.is_not(None)))
+        service_count = db.scalar(select(func.count()).select_from(MealService))
+        return {"ok": True, "result": result, "completed_at": job.completed_at.isoformat(), "verification": {"total_actual_records": verification, "total_services": service_count}}
     except ActualMealUploadError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
