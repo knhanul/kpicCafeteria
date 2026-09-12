@@ -257,54 +257,66 @@ echo "Deployment successful: $TS"
 # A. 개발 PC: 커밋 후 Push
 # ------------------------------------------------------------
 #
-# cd C:\Pjt\kpicCafeteria
-#
+ cd C:\Pjt\kpicCafeteria
+
 # # 변경 사항 확인
-# git status
-#
-# # 스테이징
-# git add <변경한 파일들>
-#
+ git status
+
+# # 스테이징 (PowerShell에서는 파일 경로를 직접 지정)
+# git add DEPLOY.md backend/app/routers/setup.py backend/app/static/app.js backend/app/templates/app.html backend/app/actual_meal_import.py backend/tests/test_actual_meal_import.py
+
 # # 커밋
-# git commit -m "변경 내용 요약"
+git commit -m "식수 정보 XLSX 업로드 기능 추가
 #
+# - 설정 → 기본 데이터 관리에 '식수 정보 업로드' 탭 추가
+# - XLSX 파일 검증·미리보기·DB 반영(Merge/Upsert) 흐름 구현
+# - 기존 MealActual/MealService 모델과 ImportJob 테이블 재사용
+# - 관리자 권한, Preview 만료, SHA-256 검증, 전체 롤백 적용
+# - DEPLOY.md에 Git Push → Pull 배포 방법 추가
+#
+# Generated with [Devin](https://devin.ai)
+#
+# Co-Authored-By: Devin <158243242+devin-ai-integration[bot]@users.noreply.github.com>"
+
 # # GitHub 로 Push
-# git push origin main
+git push origin main
 #
+# # 최종 반영 커밋: 8980a78 (main → main)
+
 # ------------------------------------------------------------
 # B. 서버: Pull 후 Docker 재빌드
 # ------------------------------------------------------------
 #
 # # 서버 접속
-# ssh root@8.219.243.65
+ ssh root@8.219.243.65
 #
 # # 프로젝트 디렉터리 이동
-# cd /opt/cafeteria
+ cd /opt/cafeteria
 #
 # # 백업
-# TS=$(date +%Y%m%d_%H%M%S)
-# cp .env .env.bak.$TS
-# docker compose exec -T db pg_dump -U cafeteria cafeteria | gzip > /opt/cafeteria-backups/cafeteria_db_$TS.dump.gz
+TS=$(date +%Y%m%d_%H%M%S)
+cp .env .env.bak.$TS
+docker compose exec -T db pg_dump -U cafeteria cafeteria | gzip > /opt/cafeteria-backups/cafeteria_db_$TS.dump.gz
 #
 # # 최신 소스 가져오기
-# git pull origin main
+git pull origin main
 #
 # # 설정 검증
-# docker compose config -q
+docker compose config -q
 #
 # # 이미지 빌드
-# docker compose build
+docker compose build
 #
 # # 서비스 반영
-# docker compose up -d --remove-orphans
+docker compose up -d --remove-orphans
 #
 # # 상태 확인
-# docker compose ps
-# docker compose logs --tail=100 app
+docker compose ps
+docker compose logs --tail=100 app
 #
 # # Health Check
-# curl -i http://127.0.0.1:8080/health
-# curl -i https://post.nuni.co.kr/health
+curl -i http://127.0.0.1:8080/health
+curl -i https://post.nuni.co.kr/health
 #
 # ------------------------------------------------------------
 # 주의사항
