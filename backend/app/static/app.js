@@ -396,9 +396,9 @@ function renderWeekBoard() {
     <div class="weekday-grid">${week.days.map(day=>`<article class="day-column ${day.services.some(s=>s.id===state.selectedServiceId)?'selected':''}" data-date="${day.date}">
       <header class="day-head"><div class="day-head-date"><strong>${day.date?day.date.slice(5).replace('-','/'):day.day}</strong><span>${day.weekday}</span></div><button class="add-service-inline" data-add-date="${day.date}">+ 배식</button></header>
       <div class="day-body">${day.services.map(service=>`<div class="service-card ${service.id===state.selectedServiceId?'selected':''}" data-service-id="${service.id}">
-        <div class="service-top"><span>${service.meal_type_name}</span><span>${service.service_time?service.service_time.slice(0,5):''}</span></div>
+        <div class="service-top"><span>${service.meal_type_name}${service.actual_recorded?` <span class="actual-count-inline">${numberText(service.actual_count)}명</span>`:''}</span><span>${service.service_time?service.service_time.slice(0,5):''}</span></div>
         ${service.concept_title?`<div class="service-concept">${escapeHtml(service.concept_title)}</div>`:''}
-        <div class="service-meta">${statusMarkup(service)}${service.actual_recorded?`<span class="status-dot yes actual-badge">실제 ${numberText(service.actual_count)}명</span>`:''}${service.note?.trim()?'<span class="service-note-badge">특이사항</span>':''}</div>
+        <div class="service-meta">${statusMarkup(service)}${service.note?.trim()?'<span class="service-note-badge">특이사항</span>':''}</div>
         <div class="menu-lines">${service.menus.map(m=>`<div class="${m.is_representative?'representative-menu':''}">${m.is_representative?'<span class="representative-mark" title="대표 메뉴">★</span>':''}${escapeHtml(m.name)}</div>`).join('')||'<span class="muted">메뉴 없음</span>'}</div>
       </div>`).join('')}
       </div>
