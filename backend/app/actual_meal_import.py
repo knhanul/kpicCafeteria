@@ -222,9 +222,23 @@ def preview_actual_meals(path: Path, db: Session) -> dict[str, Any]:
                 continue
             service = service_map.get((date.fromisoformat(row["date"]), row["meal_type"]))
             if not service:
-                row.update({"existing_count": None, "status": "오류", "service_id": None})
-                row["error"] = "해당 날짜와 배식유형의 배식정보가 없습니다."
-                continue
+                setting = type_map.get(row["meal_type_name"])
+                if not setting:
+                    row.update({"existing_count": None, "status": "오류", "service_id": None})
+                    row["error"] = f"활성 배식유형 '{row['meal_type_name']}'을 찾을 수 없습니다."
+                    continue
+                service = MealService(
+                    service_date=date.fromisoformat(row["date"]),
+                    meal_type=setting.code,
+                    planned_count=setting.default_planned_count,
+                    service_time=setting.default_service_time,
+                )
+                db.add(service)
+                db.flush()
+                service_map[(service.service_date, service.meal_type)] = service
+                row["service_created"] = True
+            else:
+                row["service_created"] = False
             existing = service.actual
             row["service_id"] = service.id
             row["existing_count"] = existing.actual_count if existing else None
@@ -251,6 +265,7 @@ def preview_actual_meals(path: Path, db: Session) -> dict[str, Any]:
             "new_count": sum(1 for row in rows if row["status"] == "신규"),
             "update_count": sum(1 for row in rows if row["status"] == "수정"),
             "unchanged_count": sum(1 for row in rows if row["status"] == "변경 없음"),
+            "service_created_count": sum(1 for row in rows if row.get("service_created")),
             "excluded_count": excluded_count,
             "error_count": error_count,
             "rows_fingerprint": _row_fingerprint(rows),
@@ -267,11 +282,22 @@ def apply_actual_meals(path: Path, db: Session, user_id: int, expected_fingerpri
     if parsed["errors"]:
         raise ActualMealUploadError("오류가 있는 Preview는 반영할 수 없습니다.")
     now = datetime.now(timezone.utc)
-    result = {"candidate_count": len(parsed["rows"]), "new_count": 0, "update_count": 0, "unchanged_count": 0, "excluded_count": parsed["summary"]["excluded_count"], "failed_count": 0}
+    result = {"candidate_count": len(parsed["rows"]), "new_count": 0, "update_count": 0, "unchanged_count": 0, "service_created_count": 0, "excluded_count": parsed["summary"]["excluded_count"], "failed_count": 0}
     for row in parsed["rows"]:
         service = db.get(MealService, row["service_id"])
         if not service:
-            raise ActualMealUploadError(f"배식정보가 사라졌습니다: {row['date']} {row['meal_type_name']}")
+            setting = db.scalar(select(MealTypeSetting).where(MealTypeSetting.code == row["meal_type"], MealTypeSetting.active.is_(True)))
+            if not setting:
+                raise ActualMealUploadError(f"활성 배식유형 '{row['meal_type_name']}'을 찾을 수 없습니다: {row['date']}")
+            service = MealService(
+                service_date=date.fromisoformat(row["date"]),
+                meal_type=setting.code,
+                planned_count=setting.default_planned_count,
+                service_time=setting.default_service_time,
+            )
+            db.add(service)
+            db.flush()
+            result["service_created_count"] += 1
         actual = service.actual
         if actual and actual.actual_count == row["upload_count"] and (actual.note or "") == row["note"]:
             result["unchanged_count"] += 1
