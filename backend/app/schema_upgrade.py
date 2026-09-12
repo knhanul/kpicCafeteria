@@ -75,8 +75,6 @@ def upgrade_existing_schema(engine: Engine) -> None:
             connection.execute(text("ALTER TABLE recipes ALTER COLUMN composition_key SET NOT NULL"))
             connection.execute(text("ALTER TABLE recipes ALTER COLUMN is_default SET NOT NULL"))
             connection.execute(text("ALTER TABLE recipes ALTER COLUMN active SET NOT NULL"))
-            connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_recipe_menu_version_idx ON recipes(menu_id, version)"))
-            connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_recipe_menu_composition_idx ON recipes(menu_id, composition_key)"))
             connection.execute(text("ALTER TABLE meal_service_menus ADD COLUMN IF NOT EXISTS recipe_id INTEGER"))
             connection.execute(text("ALTER TABLE meal_service_menus ADD COLUMN IF NOT EXISTS recipe_name_snapshot VARCHAR(120)"))
             connection.execute(text("ALTER TABLE meal_service_menus ADD COLUMN IF NOT EXISTS recipe_version_snapshot INTEGER"))
