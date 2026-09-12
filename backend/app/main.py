@@ -15,7 +15,7 @@ from .config import settings
 from .db import Base, SessionLocal, engine
 from .desktop_schema import ensure_desktop_schema_version
 from .models import MealTypeSetting, User
-from .routers import admin, auth, documents, master, master_data, orders, setup, statistics, stats, templates, users, workspace
+from .routers import admin, auth, documents, master, master_data, orders, setup, statistics, stats, templates, users, weather, workspace
 from .security import hash_password
 from .schema_upgrade import upgrade_existing_schema
 
@@ -38,6 +38,7 @@ app.include_router(master_data.router)
 app.include_router(documents.router)
 app.include_router(admin.router)
 app.include_router(orders.router)
+app.include_router(weather.router)
 
 
 @app.on_event("startup")
