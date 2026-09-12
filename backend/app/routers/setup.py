@@ -102,8 +102,8 @@ def preview_actual_meals_upload(
     db: Session = Depends(get_db),
     user: User = Depends(admin_user),
 ):
-    if not file.filename or file.filename != EXPECTED_FILENAME:
-        raise HTTPException(status_code=400, detail=f"'{EXPECTED_FILENAME}' 파일만 업로드할 수 있습니다.")
+    if not file.filename or not file.filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="XLSX 파일만 업로드할 수 있습니다.")
     token = secrets.token_urlsafe(24)
     destination = settings.import_dir / f"actual-meals-{token}.xlsx"
     try:
