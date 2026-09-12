@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import date, timedelta
 from typing import Any
 
@@ -35,6 +35,8 @@ def _usage_rows(
             MealServiceMenuIngredient.unit,
             Ingredient.stat_group,
             MealServiceMenu.menu_name_snapshot,
+            Ingredient.kg_factor,
+            Ingredient.analysis_excluded,
         )
         .join(MealServiceMenu, MealServiceMenu.id == MealServiceMenuIngredient.meal_service_menu_id)
         .join(MealService, MealService.id == MealServiceMenu.meal_service_id)
@@ -52,9 +54,21 @@ def _usage_rows(
     rows = db.execute(stmt).all()
     result = []
     for row in rows:
+        if row[14]:
+            continue
         quantity = row[8]
         if quantity is None and row[9] is not None and row[4]:
             quantity = row[9] * row[4] / 100
+        unit = (row[10] or "").strip()
+        normalized_unit = unit.lower()
+        quantity_kg = None
+        if quantity is not None:
+            if normalized_unit == "kg":
+                quantity_kg = quantity
+            elif normalized_unit == "g":
+                quantity_kg = quantity / 1000
+            elif row[13]:
+                quantity_kg = quantity * row[13]
         result.append(
             {
                 "service_id": row[0],
@@ -66,8 +80,10 @@ def _usage_rows(
                 "actual_count": row[5],
                 "ingredient_id": row[6],
                 "ingredient_name": row[7],
-                "quantity_g": quantity,
-                "unit": row[10],
+                "quantity_total": quantity,
+                "quantity_kg": quantity_kg,
+                "quantity_g": quantity_kg * 1000 if quantity_kg is not None else None,
+                "unit": unit or None,
                 "stat_group": row[11] or "기타",
                 "menu_name": row[12],
             }
@@ -152,7 +168,9 @@ def ingredient_statistics(
                 "dates": [],
                 "lunch": 0,
                 "dinner": 0,
-                "quantity_g": 0.0,
+                "quantity_kg": 0.0,
+                "converted_count": 0,
+                "unit_totals": defaultdict(float),
                 "rows": [],
             },
         )
@@ -161,8 +179,11 @@ def ingredient_statistics(
             group["lunch"] += 1
         else:
             group["dinner"] += 1
-        if row["quantity_g"] is not None:
-            group["quantity_g"] += row["quantity_g"]
+        if row["quantity_kg"] is not None:
+            group["quantity_kg"] += row["quantity_kg"]
+            group["converted_count"] += 1
+        elif row["quantity_total"] is not None and row["unit"]:
+            group["unit_totals"][row["unit"]] += row["quantity_total"]
         group["rows"].append(row)
 
     used_ids = {group["ingredient_id"] for group in groups.values() if group["ingredient_id"] is not None}
@@ -203,6 +224,9 @@ def ingredient_statistics(
                     "meal_type_name": row["meal_type_name"],
                     "ingredient_name": row["ingredient_name"],
                     "ingredient_id": row["ingredient_id"],
+                    "quantity_kg": row["quantity_kg"],
+                    "quantity_total": row["quantity_total"],
+                    "unit": row["unit"],
                     "quantity_g": row["quantity_g"],
                     "planned_count": row["planned_count"],
                     "actual_count": row["actual_count"],
@@ -230,7 +254,9 @@ def ingredient_statistics(
                 "ingredient_name": group["ingredient_name"],
                 "stat_group": group["stat_group"],
                 "usage_count": group["usage_count"],
-                "quantity_g": round(group["quantity_g"], 1),
+                "quantity_kg": round(group["quantity_kg"], 3) if group["converted_count"] else None,
+                "quantity_g": round(group["quantity_kg"] * 1000, 1) if group["converted_count"] else None,
+                "unconverted_amounts": {unit: round(value, 3) for unit, value in sorted(group["unit_totals"].items())},
                 "lunch_count": group["lunch"],
                 "dinner_count": group["dinner"],
                 "first_used": group["first_used"],
@@ -260,7 +286,9 @@ def ingredient_detail(
                 "usage_count": 0,
                 "lunch_count": 0,
                 "dinner_count": 0,
-                "quantity_g": 0.0,
+                "quantity_kg": None,
+                "quantity_g": None,
+                "unconverted_amounts": {},
                 "first_used": None,
                 "last_used": None,
                 "avg_interval": None,
@@ -274,7 +302,12 @@ def ingredient_detail(
     dates = sorted({row["date"] for row in rows})
     lunch = sum(1 for row in rows if row["meal_type"] == "LUNCH")
     dinner = len(rows) - lunch
-    total_quantity = sum(row["quantity_g"] for row in rows if row["quantity_g"] is not None)
+    converted_rows = [row for row in rows if row["quantity_kg"] is not None]
+    total_quantity_kg = sum(row["quantity_kg"] for row in converted_rows)
+    unit_totals: defaultdict[str, float] = defaultdict(float)
+    for row in rows:
+        if row["quantity_kg"] is None and row["quantity_total"] is not None and row["unit"]:
+            unit_totals[row["unit"]] += row["quantity_total"]
     gaps = [(dates[i] - dates[i - 1]).days for i in range(1, len(dates))]
     monthly: Counter[str] = Counter()
     for row in rows:
@@ -336,7 +369,9 @@ def ingredient_detail(
             "usage_count": len(rows),
             "lunch_count": lunch,
             "dinner_count": dinner,
-            "quantity_g": round(total_quantity, 1),
+            "quantity_kg": round(total_quantity_kg, 3) if converted_rows else None,
+            "quantity_g": round(total_quantity_kg * 1000, 1) if converted_rows else None,
+            "unconverted_amounts": {unit: round(value, 3) for unit, value in sorted(unit_totals.items())},
             "first_used": dates[0].isoformat(),
             "last_used": dates[-1].isoformat(),
             "avg_interval": round(sum(gaps) / len(gaps), 1) if gaps else None,
@@ -347,6 +382,9 @@ def ingredient_detail(
                 "date": row["date"].isoformat(),
                 "meal_type_name": row["meal_type_name"],
                 "menu_name": row["menu_name"],
+                "quantity_kg": row["quantity_kg"],
+                "quantity_total": row["quantity_total"],
+                "unit": row["unit"],
                 "quantity_g": row["quantity_g"],
                 "actual_count": row["actual_count"],
             }

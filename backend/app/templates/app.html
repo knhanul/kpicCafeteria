@@ -20,11 +20,13 @@
       <div class="side-nav-group">
         <button type="button" class="side-nav-toggle" data-group="stats">통계 분석 <span class="group-caret">▾</span></button>
         <div class="side-nav-sub">
-          <button data-view="dashboard">운영 대시보드</button>
-          <button data-view="stats-meals">식수 통계</button>
-          <button data-view="stats-menus">메뉴 통계</button>
-          <button data-view="stats-ingredients">식재료 통계</button>
-          <button data-view="stats-operations">운영 기록 통계</button>
+          <button data-view="dashboard">운영현황</button>
+          <button data-view="stats-meals">계획 대비 실제</button>
+          <button data-view="stats-menus">메뉴별 식수</button>
+          <button data-view="stats-weather">날씨 연관분석</button>
+          <button data-view="stats-menu-weather">메뉴 × 날씨</button>
+          <button data-view="stats-ingredients">재료 통계</button>
+          <button data-view="stats-quality">데이터 품질</button>
         </div>
       </div>
     </nav>
@@ -138,29 +140,50 @@
 
     <main id="view-dashboard" class="view">
       <div class="page-card">
-        <div class="section-heading"><div><h2>운영 대시보드</h2><p>이번 달 급식 운영 상태를 한눈에 확인합니다.</p></div></div>
+        <div class="section-heading"><div><h2>운영현황</h2><p>기간별 계획·실제 식수와 입력 현황을 확인합니다.</p></div></div>
         <div id="dashboard-root"></div>
       </div>
     </main>
 
     <main id="view-stats-meals" class="view">
       <div class="page-card">
-        <div class="section-heading"><div><h2>식수 통계</h2><p>계획·실제 식수와 편차를 분석합니다.</p></div></div>
+        <div class="section-heading"><div><h2>계획 대비 실제</h2><p>오차 지표와 분포, 월·요일별 편차 및 특이값을 분석합니다.</p></div></div>
         <div id="stats-meals-root"></div>
       </div>
     </main>
 
     <main id="view-stats-menus" class="view">
       <div class="page-card">
-        <div class="section-heading"><div><h2>메뉴 통계</h2><p>메뉴 사용 횟수와 반복·미사용 메뉴를 분석합니다.</p></div></div>
+        <div class="section-heading"><div><h2>메뉴별 식수</h2><p>대표메뉴 제공일의 실제 식수와 비교군 대비 차이를 확인합니다.</p></div></div>
         <div id="stats-menus-root"></div>
+      </div>
+    </main>
+
+    <main id="view-stats-weather" class="view">
+      <div class="page-card">
+        <div class="section-heading"><div><h2>날씨 연관분석</h2><p>날씨 구간과 실제 식수의 연관성을 탐색합니다. 결과는 인과관계를 의미하지 않습니다.</p></div></div>
+        <div id="stats-weather-root"></div>
+      </div>
+    </main>
+
+    <main id="view-stats-menu-weather" class="view">
+      <div class="page-card">
+        <div class="section-heading"><div><h2>메뉴 × 날씨</h2><p>요일·대표메뉴와 기온·강수 구간의 교차 표본을 확인합니다.</p></div></div>
+        <div id="stats-menu-weather-root"></div>
       </div>
     </main>
 
     <main id="view-stats-ingredients" class="view">
       <div class="page-card">
-        <div class="section-heading"><div><h2>식재료 통계</h2><p>재료군·개별 재료의 사용량을 분석합니다.</p></div></div>
+        <div class="section-heading"><div><h2>재료 통계</h2><p>식단 등록 기준 계획 투입량을 단위별로 분석합니다.</p></div></div>
         <div id="stats-ingredients-root"></div>
+      </div>
+    </main>
+
+    <main id="view-stats-quality" class="view">
+      <div class="page-card">
+        <div class="section-heading"><div><h2>데이터 품질</h2><p>실제 식수·대표메뉴·날씨 데이터의 입력 및 연결률을 확인합니다.</p></div></div>
+        <div id="stats-quality-root"></div>
       </div>
     </main>
 
