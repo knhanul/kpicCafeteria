@@ -2,7 +2,7 @@ const state = {
   view: 'workspace', mode: 'meal', focus: false, weeks: 2,
   weekStart: mondayOf(new Date()), workspace: null,
   selectedServiceId: null, selectedService: null, selectedMenuItemId: null,
-  stats: null, dashboard: null, importToken: null, masterTab: 'menus', masterSelectionId: null, masterMenuDetailTab: 'recipe',
+  stats: null, dashboard: null, importToken: null, actualMealUpload: null, masterTab: 'menus', masterSelectionId: null, masterMenuDetailTab: 'recipe',
   masterDataTab: 'hwpx-templates', masterDataSelectionId: null, mealDefaults: null,
   masterIngredientDetailTab: 'info', masterIngredientUsage: {ingredientId:null,items:[],offset:0,total:0,hasMore:false,loading:false,error:''}, masterIngredientUsageQuery:'',
   masterMenuHistory: {menuId:null,items:[],offset:0,total:0,hasMore:false,loading:false,error:'',snapshotCache:{},expandedSnapshotId:null}, masterHistoryFilter:'',
@@ -1278,7 +1278,7 @@ async function saveCooking(){try{await api(`/api/workspace/services/${state.sele
 async function renderPreservationEditor(panel,service){panel.innerHTML=editorHeader(service,'보존식 기록')+'<div class="empty-editor">기록을 불러오는 중입니다.</div>';try{const r=await api(`/api/workspace/services/${service.id}/preservation`);state.preservationCollectionTime=normalizeTime24(r.collection_time)||null;panel.innerHTML=editorHeader(service,'보존식 기록')+`<div class="field-grid"><label class="field">채취일시<input id="collected-at" type="datetime-local" value="${dateTimeLocal(r.collected_at)}"></label><label class="field">담당자<input id="manager-name" value="${escapeHtml(r.manager_name||'')}"></label><label class="field">냉동고 온도<input id="freezer-temp" placeholder="예: -18℃" value="${escapeHtml(r.freezer_temperature||'')}"></label><label class="field">폐기일시<input id="disposal-at" type="datetime-local" value="${dateTimeLocal(r.disposal_at)}"></label><label class="field">채취자<input id="collector-name" value="${escapeHtml(r.collector_name||'')}"></label><div class="field"><label>채취시간</label><div id="collection-time-cell"></div></div></div><label class="field">비고<textarea id="preservation-note">${escapeHtml(r.note||'')}</textarea></label><label style="display:block;margin-top:10px"><input id="preservation-completed" type="checkbox" ${r.completed?'checked':''}> 보존식 기록 완료</label><div class="save-bar"><span class="save-state">실제 식수는 별도 모드에서 입력합니다.</span><button class="primary-button" id="save-preservation">보존식 기록 저장</button></div>`;const ti24=createTimeInput24({value:state.preservationCollectionTime,label:'채취시간',onChange:v=>{state.preservationCollectionTime=v;}});$('#collection-time-cell').append(ti24);$('#save-preservation').addEventListener('click',savePreservation);$('#delete-service').addEventListener('click',deleteCurrentService);}catch(e){toast(e.message,true);}}
 async function savePreservation(){try{await api(`/api/workspace/services/${state.selectedServiceId}/preservation`,json('PUT',{collected_at:$('#collected-at').value?new Date($('#collected-at').value).toISOString():null,manager_name:$('#manager-name').value||null,freezer_temperature:$('#freezer-temp').value||null,disposal_at:$('#disposal-at').value?new Date($('#disposal-at').value).toISOString():null,collector_name:$('#collector-name').value||null,collection_time:state.preservationCollectionTime||null,note:$('#preservation-note').value||null,completed:$('#preservation-completed').checked}));await selectService(state.selectedServiceId);await loadWorkspace(true);toast('보존식 기록을 저장했습니다.');}catch(e){toast(e.message,true);}}
 
-async function renderActualEditor(panel,service){panel.innerHTML=editorHeader(service,'실제 식수 결과')+'<div class="empty-editor">결과를 불러오는 중입니다.</div>';try{const r=await api(`/api/workspace/services/${service.id}/actual`);panel.innerHTML=editorHeader(service,'실제 식수 결과')+`<div class="result-card"><strong>계획 식수 ${numberText(r.planned_count)}명</strong><p>보존식 기록과 분리된 배식 실적입니다.</p></div><div class="field-grid"><label class="field">실제 식수<input id="actual-count" type="number" min="0" value="${r.actual_count??''}"></label><label class="field">결과 비고<input id="actual-note" value="${escapeHtml(r.note||'')}"></label></div><div class="save-bar"><span class="save-state">${r.recorded_at?`입력일 ${new Date(r.recorded_at).toLocaleString('ko-KR')}`:'아직 입력하지 않았습니다.'}</span><button class="primary-button" id="save-actual">실제 식수 저장</button></div>`;$('#save-actual').addEventListener('click',saveActual);$('#delete-service').addEventListener('click',deleteCurrentService);}catch(e){toast(e.message,true);}}
+async function renderActualEditor(panel,service){panel.innerHTML=editorHeader(service,'실제 식수 결과')+'<div class="empty-editor">결과를 불러오는 중입니다.</div>';try{const r=await api(`/api/workspace/services/${service.id}/actual`);panel.innerHTML=editorHeader(service,'실제 식수 결과')+`<div class="result-card"><strong>계획 식수 ${numberText(r.planned_count)}명</strong><p>보존식 기록과 분리된 배식 실적입니다.</p></div><div class="field-grid"><label class="field">실제 식수<input id="actual-count" type="number" min="0" value="${r.actual_count??''}"></label><label class="field">특이 사항<input id="actual-note" value="${escapeHtml(r.note||'')}"></label></div><div class="save-bar"><span class="save-state">${r.recorded_at?`입력일 ${new Date(r.recorded_at).toLocaleString('ko-KR')}`:'아직 입력하지 않았습니다.'}</span><button class="primary-button" id="save-actual">실제 식수 저장</button></div>`;$('#save-actual').addEventListener('click',saveActual);$('#delete-service').addEventListener('click',deleteCurrentService);}catch(e){toast(e.message,true);}}
 async function saveActual(){try{await api(`/api/workspace/services/${state.selectedServiceId}/actual`,json('PUT',{actual_count:$('#actual-count').value===''?null:Number($('#actual-count').value),note:$('#actual-note').value||null}));await selectService(state.selectedServiceId);await loadWorkspace(true);toast('실제 식수를 저장했습니다.');}catch(e){toast(e.message,true);}}
 
 function setStatsRange(days){
@@ -1944,8 +1944,59 @@ async function loadMasterData(){
   try{
     if(state.masterDataTab==='hwpx-templates') await renderHwpxTemplatesView(root);
     else if(state.masterDataTab==='meal-service-defaults') await renderMealServiceDefaultsView(root);
+    else if(state.masterDataTab==='actual-meal-upload') renderActualMealUploadView(root);
     else renderSetupImportView(root);
   }catch(e){root.innerHTML=`<div class="form-error">${escapeHtml(e.message)}</div>`;}
+}
+
+function renderActualMealUploadView(root){
+  root.innerHTML=`<div class="narrow-card">
+    <h2>식수 정보 업로드</h2>
+    <p>‘실제식수정보’ 시트의 일자·중식·석식·특이사항을 검증한 뒤 기존 배식정보의 실제식수에 반영합니다. 파일 검증만으로는 DB가 변경되지 않습니다.</p>
+    <div class="upload-zone"><input id="actual-meal-file" type="file" accept=".xlsx" aria-label="식수 정보 XLSX 파일"><button id="actual-meal-preview" class="secondary-button" type="button">파일 검증</button></div>
+    <div id="actual-meal-result"></div>
+  </div>`;
+  $('#actual-meal-preview').addEventListener('click',previewActualMealUpload);
+}
+
+function renderActualMealSummary(summary){
+  return `<div class="result-card actual-meal-summary"><h3>검증 요약</h3><div class="stats-mini">
+    <div class="stat-mini-card"><strong>파일/시트</strong><span>${escapeHtml(summary.filename||'')} · ${escapeHtml(summary.sheet_name||'')}</span></div>
+    <div class="stat-mini-card"><strong>원본 행/기간</strong><span>${numberText(summary.source_row_count)}행 · ${summary.start_date||'-'} ~ ${summary.end_date||'-'}</span></div>
+    <div class="stat-mini-card"><strong>중식</strong><span>${numberText(summary.lunch_input_count)}건 · ${numberText(summary.lunch_sum)}명</span></div>
+    <div class="stat-mini-card"><strong>석식</strong><span>${numberText(summary.dinner_input_count)}건 · ${numberText(summary.dinner_sum)}명</span></div>
+    <div class="stat-mini-card"><strong>반영 후보</strong><span>${numberText(summary.candidate_count)}건</span></div>
+    <div class="stat-mini-card"><strong>신규/수정/변경 없음</strong><span>${numberText(summary.new_count)} / ${numberText(summary.update_count)} / ${numberText(summary.unchanged_count)}</span></div>
+    <div class="stat-mini-card"><strong>제외/오류</strong><span>${numberText(summary.excluded_count)} / ${numberText(summary.error_count)}</span></div>
+  </div></div>`;
+}
+
+function renderActualMealRows(){
+  const result=$('#actual-meal-result');const upload=state.actualMealUpload;if(!result||!upload)return;
+  const rows=upload.rows||[];const pageSize=50;const page=upload.page||0;const pageCount=Math.max(1,Math.ceil(rows.length/pageSize));const visible=rows.slice(page*pageSize,(page+1)*pageSize);
+  const statusClass={신규:'badge-ok',수정:'badge-warn','변경 없음':'badge-inactive',오류:'badge-fail',제외:'badge-inactive'};
+  const table=`<div class="table-wrap"><table class="data-table"><thead><tr><th>Excel 행</th><th>일자</th><th>배식유형</th><th>업로드 실제식수</th><th>기존 DB 실제식수</th><th>반영 후 실제식수</th><th>특이사항</th><th>처리 예정 상태</th><th>오류 내용</th></tr></thead><tbody>${visible.map(row=>`<tr><td>${row.excel_row}</td><td>${escapeHtml(row.date||'-')}</td><td>${escapeHtml(row.meal_type_name||row.meal_type||'-')}</td><td>${numberText(row.upload_count)}</td><td>${row.existing_count===null||row.existing_count===undefined?'-':numberText(row.existing_count)}</td><td>${row.error?'-':numberText(row.upload_count)}</td><td>${escapeHtml(row.note||'')}</td><td><span class="badge ${statusClass[row.status]||''}">${escapeHtml(row.status||'-')}</span></td><td class="form-error">${escapeHtml(row.error||'')}</td></tr>`).join('')}</tbody></table></div>`;
+  const canApply=!upload.errors?.length&&upload.summary.error_count===0&&upload.token;
+  const pager=`<div class="table-tools"><span class="muted">${rows.length?`${page*pageSize+1}~${Math.min((page+1)*pageSize,rows.length)}행 / 전체 ${rows.length}행`: '표시할 데이터가 없습니다.'}</span><button class="secondary-button" id="actual-meal-prev" ${page<=0?'disabled':''}>이전</button><button class="secondary-button" id="actual-meal-next" ${page>=pageCount-1?'disabled':''}>다음</button><button class="primary-button" id="actual-meal-apply" ${canApply?'':'disabled'}>DB 반영</button></div>`;
+  result.innerHTML=renderActualMealSummary({...upload.summary,filename:upload.filename})+pager+table;
+  $('#actual-meal-prev')?.addEventListener('click',()=>{upload.page=Math.max(0,page-1);renderActualMealRows();});
+  $('#actual-meal-next')?.addEventListener('click',()=>{upload.page=Math.min(pageCount-1,page+1);renderActualMealRows();});
+  $('#actual-meal-apply')?.addEventListener('click',applyActualMealUpload);
+}
+
+async function previewActualMealUpload(){
+  const file=$('#actual-meal-file').files[0];if(!file){toast('식수 정보 XLSX 파일을 선택해 주세요.',true);return;}
+  const data=new FormData();data.append('file',file);const result=$('#actual-meal-result');result.innerHTML='<div class="result-card">파일을 검증하고 있습니다.</div>';
+  try{const response=await api('/api/setup/actual-meals/preview',{method:'POST',body:data});state.actualMealUpload={...response,filename:file.name,page:0};renderActualMealRows();}
+  catch(e){result.innerHTML=`<div class="result-card"><h3 class="form-error">검증 실패</h3><p>${escapeHtml(e.message)}</p></div>`;toast(e.message,true);}
+}
+
+async function applyActualMealUpload(){
+  const upload=state.actualMealUpload;if(!upload?.token)return;
+  if(!confirm(`검증된 ${numberText(upload.summary.candidate_count)}건의 식수 정보를 DB에 반영하시겠습니까? 파일에 없는 기존 데이터는 유지됩니다.`))return;
+  const button=$('#actual-meal-apply');if(button){button.disabled=true;button.textContent='반영 중…';}
+  try{const response=await api('/api/setup/actual-meals/apply',json('POST',{token:upload.token}));const result=response.result;$('#actual-meal-result').innerHTML=`<div class="result-card"><h3>반영 완료</h3><p>반영 일시 ${new Date(response.completed_at).toLocaleString('ko-KR')}</p><div class="stats-mini"><div class="stat-mini-card"><strong>전체 반영 후보</strong><span>${numberText(result.candidate_count)}건</span></div><div class="stat-mini-card"><strong>신규 등록</strong><span>${numberText(result.new_count)}건</span></div><div class="stat-mini-card"><strong>수정</strong><span>${numberText(result.update_count)}건</span></div><div class="stat-mini-card"><strong>변경 없음</strong><span>${numberText(result.unchanged_count)}건</span></div><div class="stat-mini-card"><strong>제외</strong><span>${numberText(result.excluded_count)}건</span></div><div class="stat-mini-card"><strong>실패</strong><span>${numberText(result.failed_count)}건</span></div></div></div>`;toast('식수 정보 반영을 완료했습니다.');}
+  catch(e){if(button){button.disabled=false;button.textContent='DB 반영';}toast(e.message,true);}
 }
 
 function renderSetupImportView(root){

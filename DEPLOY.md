@@ -237,3 +237,81 @@ curl --fail --silent --show-error \
 
 echo
 echo "Deployment successful: $TS"
+
+
+# ============================================================
+# 부록: Git Push → Pull 배포 방법
+# ============================================================
+#
+# ZIP 파일을 수동으로 업로드하는 기본 방식 대신, Git 저장소를 통해
+# 개발 PC에서 push 한 뒤 서버에서 pull 하는 배포 방식입니다.
+#
+# 전제 조건:
+#   - GitHub 저장소: https://github.com/knhanul/kpicCafeteria.git
+#   - 서버 프로젝트 디렉터리: /opt/cafeteria
+#   - 서버 백업 디렉터리: /opt/cafeteria-backups
+#   - .env, data/, storage/, .venv/, dist/ 는 .gitignore로 추적 제외
+#     → pull 해도 서버의 환경설정·데이터·볼륨이 유지됩니다.
+#
+# ------------------------------------------------------------
+# A. 개발 PC: 커밋 후 Push
+# ------------------------------------------------------------
+#
+# cd C:\Pjt\kpicCafeteria
+#
+# # 변경 사항 확인
+# git status
+#
+# # 스테이징
+# git add <변경한 파일들>
+#
+# # 커밋
+# git commit -m "변경 내용 요약"
+#
+# # GitHub 로 Push
+# git push origin main
+#
+# ------------------------------------------------------------
+# B. 서버: Pull 후 Docker 재빌드
+# ------------------------------------------------------------
+#
+# # 서버 접속
+# ssh root@8.219.243.65
+#
+# # 프로젝트 디렉터리 이동
+# cd /opt/cafeteria
+#
+# # 백업
+# TS=$(date +%Y%m%d_%H%M%S)
+# cp .env .env.bak.$TS
+# docker compose exec -T db pg_dump -U cafeteria cafeteria | gzip > /opt/cafeteria-backups/cafeteria_db_$TS.dump.gz
+#
+# # 최신 소스 가져오기
+# git pull origin main
+#
+# # 설정 검증
+# docker compose config -q
+#
+# # 이미지 빌드
+# docker compose build
+#
+# # 서비스 반영
+# docker compose up -d --remove-orphans
+#
+# # 상태 확인
+# docker compose ps
+# docker compose logs --tail=100 app
+#
+# # Health Check
+# curl -i http://127.0.0.1:8080/health
+# curl -i https://post.nuni.co.kr/health
+#
+# ------------------------------------------------------------
+# 주의사항
+# ------------------------------------------------------------
+#   - .env 는 Git에 추적되지 않으므로 서버에서 직접 유지됩니다.
+#   - data/, storage/, .venv/, dist/ 도 .gitignore로 제외되어
+#     pull 로 덮어쓰지 않습니다.
+#   - DB 데이터는 Pull과 무관하게 Docker 볼륨으로 유지됩니다.
+#   - 반영 전 반드시 pg_dump 백업을 먼저 실행하세요.
+#   - 운영 DB에 Apply 하려면 식수 정보 업로드 탭에서 별도 승인 후 실행하세요.
