@@ -185,6 +185,32 @@ def test_representative_canonical_fallback_dedupe_and_rankings(tmp_path):
     assert result["combinations"]
 
 
+def test_menu_fallback_to_juchan_role_when_no_representative(tmp_path):
+    """When no is_representative=True menus exist, fall back to role='주찬' menus."""
+    engine = make_db(tmp_path)
+    start = date(2025, 4, 7)
+    with Session(engine) as db:
+        juchan = Menu(name="불고기", canonical_name="불고기", role="주찬")
+        side = Menu(name="김치", canonical_name="김치", role="반찬")
+        db.add_all([juchan, side])
+        db.flush()
+        for index in range(5):
+            service = add_service(db, start + timedelta(days=index * 7), planned=100, actual=120)
+            # Both menus with is_representative=False (simulating imported data)
+            db.add(MealServiceMenu(meal_service_id=service.id, menu_id=juchan.id, menu_name_snapshot="불고기", is_representative=False))
+            db.add(MealServiceMenu(meal_service_id=service.id, menu_id=side.id, menu_name_snapshot="김치", is_representative=False))
+        for index in range(5, 10):
+            add_service(db, start + timedelta(days=index * 7), planned=100, actual=100)
+        db.commit()
+        result = menu_metrics(db, start, start + timedelta(days=63))
+    by_name = {item["canonical_name"]: item for item in result["items"]}
+    # Should fall back to 주찬 role: only "불고기" should appear, not "김치"
+    assert "불고기" in by_name
+    assert "김치" not in by_name
+    assert by_name["불고기"]["occurrence_n"] == 5
+    assert result["representative_source"] == "주찬_fallback"
+
+
 def test_menu_lift_ineligible_when_menu_or_comparator_below_five(tmp_path):
     engine = make_db(tmp_path)
     start = date(2025, 5, 5)
@@ -332,7 +358,7 @@ def test_database_pagination_filters_and_summary_detail_export(tmp_path):
         content = export_xlsx(db, start, start + timedelta(days=2), rain="rain", menu="국", temp_bucket="25~29.9")
     assert page["total"] == 1
     assert len(page["items"]) == 1
-    assert len(statements) <= 4
+    assert len(statements) <= 5
     workbook = load_workbook(BytesIO(content), read_only=True)
     assert workbook.sheetnames == ["요약", "상세자료"]
     assert len(list(workbook["상세자료"].rows)) == 2

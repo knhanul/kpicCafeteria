@@ -368,6 +368,7 @@ def batch_add_menus(
 
     # All validation passed — create service menus in a transaction
     base_sort = len(service.menus)
+    has_representative = any(value.is_representative for value in service.menus)
     for item in body.items:
         menu = menu_map[item.menu_id]
         active_recipes = [r for r in menu.recipes if r.active]
@@ -376,13 +377,16 @@ def batch_add_menus(
         else:
             recipe = next((r for r in active_recipes if r.is_default), None) or (active_recipes[0] if active_recipes else None)
 
+        is_rep = menu.role == "주찬" and not has_representative
         new_item = MealServiceMenu(
             service=service,
             menu=menu,
             sort_order=base_sort + item.sort_order,
             menu_name_snapshot=menu.name,
-            is_representative=False,
+            is_representative=is_rep,
         )
+        if is_rep:
+            has_representative = True
         db.add(new_item)
         db.flush()
         _copy_recipe_to_service_menu(db, new_item, recipe)

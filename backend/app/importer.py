@@ -286,6 +286,7 @@ class MigrationImporter:
             service_menu_map: dict[tuple[str, str, str, int], MealServiceMenu] = {}
             service_menu_by_id: dict[int, MealServiceMenu] = {}
             service_menu_ingredient_ids: dict[int, set[int]] = defaultdict(set)
+            service_has_representative: dict[int, bool] = {}
             for row in reader.sheet_rows("06_식단이력_이관"):
                 service_date = excel_serial_to_date(row.get("일자"))
                 meal_name = clean_text(row.get("배식유형"))
@@ -325,6 +326,7 @@ class MigrationImporter:
                     )
                 if not service_menu:
                     source_recipe = default_recipe_by_menu.get(menu.id) if menu else None
+                    is_rep = menu is not None and menu.role == "주찬" and not service_has_representative.get(service.id, False)
                     service_menu = MealServiceMenu(
                         service=service,
                         menu=menu,
@@ -333,7 +335,10 @@ class MigrationImporter:
                         menu_name_snapshot=menu_name,
                         recipe_name_snapshot=source_recipe.name if source_recipe else None,
                         recipe_version_snapshot=source_recipe.version if source_recipe else None,
+                        is_representative=is_rep,
                     )
+                    if is_rep:
+                        service_has_representative[service.id] = True
                     db.add(service_menu)
                 service_menu.note = clean_text(row.get("메뉴비고")) or None
                 db.flush()

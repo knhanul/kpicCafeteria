@@ -123,7 +123,19 @@ def _optional_weather_rows(db: Session, start: date, end: date, station_id: str 
 def _menu_rows(db: Session, service_ids: list[int]) -> list[dict[str, Any]]:
     if not service_ids:
         return []
-    rows = db.execute(
+    result = _menu_rows_filtered(db, service_ids, representative_only=True)
+    if result:
+        return result
+    # Fallback: no is_representative=True menus — use "주찬" role menus instead.
+    return _menu_rows_filtered(db, service_ids, representative_only=False, role="주찬")
+
+
+def _has_representative_menus(db: Session) -> bool:
+    return db.scalar(select(func.count()).select_from(MealServiceMenu).where(MealServiceMenu.is_representative.is_(True)).limit(1)) > 0
+
+
+def _menu_rows_filtered(db: Session, service_ids: list[int], representative_only: bool = True, role: str | None = None) -> list[dict[str, Any]]:
+    stmt = (
         select(
             MealServiceMenu.meal_service_id,
             MealServiceMenu.menu_id,
@@ -132,9 +144,14 @@ def _menu_rows(db: Session, service_ids: list[int]) -> list[dict[str, Any]]:
             MealServiceMenu.menu_name_snapshot,
         )
         .outerjoin(Menu, Menu.id == MealServiceMenu.menu_id)
-        .where(MealServiceMenu.meal_service_id.in_(service_ids), MealServiceMenu.is_representative.is_(True))
-        .order_by(MealServiceMenu.meal_service_id, MealServiceMenu.sort_order, MealServiceMenu.id)
+        .where(MealServiceMenu.meal_service_id.in_(service_ids))
     )
+    if representative_only:
+        stmt = stmt.where(MealServiceMenu.is_representative.is_(True))
+    elif role:
+        stmt = stmt.where(Menu.role == role)
+    stmt = stmt.order_by(MealServiceMenu.meal_service_id, MealServiceMenu.sort_order, MealServiceMenu.id)
+    rows = db.execute(stmt)
     result = []
     seen: set[tuple[int, str]] = set()
     for row in rows:
@@ -443,7 +460,7 @@ def menu_metrics(db: Session, start: date, end: date, meal_type: str = "all") ->
     role_items = [{"role": role, **_service_sample(list(by_service.values()))} for role, by_service in sorted(role_services.items())]
     combinations = Counter(tuple(sorted(set(names))) for names in service_menus.values() if names)
     combination_items = [{"menus": list(names), "count": count} for names, count in combinations.most_common(20)]
-    return {"items": items, "rankings": rankings, "roles": role_items, "combinations": combination_items, "menu_count": len(items), "service_count": len(services), "minimum_sample": MIN_SAMPLE, "insights": insights}
+    return {"items": items, "rankings": rankings, "roles": role_items, "combinations": combination_items, "menu_count": len(items), "service_count": len(services), "minimum_sample": MIN_SAMPLE, "representative_source": "is_representative" if _has_representative_menus(db) else "주찬_fallback", "insights": insights}
 
 
 def _season(value: date) -> str:
@@ -666,7 +683,7 @@ def data_quality(db: Session, start: date, end: date, meal_type: str = "all", st
     }
 
 
-def _filtered_detail_stmt(start: date, end: date, meal_type: str, resolved_id: str | None, rain: str, menu: str | None, temp_bucket: str | None):
+def _filtered_detail_stmt(db: Session, start: date, end: date, meal_type: str, resolved_id: str | None, rain: str, menu: str | None, temp_bucket: str | None):
     stmt = _service_stmt(start, end, meal_type)
     if resolved_id:
         stmt = stmt.outerjoin(
@@ -699,10 +716,13 @@ def _filtered_detail_stmt(start: date, end: date, meal_type: str, resolved_id: s
             stmt = stmt.where(ranges[temp_bucket])
     if menu:
         term = f"%{menu.strip()}%"
+        if _has_representative_menus(db):
+            menu_filter = and_(MealServiceMenu.is_representative.is_(True), or_(Menu.canonical_name.ilike(term), MealServiceMenu.menu_name_snapshot.ilike(term)))
+        else:
+            menu_filter = and_(Menu.role == "주찬", or_(Menu.canonical_name.ilike(term), MealServiceMenu.menu_name_snapshot.ilike(term)))
         menu_match = exists(select(MealServiceMenu.id).outerjoin(Menu, Menu.id == MealServiceMenu.menu_id).where(
             MealServiceMenu.meal_service_id == MealService.id,
-            MealServiceMenu.is_representative.is_(True),
-            or_(Menu.canonical_name.ilike(term), MealServiceMenu.menu_name_snapshot.ilike(term)),
+            menu_filter,
         ))
         stmt = stmt.where(menu_match)
     return stmt
@@ -742,7 +762,7 @@ def drilldown(db: Session, start: date, end: date, meal_type: str = "all", stati
     resolved_id, station_name = _resolve_station(db, station_id)
     if (rain != "all" or temp_bucket) and not resolved_id:
         raise StationSelectionError("날씨 상세 필터를 사용하려면 날씨 지점이 필요합니다.")
-    stmt = _filtered_detail_stmt(start, end, meal_type, resolved_id, rain, menu, temp_bucket)
+    stmt = _filtered_detail_stmt(db, start, end, meal_type, resolved_id, rain, menu, temp_bucket)
     total = db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery())) or 0
     items = _detail_items(db, stmt, resolved_id, (page - 1) * page_size, page_size)
     return {"total": total, "page": page, "page_size": page_size, "station_id": resolved_id, "station_name": station_name, "filters": {"rain": rain, "menu": menu, "temp_bucket": temp_bucket}, "items": items}
@@ -752,7 +772,7 @@ def export_xlsx(db: Session, start: date, end: date, meal_type: str = "all", sta
     resolved_id, station_name = _resolve_station(db, station_id)
     if (rain != "all" or temp_bucket) and not resolved_id:
         raise StationSelectionError("날씨 상세 필터를 사용하려면 날씨 지점이 필요합니다.")
-    stmt = _filtered_detail_stmt(start, end, meal_type, resolved_id, rain, menu, temp_bucket)
+    stmt = _filtered_detail_stmt(db, start, end, meal_type, resolved_id, rain, menu, temp_bucket)
     items = _detail_items(db, stmt, resolved_id)
     comparable = [item for item in items if item["actual_count"] is not None]
     actual_sum = sum(item["actual_count"] for item in comparable)
