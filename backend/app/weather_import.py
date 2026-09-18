@@ -30,16 +30,16 @@ WEATHER_FIELDS = (
     "avg_humidity", "snow_depth", "sunshine_hours",
 )
 HEADER_ALIASES = {
-    "observation_date": {"일시", "날짜", "관측일", "관측일자", "관측일시"},
-    "station_id": {"지점", "지점번호", "지점코드", "관측지점번호", "관측지점코드"},
-    "station_name": {"지점명", "관측지점명", "관측소명"},
-    "avg_temp": {"평균기온", "일평균기온"},
-    "min_temp": {"최저기온", "일최저기온"},
-    "max_temp": {"최고기온", "일최고기온"},
-    "precipitation": {"일강수량", "강수량", "일강수"},
-    "avg_humidity": {"평균습도", "평균상대습도", "일평균상대습도"},
-    "snow_depth": {"적설", "최심적설", "일최심적설", "최심신적설"},
-    "sunshine_hours": {"일조시간", "합계일조시간", "일조"},
+    "observation_date": {"일시", "날짜", "관측일", "관측일자", "관측일시", "observation_date", "observation_datetime"},
+    "station_id": {"지점", "지점번호", "지점코드", "관측지점번호", "관측지점코드", "station_id"},
+    "station_name": {"지점명", "관측지점명", "관측소명", "station_name"},
+    "avg_temp": {"평균기온", "일평균기온", "기온", "temperature", "temp"},
+    "min_temp": {"최저기온", "일최저기온", "min_temperature", "min_temp"},
+    "max_temp": {"최고기온", "일최고기온", "max_temperature", "max_temp"},
+    "precipitation": {"일강수량", "강수량", "일강수", "precipitation", "rainfall"},
+    "avg_humidity": {"평균습도", "평균상대습도", "일평균상대습도", "습도", "humidity"},
+    "snow_depth": {"적설", "최심적설", "일최심적설", "최심신적설", "snow_depth"},
+    "sunshine_hours": {"일조시간", "합계일조시간", "일조", "sunshine_hours"},
 }
 
 
@@ -246,6 +246,7 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
     errors: list[dict[str, Any]] = []
     seen: set[tuple[date, str]] = set()
     duplicate_keys: set[tuple[date, str]] = set()
+    hourly_mode = False
     source_rows = 0
 
     with tabular_rows(path) as source:
@@ -259,6 +260,8 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
                     continue
                 mapping, unknown_headers, selected_sheet, header_row = candidate, unknown, sheet_name, row_number
                 mapped_headers = {field: str(values[index] or "").strip() for field, index in candidate.items()}
+                normalized_headers = {normalize_header(value) for value in values}
+                hourly_mode = bool(normalized_headers & {"observationdatetime", "temperature", "temp", "humidity", "windspeed", "sourcekind"})
                 continue
             if sheet_name != selected_sheet or row_number <= header_row:
                 continue
@@ -285,7 +288,7 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
                 weather[field] = value
                 if error:
                     warnings.append(f"{field}: {error} NULL로 처리합니다.")
-            if observed and station_id:
+            if observed and station_id and not hourly_mode:
                 key = (observed, station_id)
                 if key in seen:
                     duplicate_keys.add(key)
@@ -304,6 +307,42 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
 
     if mapping is None:
         raise WeatherImportError("파일의 처음 30행에서 필요한 헤더를 인식하지 못했습니다.")
+    if hourly_mode:
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        invalid_rows = []
+        for row in rows:
+            if row["error"]:
+                invalid_rows.append(row)
+                continue
+            grouped.setdefault((row["observation_date"], row["station_id"]), []).append(row)
+        aggregated_rows = []
+        for (observation_date, station_id), samples in sorted(grouped.items()):
+            def values(field: str) -> list[float]:
+                return [float(sample[field]) for sample in samples if sample[field] is not None]
+
+            temperatures = values("avg_temp")
+            min_values = values("min_temp")
+            max_values = values("max_temp")
+            rain_values = values("precipitation")
+            humidity_values = values("avg_humidity")
+            first = samples[0]
+            aggregated_rows.append({
+                "source_row": first["source_row"],
+                "observation_date": observation_date,
+                "station_id": station_id,
+                "station_name": first["station_name"],
+                "avg_temp": sum(temperatures) / len(temperatures) if temperatures else None,
+                "min_temp": min(min_values) if min_values else (min(temperatures) if temperatures else None),
+                "max_temp": max(max_values) if max_values else (max(temperatures) if temperatures else None),
+                "precipitation": sum(rain_values) if rain_values else None,
+                "avg_humidity": sum(humidity_values) / len(humidity_values) if humidity_values else None,
+                "snow_depth": max(values("snow_depth")) if values("snow_depth") else None,
+                "sunshine_hours": sum(values("sunshine_hours")) if values("sunshine_hours") else None,
+                "warnings": sorted({warning for sample in samples for warning in sample["warnings"]}),
+                "error": "",
+                "status": "신규",
+            })
+        rows = aggregated_rows + invalid_rows
     for row in rows:
         if row["observation_date"]:
             key = (date.fromisoformat(row["observation_date"]), row["station_id"])
@@ -339,6 +378,7 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
     summary = {
         "sheet_name": selected_sheet,
         "header_row": header_row,
+        "aggregation_mode": "hourly_to_daily" if hourly_mode else "daily",
         "mapped_headers": mapped_headers,
         "unknown_headers": unknown_headers,
         "total_rows": source_rows,

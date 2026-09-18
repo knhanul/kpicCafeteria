@@ -134,3 +134,27 @@ def test_large_xlsx_preview(tmp_path):
         result = parse_weather_file(path, db)
     assert result["summary"]["total_rows"] == 2000
     assert result["summary"]["valid_rows"] == 2000
+
+
+def test_hourly_csv_is_aggregated_to_daily_weather_rows(tmp_path):
+    path = tmp_path / "weather-hourly.csv"
+    path.write_text(
+        "observation_datetime,station_id,station_name,temperature,precipitation,humidity\n"
+        "2026-09-17 01:00,156,관악,21.7,,76\n"
+        "2026-09-17 02:00,156,관악,20.4,1.2,80\n"
+        "2026-09-17 03:00,156,관악,19.7,0.8,71\n",
+        encoding="utf-8",
+    )
+    engine = make_db(tmp_path)
+    with Session(engine) as db:
+        result = parse_weather_file(path, db)
+    assert result["summary"]["aggregation_mode"] == "hourly_to_daily"
+    assert result["summary"]["total_rows"] == 3
+    assert result["summary"]["valid_rows"] == 1
+    row = result["rows"][0]
+    assert row["observation_date"] == "2026-09-17"
+    assert row["avg_temp"] == (21.7 + 20.4 + 19.7) / 3
+    assert row["min_temp"] == 19.7
+    assert row["max_temp"] == 21.7
+    assert row["precipitation"] == 2.0
+    assert row["avg_humidity"] == (76 + 80 + 71) / 3
