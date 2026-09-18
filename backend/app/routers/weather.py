@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..db import get_db
 from ..deps import admin_user
-from ..models import ImportJob, User, WeatherHistory, WeatherUploadHistory
+from ..models import ImportJob, MealPeriodWeather, User, WeatherHistory, WeatherUploadHistory
 from ..weather_import import (
     ALLOWED_EXTENSIONS,
     MAX_FILE_SIZE,
@@ -166,6 +166,63 @@ def apply_weather(
         if job:
             _record_failed_upload(db, job, user.id, "날씨자료 DB 반영에 실패했습니다.")
         raise HTTPException(status_code=400, detail="날씨자료 DB 반영에 실패했습니다.") from exc
+
+
+@router.get("/meal-period-records")
+def meal_period_weather_records(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    station: str = Query("", max_length=120),
+    min_temp: float | None = None,
+    max_temp: float | None = None,
+    precipitation: str = Query("all", pattern="^(all|yes|no)$"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    user: User = Depends(admin_user),
+):
+    filters = []
+    if start_date:
+        filters.append(MealPeriodWeather.observation_date >= start_date)
+    if end_date:
+        filters.append(MealPeriodWeather.observation_date <= end_date)
+    if station.strip():
+        term = f"%{station.strip()}%"
+        filters.append(or_(MealPeriodWeather.station_id.ilike(term), MealPeriodWeather.station_name.ilike(term)))
+    if min_temp is not None:
+        filters.append(MealPeriodWeather.avg_temp >= min_temp)
+    if max_temp is not None:
+        filters.append(MealPeriodWeather.avg_temp <= max_temp)
+    if precipitation == "yes":
+        filters.append(MealPeriodWeather.precipitation > 0)
+    elif precipitation == "no":
+        filters.append(MealPeriodWeather.precipitation == 0)
+    total = db.scalar(select(func.count()).select_from(MealPeriodWeather).where(*filters)) or 0
+    rows = db.scalars(
+        select(MealPeriodWeather)
+        .where(*filters)
+        .order_by(MealPeriodWeather.observation_date.desc(), MealPeriodWeather.meal_type, MealPeriodWeather.station_id)
+        .offset(offset)
+        .limit(limit)
+    ).all()
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "items": [{
+            "observation_date": row.observation_date.isoformat(),
+            "meal_type": row.meal_type,
+            "station_id": row.station_id,
+            "station_name": row.station_name or "",
+            "avg_temp": row.avg_temp,
+            "min_temp": row.min_temp,
+            "max_temp": row.max_temp,
+            "precipitation": row.precipitation,
+            "avg_humidity": row.avg_humidity,
+            "avg_wind_speed": row.avg_wind_speed,
+            "sample_count": row.sample_count,
+        } for row in rows],
+    }
 
 
 @router.get("/records")

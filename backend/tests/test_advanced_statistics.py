@@ -21,7 +21,7 @@ from app.advanced_statistics import (
 )
 from app.db import Base, create_database_engine
 from app.ingredient_statistics import ingredient_statistics
-from app.models import Ingredient, MealActual, MealService, MealServiceMenu, MealServiceMenuIngredient, Menu, WeatherHistory
+from app.models import Ingredient, MealActual, MealPeriodWeather, MealService, MealServiceMenu, MealServiceMenuIngredient, Menu, WeatherHistory
 from app.statistics_service import meal_statistics
 
 
@@ -265,6 +265,33 @@ def test_exact_weather_bins_null_dry_rain_humidity_snow_scatter_and_pearson(tmp_
     assert result["correlations"]["avg_temp"]["eligible"] is True
     assert result["correlations"]["avg_temp"]["pearson"] is not None
     assert "N>=10" in result["correlation_disclaimer"]
+
+
+def test_meal_period_weather_overrides_daily_weather_by_meal_type(tmp_path):
+    engine = make_db(tmp_path)
+    day = date(2025, 6, 20)
+    with Session(engine) as db:
+        add_service(db, day, "LUNCH", actual=100)
+        add_service(db, day, "DINNER", actual=200)
+        add_weather(db, day, temp=5, rain=0)
+        db.add_all([
+            MealPeriodWeather(observation_date=day, station_id="108", station_name="서울", meal_type="LUNCH", avg_temp=20, precipitation=0, avg_humidity=60, sample_count=2),
+            MealPeriodWeather(observation_date=day, station_id="108", station_name="서울", meal_type="DINNER", avg_temp=30, precipitation=2, avg_humidity=70, sample_count=2),
+        ])
+        db.commit()
+        result = weather_metrics(db, day, day)
+        rainy = drilldown(db, day, day, rain="rain")
+        quality = data_quality(db, day, day)
+    scatter = {item["meal_type"]: item for item in result["scatter"]}
+    assert scatter["LUNCH"]["avg_temp"] == 20
+    assert scatter["DINNER"]["avg_temp"] == 30
+    assert scatter["DINNER"]["precipitation"] == 2
+    assert result["meal_period_matched_count"] == 2
+    assert result["matched_service_count"] == 2
+    assert rainy["total"] == 1
+    assert rainy["items"][0]["meal_type"] == "DINNER"
+    assert rainy["items"][0]["weather"]["avg_temp"] == 30
+    assert quality["metrics"]["weather_match"]["count"] == 2
 
 
 def test_station_resolution_and_menu_weather_cross_tables(tmp_path):

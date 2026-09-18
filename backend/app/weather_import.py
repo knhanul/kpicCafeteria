@@ -17,7 +17,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from .models import WeatherHistory, WeatherUploadHistory
+from .models import MealPeriodWeather, WeatherHistory, WeatherHourly, WeatherUploadHistory
 
 ALLOWED_EXTENSIONS = {".xlsx", ".xls", ".csv"}
 MAX_FILE_SIZE = 20 * 1024 * 1024
@@ -30,16 +30,21 @@ WEATHER_FIELDS = (
     "avg_humidity", "snow_depth", "sunshine_hours",
 )
 HEADER_ALIASES = {
-    "observation_date": {"일시", "날짜", "관측일", "관측일자", "관측일시", "observation_date", "observation_datetime"},
+    "observation_date": {"일시", "날짜", "관측일", "관측일자", "observation_date"},
+    "observation_datetime": {"관측일시", "observation_datetime"},
     "station_id": {"지점", "지점번호", "지점코드", "관측지점번호", "관측지점코드", "station_id"},
     "station_name": {"지점명", "관측지점명", "관측소명", "station_name"},
-    "avg_temp": {"평균기온", "일평균기온", "기온", "temperature", "temp"},
-    "min_temp": {"최저기온", "일최저기온", "min_temperature", "min_temp"},
-    "max_temp": {"최고기온", "일최고기온", "max_temperature", "max_temp"},
+    "avg_temp": {"평균기온", "일평균기온"},
+    "min_temp": {"최저기온", "일최저기온"},
+    "max_temp": {"최고기온", "일최고기온"},
+    "temperature": {"기온", "temperature", "temp"},
     "precipitation": {"일강수량", "강수량", "일강수", "precipitation", "rainfall"},
-    "avg_humidity": {"평균습도", "평균상대습도", "일평균상대습도", "습도", "humidity"},
-    "snow_depth": {"적설", "최심적설", "일최심적설", "최심신적설", "snow_depth"},
-    "sunshine_hours": {"일조시간", "합계일조시간", "일조", "sunshine_hours"},
+    "avg_humidity": {"평균습도", "평균상대습도", "일평균상대습도"},
+    "humidity": {"습도", "humidity"},
+    "snow_depth": {"적설", "최심적설", "일최심적설", "최심신적설"},
+    "sunshine_hours": {"일조시간", "합계일조시간", "일조"},
+    "wind_speed": {"풍속", "wind_speed"},
+    "source_kind": {"자료구분", "source_kind"},
 }
 
 
@@ -84,8 +89,8 @@ def map_headers(headers: list[Any]) -> tuple[dict[str, int], list[str]]:
         if field in mapping:
             raise WeatherImportError(f"'{field}'에 매핑되는 헤더가 여러 개입니다.")
         mapping[field] = index
-    if "observation_date" not in mapping:
-        raise WeatherImportError("관측일자 헤더를 인식하지 못했습니다.")
+    if "observation_date" not in mapping and "observation_datetime" not in mapping:
+        raise WeatherImportError("관측일자 또는 관측일시 헤더를 인식하지 못했습니다.")
     if "station_id" not in mapping and "station_name" not in mapping:
         raise WeatherImportError("관측지점 번호 또는 관측지점명 헤더를 인식하지 못했습니다.")
     return mapping, unknown
@@ -199,6 +204,20 @@ def _parse_date(value: Any) -> date | None:
     return None
 
 
+def _parse_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time())
+    text = str(value or "").strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y.%m.%d %H:%M", "%Y/%m/%d %H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def _parse_number(value: Any) -> tuple[float | None, str | None]:
     if value is None or str(value).strip().lower() in NULL_MARKERS:
         return None, None
@@ -244,8 +263,8 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
     header_row = 0
     rows: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
-    seen: set[tuple[date, str]] = set()
-    duplicate_keys: set[tuple[date, str]] = set()
+    seen: set[tuple[Any, str]] = set()
+    duplicate_keys: set[tuple[Any, str]] = set()
     hourly_mode = False
     source_rows = 0
 
@@ -260,8 +279,7 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
                     continue
                 mapping, unknown_headers, selected_sheet, header_row = candidate, unknown, sheet_name, row_number
                 mapped_headers = {field: str(values[index] or "").strip() for field, index in candidate.items()}
-                normalized_headers = {normalize_header(value) for value in values}
-                hourly_mode = bool(normalized_headers & {"observationdatetime", "temperature", "temp", "humidity", "windspeed", "sourcekind"})
+                hourly_mode = "observation_datetime" in mapping
                 continue
             if sheet_name != selected_sheet or row_number <= header_row:
                 continue
@@ -271,34 +289,39 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
             if source_rows > MAX_ROWS:
                 raise WeatherImportError(f"최대 {MAX_ROWS:,}행까지 업로드할 수 있습니다.")
             get = lambda field: values[mapping[field]] if field in mapping and mapping[field] < len(values) else None
-            observed = _parse_date(get("observation_date"))
+            observed_at = _parse_datetime(get("observation_datetime")) if hourly_mode else None
+            observed = observed_at.date() if observed_at else _parse_date(get("observation_date"))
             station_name = _station_value(get("station_name"))
             station_id = _station_value(get("station_id"))
             row_errors: list[str] = []
             warnings: list[str] = []
             if observed is None:
-                row_errors.append("관측일자를 날짜로 변환할 수 없습니다.")
+                row_errors.append("관측일시를 날짜와 시간으로 변환할 수 없습니다." if hourly_mode else "관측일자를 날짜로 변환할 수 없습니다.")
             if not station_id and not station_name:
                 row_errors.append("관측지점 번호와 지점명이 모두 없습니다.")
             if not station_id and station_name:
                 station_id = _name_station_id(station_name)
+            fields = ("temperature", "precipitation", "humidity", "wind_speed") if hourly_mode else WEATHER_FIELDS
             weather: dict[str, float | None] = {}
-            for field in WEATHER_FIELDS:
+            for field in fields:
                 value, error = _parse_number(get(field))
                 weather[field] = value
                 if error:
                     warnings.append(f"{field}: {error} NULL로 처리합니다.")
-            if observed and station_id and not hourly_mode:
-                key = (observed, station_id)
+            key_value = observed_at if hourly_mode else observed
+            if key_value and station_id:
+                key = (key_value, station_id)
                 if key in seen:
                     duplicate_keys.add(key)
                 seen.add(key)
             row = {
                 "source_row": row_number,
                 "observation_date": observed.isoformat() if observed else "",
+                "observation_datetime": observed_at.isoformat(timespec="minutes") if observed_at else "",
                 "station_id": station_id,
                 "station_name": station_name,
                 **weather,
+                "source_kind": _station_value(get("source_kind")) if hourly_mode else "",
                 "warnings": warnings,
                 "error": "; ".join(row_errors),
                 "status": "오류" if row_errors else "신규",
@@ -307,78 +330,54 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
 
     if mapping is None:
         raise WeatherImportError("파일의 처음 30행에서 필요한 헤더를 인식하지 못했습니다.")
-    if hourly_mode:
-        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
-        invalid_rows = []
-        for row in rows:
-            if row["error"]:
-                invalid_rows.append(row)
-                continue
-            grouped.setdefault((row["observation_date"], row["station_id"]), []).append(row)
-        aggregated_rows = []
-        for (observation_date, station_id), samples in sorted(grouped.items()):
-            def values(field: str) -> list[float]:
-                return [float(sample[field]) for sample in samples if sample[field] is not None]
-
-            temperatures = values("avg_temp")
-            min_values = values("min_temp")
-            max_values = values("max_temp")
-            rain_values = values("precipitation")
-            humidity_values = values("avg_humidity")
-            first = samples[0]
-            aggregated_rows.append({
-                "source_row": first["source_row"],
-                "observation_date": observation_date,
-                "station_id": station_id,
-                "station_name": first["station_name"],
-                "avg_temp": sum(temperatures) / len(temperatures) if temperatures else None,
-                "min_temp": min(min_values) if min_values else (min(temperatures) if temperatures else None),
-                "max_temp": max(max_values) if max_values else (max(temperatures) if temperatures else None),
-                "precipitation": sum(rain_values) if rain_values else None,
-                "avg_humidity": sum(humidity_values) / len(humidity_values) if humidity_values else None,
-                "snow_depth": max(values("snow_depth")) if values("snow_depth") else None,
-                "sunshine_hours": sum(values("sunshine_hours")) if values("sunshine_hours") else None,
-                "warnings": sorted({warning for sample in samples for warning in sample["warnings"]}),
-                "error": "",
-                "status": "신규",
-            })
-        rows = aggregated_rows + invalid_rows
     for row in rows:
-        if row["observation_date"]:
-            key = (date.fromisoformat(row["observation_date"]), row["station_id"])
-            if key in duplicate_keys:
-                row["error"] = "; ".join(filter(None, [row["error"], "파일 안에서 관측일자와 관측지점이 중복됩니다."]))
+        key_text = row["observation_datetime"] if hourly_mode else row["observation_date"]
+        if key_text:
+            key_value = datetime.fromisoformat(key_text) if hourly_mode else date.fromisoformat(key_text)
+            if (key_value, row["station_id"]) in duplicate_keys:
+                label = "관측일시" if hourly_mode else "관측일자"
+                row["error"] = "; ".join(filter(None, [row["error"], f"파일 안에서 {label}와 관측지점이 중복됩니다."]))
                 row["status"] = "오류"
     errors = [{"row": row["source_row"], "message": row["error"]} for row in rows if row["error"]]
 
     valid_rows = [row for row in rows if not row["error"]]
-    existing_map: dict[tuple[date, str], WeatherHistory] = {}
     if db is not None and valid_rows:
         dates = [date.fromisoformat(row["observation_date"]) for row in valid_rows]
         station_ids = {row["station_id"] for row in valid_rows}
-        existing_rows = db.scalars(
-            select(WeatherHistory).where(
-                WeatherHistory.observation_date.between(min(dates), max(dates)),
-                WeatherHistory.station_id.in_(station_ids),
-            )
-        ).all()
-        existing_map = {(row.observation_date, row.station_id): row for row in existing_rows}
-        for row in valid_rows:
-            existing = existing_map.get((date.fromisoformat(row["observation_date"]), row["station_id"]))
-            row["existing"] = existing.id if existing else None
-            if not existing:
-                row["status"] = "신규"
-            elif any(getattr(existing, field) != row[field] for field in ("station_name", *WEATHER_FIELDS)):
-                row["status"] = "수정"
-            else:
-                row["status"] = "변경 없음"
+        if hourly_mode:
+            datetimes = [datetime.fromisoformat(row["observation_datetime"]) for row in valid_rows]
+            existing_rows = db.scalars(
+                select(WeatherHourly).where(
+                    WeatherHourly.observation_datetime.between(min(datetimes), max(datetimes)),
+                    WeatherHourly.station_id.in_(station_ids),
+                )
+            ).all()
+            existing_map = {(row.observation_datetime, row.station_id): row for row in existing_rows}
+            compare_fields = ("station_name", "temperature", "precipitation", "humidity", "wind_speed", "source_kind")
+            for row in valid_rows:
+                existing = existing_map.get((datetime.fromisoformat(row["observation_datetime"]), row["station_id"]))
+                row["existing"] = existing.id if existing else None
+                changed = existing and any(getattr(existing, field) != (None if row[field] == "" else row[field]) for field in compare_fields)
+                row["status"] = "신규" if not existing else "수정" if changed else "변경 없음"
+        else:
+            existing_rows = db.scalars(
+                select(WeatherHistory).where(
+                    WeatherHistory.observation_date.between(min(dates), max(dates)),
+                    WeatherHistory.station_id.in_(station_ids),
+                )
+            ).all()
+            existing_map = {(row.observation_date, row.station_id): row for row in existing_rows}
+            for row in valid_rows:
+                existing = existing_map.get((date.fromisoformat(row["observation_date"]), row["station_id"]))
+                row["existing"] = existing.id if existing else None
+                row["status"] = "신규" if not existing else "수정" if any(getattr(existing, field) != row[field] for field in ("station_name", *WEATHER_FIELDS)) else "변경 없음"
 
     valid_dates = [date.fromisoformat(row["observation_date"]) for row in valid_rows]
     stations = sorted({(row["station_id"], row["station_name"]) for row in valid_rows})
     summary = {
         "sheet_name": selected_sheet,
         "header_row": header_row,
-        "aggregation_mode": "hourly_to_daily" if hourly_mode else "daily",
+        "data_granularity": "hourly" if hourly_mode else "daily",
         "mapped_headers": mapped_headers,
         "unknown_headers": unknown_headers,
         "total_rows": source_rows,
@@ -394,6 +393,76 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
         "rows_fingerprint": _fingerprint(valid_rows),
     }
     return {"summary": summary, "rows": rows, "errors": errors}
+
+
+def _refresh_meal_period_weather(db: Session, rows: list[dict[str, Any]], batch_id: int, now: datetime) -> None:
+    affected = {(date.fromisoformat(row["observation_date"]), row["station_id"]) for row in rows}
+    if not affected:
+        return
+    dates = [item[0] for item in affected]
+    station_ids = {item[1] for item in affected}
+    start_at = datetime.combine(min(dates), datetime.min.time())
+    end_at = datetime.combine(max(dates) + timedelta(days=1), datetime.min.time())
+    hourly_rows = db.scalars(
+        select(WeatherHourly).where(
+            WeatherHourly.observation_datetime >= start_at,
+            WeatherHourly.observation_datetime < end_at,
+            WeatherHourly.station_id.in_(station_ids),
+        )
+    ).all()
+    grouped: dict[tuple[date, str, str], list[WeatherHourly]] = {}
+    for row in hourly_rows:
+        key = (row.observation_datetime.date(), row.station_id)
+        if key not in affected:
+            continue
+        meal_type = "LUNCH" if row.observation_datetime.hour in {11, 12} else "DINNER" if row.observation_datetime.hour in {17, 18} else None
+        if meal_type:
+            grouped.setdefault((*key, meal_type), []).append(row)
+    values = []
+    for (observation_date, station_id, meal_type), samples in grouped.items():
+        def numbers(field: str) -> list[float]:
+            return [float(value) for sample in samples if (value := getattr(sample, field)) is not None]
+
+        temperatures = numbers("temperature")
+        precipitation = numbers("precipitation")
+        humidity = numbers("humidity")
+        wind_speed = numbers("wind_speed")
+        values.append({
+            "observation_date": observation_date,
+            "station_id": station_id,
+            "station_name": next((sample.station_name for sample in samples if sample.station_name), None),
+            "meal_type": meal_type,
+            "avg_temp": sum(temperatures) / len(temperatures) if temperatures else None,
+            "min_temp": min(temperatures) if temperatures else None,
+            "max_temp": max(temperatures) if temperatures else None,
+            "precipitation": sum(precipitation) if precipitation else None,
+            "avg_humidity": sum(humidity) / len(humidity) if humidity else None,
+            "avg_wind_speed": sum(wind_speed) / len(wind_speed) if wind_speed else None,
+            "sample_count": len(samples),
+            "upload_batch_id": batch_id,
+            "created_at": now,
+            "updated_at": now,
+        })
+    if not values:
+        return
+    insert = pg_insert(MealPeriodWeather) if db.bind and db.bind.dialect.name == "postgresql" else sqlite_insert(MealPeriodWeather)
+    statement = insert.values(values)
+    statement = statement.on_conflict_do_update(
+        index_elements=[MealPeriodWeather.observation_date, MealPeriodWeather.station_id, MealPeriodWeather.meal_type],
+        set_={
+            "station_name": statement.excluded.station_name,
+            "avg_temp": statement.excluded.avg_temp,
+            "min_temp": statement.excluded.min_temp,
+            "max_temp": statement.excluded.max_temp,
+            "precipitation": statement.excluded.precipitation,
+            "avg_humidity": statement.excluded.avg_humidity,
+            "avg_wind_speed": statement.excluded.avg_wind_speed,
+            "sample_count": statement.excluded.sample_count,
+            "upload_batch_id": statement.excluded.upload_batch_id,
+            "updated_at": statement.excluded.updated_at,
+        },
+    )
+    db.execute(statement)
 
 
 def apply_weather_file(path: Path, db: Session, filename: str, checksum: str, user_id: int, expected_fingerprint: str) -> tuple[WeatherUploadHistory, dict[str, int]]:
@@ -422,30 +491,63 @@ def apply_weather_file(path: Path, db: Session, filename: str, checksum: str, us
     now = datetime.now(timezone.utc)
     changed = [row for row in parsed["rows"] if row["status"] in {"신규", "수정"}]
     if changed:
-        values = [{
-            "observation_date": date.fromisoformat(row["observation_date"]),
-            "station_id": row["station_id"],
-            "station_name": row["station_name"] or None,
-            **{field: row[field] for field in WEATHER_FIELDS},
-            "source": "KMA_FILE",
-            "upload_batch_id": batch.id,
-            "created_at": now,
-            "updated_at": now,
-        } for row in changed]
-        insert = pg_insert(WeatherHistory) if db.bind and db.bind.dialect.name == "postgresql" else sqlite_insert(WeatherHistory)
-        for start in range(0, len(values), 1000):
-            statement = insert.values(values[start:start + 1000])
-            statement = statement.on_conflict_do_update(
-                index_elements=[WeatherHistory.observation_date, WeatherHistory.station_id],
-                set_={
-                    "station_name": statement.excluded.station_name,
-                    **{field: getattr(statement.excluded, field) for field in WEATHER_FIELDS},
-                    "source": statement.excluded.source,
-                    "upload_batch_id": statement.excluded.upload_batch_id,
-                    "updated_at": statement.excluded.updated_at,
-                },
-            )
-            db.execute(statement)
+        if summary["data_granularity"] == "hourly":
+            values = [{
+                "observation_datetime": datetime.fromisoformat(row["observation_datetime"]),
+                "station_id": row["station_id"],
+                "station_name": row["station_name"] or None,
+                "temperature": row["temperature"],
+                "precipitation": row["precipitation"],
+                "humidity": row["humidity"],
+                "wind_speed": row["wind_speed"],
+                "source_kind": row["source_kind"] or None,
+                "upload_batch_id": batch.id,
+                "created_at": now,
+                "updated_at": now,
+            } for row in changed]
+            insert = pg_insert(WeatherHourly) if db.bind and db.bind.dialect.name == "postgresql" else sqlite_insert(WeatherHourly)
+            for start in range(0, len(values), 1000):
+                statement = insert.values(values[start:start + 1000])
+                statement = statement.on_conflict_do_update(
+                    index_elements=[WeatherHourly.observation_datetime, WeatherHourly.station_id],
+                    set_={
+                        "station_name": statement.excluded.station_name,
+                        "temperature": statement.excluded.temperature,
+                        "precipitation": statement.excluded.precipitation,
+                        "humidity": statement.excluded.humidity,
+                        "wind_speed": statement.excluded.wind_speed,
+                        "source_kind": statement.excluded.source_kind,
+                        "upload_batch_id": statement.excluded.upload_batch_id,
+                        "updated_at": statement.excluded.updated_at,
+                    },
+                )
+                db.execute(statement)
+            _refresh_meal_period_weather(db, changed, batch.id, now)
+        else:
+            values = [{
+                "observation_date": date.fromisoformat(row["observation_date"]),
+                "station_id": row["station_id"],
+                "station_name": row["station_name"] or None,
+                **{field: row[field] for field in WEATHER_FIELDS},
+                "source": "KMA_FILE",
+                "upload_batch_id": batch.id,
+                "created_at": now,
+                "updated_at": now,
+            } for row in changed]
+            insert = pg_insert(WeatherHistory) if db.bind and db.bind.dialect.name == "postgresql" else sqlite_insert(WeatherHistory)
+            for start in range(0, len(values), 1000):
+                statement = insert.values(values[start:start + 1000])
+                statement = statement.on_conflict_do_update(
+                    index_elements=[WeatherHistory.observation_date, WeatherHistory.station_id],
+                    set_={
+                        "station_name": statement.excluded.station_name,
+                        **{field: getattr(statement.excluded, field) for field in WEATHER_FIELDS},
+                        "source": statement.excluded.source,
+                        "upload_batch_id": statement.excluded.upload_batch_id,
+                        "updated_at": statement.excluded.updated_at,
+                    },
+                )
+                db.execute(statement)
     batch.status = "COMPLETED_WITH_ERRORS" if summary["error_rows"] else "COMPLETED"
     batch.completed_at = now
     result = {

@@ -361,6 +361,49 @@ class WeatherHistory(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
+class WeatherHourly(Base):
+    __tablename__ = "weather_hourly"
+    __table_args__ = (UniqueConstraint("observation_datetime", "station_id", name="uq_weather_hourly_datetime_station"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    observation_datetime: Mapped[datetime] = mapped_column(DateTime, index=True)
+    station_id: Mapped[str] = mapped_column(String(80), index=True)
+    station_name: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
+    precipitation: Mapped[float | None] = mapped_column(Float, nullable=True)
+    humidity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    wind_speed: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_kind: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    upload_batch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("weather_upload_history.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+
+class MealPeriodWeather(Base):
+    __tablename__ = "weather_meal_period"
+    __table_args__ = (UniqueConstraint("observation_date", "station_id", "meal_type", name="uq_weather_meal_period_date_station_meal"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    observation_date: Mapped[date] = mapped_column(Date, index=True)
+    station_id: Mapped[str] = mapped_column(String(80), index=True)
+    station_name: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    meal_type: Mapped[str] = mapped_column(String(30), index=True)
+    avg_temp: Mapped[float | None] = mapped_column(Float, nullable=True)
+    min_temp: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_temp: Mapped[float | None] = mapped_column(Float, nullable=True)
+    precipitation: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_humidity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_wind_speed: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    upload_batch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("weather_upload_history.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 

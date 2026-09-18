@@ -8,10 +8,10 @@ from statistics import median
 from typing import Any
 
 from openpyxl import Workbook
-from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy import and_, case, exists, func, literal, or_, select, union_all
 from sqlalchemy.orm import Session
 
-from .models import MealActual, MealService, MealServiceMenu, Menu, WeatherHistory
+from .models import MealActual, MealPeriodWeather, MealService, MealServiceMenu, Menu, WeatherHistory
 
 WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]
 MIN_SAMPLE = 5
@@ -55,18 +55,24 @@ def _service_rows(db: Session, start: date, end: date, meal_type: str = "all") -
 
 
 def station_list(db: Session, start: date | None = None, end: date | None = None) -> dict[str, Any]:
-    stmt = select(
-        WeatherHistory.station_id,
-        func.max(WeatherHistory.station_name).label("station_name"),
-        func.min(WeatherHistory.observation_date).label("date_from"),
-        func.max(WeatherHistory.observation_date).label("date_to"),
-        func.count(WeatherHistory.id).label("record_count"),
-    )
+    daily = select(WeatherHistory.station_id, WeatherHistory.station_name, WeatherHistory.observation_date.label("weather_date"))
+    period = select(MealPeriodWeather.station_id, MealPeriodWeather.station_name, MealPeriodWeather.observation_date.label("weather_date"))
     if start:
-        stmt = stmt.where(WeatherHistory.observation_date >= start)
+        daily = daily.where(WeatherHistory.observation_date >= start)
+        period = period.where(MealPeriodWeather.observation_date >= start)
     if end:
-        stmt = stmt.where(WeatherHistory.observation_date <= end)
-    rows = db.execute(stmt.group_by(WeatherHistory.station_id).order_by(WeatherHistory.station_id)).all()
+        daily = daily.where(WeatherHistory.observation_date <= end)
+        period = period.where(MealPeriodWeather.observation_date <= end)
+    sources = union_all(daily, period).subquery()
+    rows = db.execute(
+        select(
+            sources.c.station_id,
+            func.max(sources.c.station_name).label("station_name"),
+            func.min(sources.c.weather_date).label("date_from"),
+            func.max(sources.c.weather_date).label("date_to"),
+            func.count().label("record_count"),
+        ).group_by(sources.c.station_id).order_by(sources.c.station_id)
+    ).all()
     stations = [{
         "station_id": row.station_id,
         "station_name": row.station_name or "",
@@ -91,27 +97,52 @@ def _resolve_station(db: Session, station_id: str | None) -> tuple[str | None, s
     return None, None
 
 
-def _weather_rows(db: Session, start: date, end: date, station_id: str | None) -> tuple[str | None, str | None, dict[date, dict[str, Any]]]:
+def _weather_rows(db: Session, start: date, end: date, station_id: str | None) -> tuple[str | None, str | None, dict[Any, dict[str, Any]]]:
     resolved_id, station_name = _resolve_station(db, station_id)
     if resolved_id is None:
         return None, None, {}
-    rows = db.execute(
-        select(
-            WeatherHistory.observation_date,
-            WeatherHistory.avg_temp,
-            WeatherHistory.precipitation,
-            WeatherHistory.avg_humidity,
-            WeatherHistory.snow_depth,
-            WeatherHistory.sunshine_hours,
-        ).where(
-            WeatherHistory.observation_date.between(start, end),
-            WeatherHistory.station_id == resolved_id,
-        )
+    daily = select(
+        WeatherHistory.observation_date,
+        literal(None).label("meal_type"),
+        WeatherHistory.avg_temp,
+        WeatherHistory.precipitation,
+        WeatherHistory.avg_humidity,
+        WeatherHistory.snow_depth,
+        WeatherHistory.sunshine_hours,
+        literal(None).label("avg_wind_speed"),
+        literal(None).label("sample_count"),
+        literal("daily").label("weather_source"),
+    ).where(
+        WeatherHistory.observation_date.between(start, end),
+        WeatherHistory.station_id == resolved_id,
     )
-    return resolved_id, station_name, {row.observation_date: dict(row._mapping) for row in rows}
+    period = select(
+        MealPeriodWeather.observation_date,
+        MealPeriodWeather.meal_type,
+        MealPeriodWeather.avg_temp,
+        MealPeriodWeather.precipitation,
+        MealPeriodWeather.avg_humidity,
+        literal(None).label("snow_depth"),
+        literal(None).label("sunshine_hours"),
+        MealPeriodWeather.avg_wind_speed,
+        MealPeriodWeather.sample_count,
+        literal("meal_period").label("weather_source"),
+    ).where(
+        MealPeriodWeather.observation_date.between(start, end),
+        MealPeriodWeather.station_id == resolved_id,
+    )
+    weather: dict[Any, dict[str, Any]] = {}
+    for row in db.execute(union_all(daily, period)):
+        key = (row.observation_date, row.meal_type) if row.meal_type else row.observation_date
+        weather[key] = dict(row._mapping)
+    return resolved_id, station_name, weather
 
 
-def _optional_weather_rows(db: Session, start: date, end: date, station_id: str | None) -> tuple[str | None, str | None, dict[date, dict[str, Any]]]:
+def _weather_for_service(weather: dict[Any, dict[str, Any]], service: dict[str, Any]) -> dict[str, Any] | None:
+    return weather.get((service["service_date"], service["meal_type"])) or weather.get(service["service_date"])
+
+
+def _optional_weather_rows(db: Session, start: date, end: date, station_id: str | None) -> tuple[str | None, str | None, dict[Any, dict[str, Any]]]:
     if station_id:
         return _weather_rows(db, start, end, station_id)
     stations = station_list(db)["stations"]
@@ -323,7 +354,7 @@ def _percentile(values: list[float], fraction: float) -> float:
     return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
 
 
-def _outliers(rows: list[dict[str, Any]], menus: list[dict[str, Any]], weather: dict[date, dict[str, Any]]) -> list[dict[str, Any]]:
+def _outliers(rows: list[dict[str, Any]], menus: list[dict[str, Any]], weather: dict[Any, dict[str, Any]]) -> list[dict[str, Any]]:
     menus_by_service: dict[int, list[str]] = defaultdict(list)
     for item in menus:
         menus_by_service[item["meal_service_id"]].append(item["canonical_name"])
@@ -347,7 +378,7 @@ def _outliers(rows: list[dict[str, Any]], menus: list[dict[str, Any]], weather: 
                     "lower_fence": _round(low),
                     "upper_fence": _round(high),
                     "representative_menus": menus_by_service.get(row["id"], []),
-                    "weather": weather.get(row["service_date"]),
+                    "weather": _weather_for_service(weather, row),
                     "note": row["actual_note"] or row["service_note"],
                 })
     return result
@@ -529,13 +560,16 @@ def weather_metrics(db: Session, start: date, end: date, meal_type: str = "all",
     seasons: dict[str, list[dict[str, Any]]] = defaultdict(list)
     missing = {"weather": 0, "avg_temp": 0, "precipitation": 0, "avg_humidity": 0, "snow_depth": 0}
     scatter = []
+    meal_period_matched = 0
     for service in services:
         actual = service["actual_count"]
         seasons[_season(service["service_date"])].append(service)
-        weather_row = weather.get(service["service_date"])
+        weather_row = _weather_for_service(weather, service)
         if not weather_row:
             missing["weather"] += 1
             continue
+        if weather_row.get("weather_source") == "meal_period":
+            meal_period_matched += 1
         for field in ("avg_temp", "precipitation", "avg_humidity", "snow_depth"):
             if weather_row[field] is None:
                 missing[field] += 1
@@ -566,7 +600,11 @@ def weather_metrics(db: Session, start: date, end: date, meal_type: str = "all",
         })
     correlations = {}
     for field in ("avg_temp", "precipitation", "avg_humidity", "snow_depth", "sunshine_hours"):
-        pairs = [(float(weather[service["service_date"]][field]), float(service["actual_count"])) for service in services if service["service_date"] in weather and weather[service["service_date"]][field] is not None]
+        pairs = []
+        for service in services:
+            weather_row = _weather_for_service(weather, service)
+            if weather_row and weather_row[field] is not None:
+                pairs.append((float(weather_row[field]), float(service["actual_count"])))
         correlations[field] = {"pearson": _pearson(pairs), "n": len(pairs), "eligible": len(pairs) >= 10, "minimum_n": 10}
     insights = []
     dry = next(item for item in rain_summary if item["bucket"] == "0")
@@ -581,6 +619,7 @@ def weather_metrics(db: Session, start: date, end: date, meal_type: str = "all",
         "station_id": resolved_id,
         "station_name": station_name,
         "matched_service_count": len(services) - missing["weather"],
+        "meal_period_matched_count": meal_period_matched,
         "missing_weather_service_count": missing["weather"],
         "missing_counts": missing,
         "temperature": _group_service_samples(temperature, TEMP_BUCKETS),
@@ -608,7 +647,7 @@ def menu_weather_metrics(db: Session, start: date, end: date, meal_type: str = "
     for menu in menus:
         menus_by_service[menu["meal_service_id"]].append(menu["canonical_name"])
     for service in services:
-        weather_row = weather.get(service["service_date"])
+        weather_row = _weather_for_service(weather, service)
         if not weather_row:
             continue
         weekday = service["service_date"].weekday()
@@ -654,9 +693,10 @@ def data_quality(db: Session, start: date, end: date, meal_type: str = "all", st
     resolved_id, station_name, weather = _weather_rows(db, start, end, station_id)
     total = len(services)
     actual_count = sum(row["actual_count"] is not None for row in services)
-    weather_count = sum(row["service_date"] in weather for row in services)
-    temp_count = sum(row["service_date"] in weather and weather[row["service_date"]]["avg_temp"] is not None for row in services)
-    rain_count = sum(row["service_date"] in weather and weather[row["service_date"]]["precipitation"] is not None for row in services)
+    service_weather = [_weather_for_service(weather, row) for row in services]
+    weather_count = sum(row is not None for row in service_weather)
+    temp_count = sum(row is not None and row["avg_temp"] is not None for row in service_weather)
+    rain_count = sum(row is not None and row["precipitation"] is not None for row in service_weather)
     metrics = {
         "actual": _quality(actual_count, total),
         "planned": _quality(sum(row["planned_count"] is not None for row in services), total),
@@ -687,31 +727,48 @@ def _filtered_detail_stmt(db: Session, start: date, end: date, meal_type: str, r
     stmt = _service_stmt(start, end, meal_type)
     if resolved_id:
         stmt = stmt.outerjoin(
+            MealPeriodWeather,
+            and_(
+                MealPeriodWeather.observation_date == MealService.service_date,
+                MealPeriodWeather.station_id == resolved_id,
+                MealPeriodWeather.meal_type == MealService.meal_type,
+            ),
+        ).outerjoin(
             WeatherHistory,
             and_(WeatherHistory.observation_date == MealService.service_date, WeatherHistory.station_id == resolved_id),
-        ).add_columns(
-            WeatherHistory.avg_temp,
-            WeatherHistory.precipitation,
-            WeatherHistory.avg_humidity,
-            WeatherHistory.snow_depth,
-            WeatherHistory.sunshine_hours,
+        )
+        period_present = MealPeriodWeather.id.is_not(None)
+        weather_present = or_(period_present, WeatherHistory.id.is_not(None))
+        avg_temp = case((period_present, MealPeriodWeather.avg_temp), else_=WeatherHistory.avg_temp)
+        precipitation = case((period_present, MealPeriodWeather.precipitation), else_=WeatherHistory.precipitation)
+        avg_humidity = case((period_present, MealPeriodWeather.avg_humidity), else_=WeatherHistory.avg_humidity)
+        snow_depth = case((period_present, None), else_=WeatherHistory.snow_depth)
+        sunshine_hours = case((period_present, None), else_=WeatherHistory.sunshine_hours)
+        stmt = stmt.add_columns(
+            avg_temp.label("avg_temp"),
+            precipitation.label("precipitation"),
+            avg_humidity.label("avg_humidity"),
+            snow_depth.label("snow_depth"),
+            sunshine_hours.label("sunshine_hours"),
+            MealPeriodWeather.avg_wind_speed.label("avg_wind_speed"),
+            MealPeriodWeather.sample_count.label("sample_count"),
         )
         if rain == "missing":
-            stmt = stmt.where(or_(WeatherHistory.id.is_(None), WeatherHistory.precipitation.is_(None)))
+            stmt = stmt.where(or_(~weather_present, precipitation.is_(None)))
         elif rain == "dry":
-            stmt = stmt.where(WeatherHistory.precipitation == 0)
+            stmt = stmt.where(precipitation == 0)
         elif rain == "rain":
-            stmt = stmt.where(WeatherHistory.precipitation > 0)
+            stmt = stmt.where(precipitation > 0)
         if temp_bucket:
             ranges = {
-                "<0": WeatherHistory.avg_temp < 0,
-                "0~4.9": and_(WeatherHistory.avg_temp >= 0, WeatherHistory.avg_temp < 5),
-                "5~9.9": and_(WeatherHistory.avg_temp >= 5, WeatherHistory.avg_temp < 10),
-                "10~14.9": and_(WeatherHistory.avg_temp >= 10, WeatherHistory.avg_temp < 15),
-                "15~19.9": and_(WeatherHistory.avg_temp >= 15, WeatherHistory.avg_temp < 20),
-                "20~24.9": and_(WeatherHistory.avg_temp >= 20, WeatherHistory.avg_temp < 25),
-                "25~29.9": and_(WeatherHistory.avg_temp >= 25, WeatherHistory.avg_temp < 30),
-                ">=30": WeatherHistory.avg_temp >= 30,
+                "<0": avg_temp < 0,
+                "0~4.9": and_(avg_temp >= 0, avg_temp < 5),
+                "5~9.9": and_(avg_temp >= 5, avg_temp < 10),
+                "10~14.9": and_(avg_temp >= 10, avg_temp < 15),
+                "15~19.9": and_(avg_temp >= 15, avg_temp < 20),
+                "20~24.9": and_(avg_temp >= 20, avg_temp < 25),
+                "25~29.9": and_(avg_temp >= 25, avg_temp < 30),
+                ">=30": avg_temp >= 30,
             }
             stmt = stmt.where(ranges[temp_bucket])
     if menu:
@@ -743,7 +800,7 @@ def _detail_items(db: Session, stmt, resolved_id: str | None, offset: int | None
     for row in rows:
         weather = None
         if resolved_id:
-            weather = {field: row.get(field) for field in ("avg_temp", "precipitation", "avg_humidity", "snow_depth", "sunshine_hours")}
+            weather = {field: row.get(field) for field in ("avg_temp", "precipitation", "avg_humidity", "snow_depth", "sunshine_hours", "avg_wind_speed", "sample_count")}
         items.append({
             "meal_service_id": row["id"],
             "service_date": row["service_date"].isoformat(),

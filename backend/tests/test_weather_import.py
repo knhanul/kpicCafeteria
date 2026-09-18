@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from openpyxl import Workbook
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import Base, create_database_engine
-from app.models import MealActual, MealService, User, WeatherHistory, WeatherUploadHistory
+from app.models import MealActual, MealPeriodWeather, MealService, User, WeatherHistory, WeatherHourly, WeatherUploadHistory
 from app.weather_import import WeatherImportError, apply_weather_file, parse_weather_file, sha256_file
 
 
@@ -136,25 +136,56 @@ def test_large_xlsx_preview(tmp_path):
     assert result["summary"]["valid_rows"] == 2000
 
 
-def test_hourly_csv_is_aggregated_to_daily_weather_rows(tmp_path):
+def test_hourly_csv_is_stored_raw_and_builds_meal_period_weather(tmp_path):
     path = tmp_path / "weather-hourly.csv"
     path.write_text(
-        "observation_datetime,station_id,station_name,temperature,precipitation,humidity\n"
-        "2026-09-17 01:00,156,관악,21.7,,76\n"
-        "2026-09-17 02:00,156,관악,20.4,1.2,80\n"
-        "2026-09-17 03:00,156,관악,19.7,0.8,71\n",
+        "observation_datetime,station_id,station_name,temperature,precipitation,humidity,wind_speed,source_kind\n"
+        "2026-09-17 11:00,156,관악,20,0.5,70,2,OFFICIAL\n"
+        "2026-09-17 12:00,156,관악,22,1.0,74,4,OFFICIAL\n"
+        "2026-09-17 17:00,156,관악,24,,60,3,OFFICIAL\n"
+        "2026-09-17 18:00,156,관악,26,0,64,5,OFFICIAL\n",
         encoding="utf-8",
     )
     engine = make_db(tmp_path)
     with Session(engine) as db:
-        result = parse_weather_file(path, db)
-    assert result["summary"]["aggregation_mode"] == "hourly_to_daily"
-    assert result["summary"]["total_rows"] == 3
-    assert result["summary"]["valid_rows"] == 1
-    row = result["rows"][0]
-    assert row["observation_date"] == "2026-09-17"
-    assert row["avg_temp"] == (21.7 + 20.4 + 19.7) / 3
-    assert row["min_temp"] == 19.7
-    assert row["max_temp"] == 21.7
-    assert row["precipitation"] == 2.0
-    assert row["avg_humidity"] == (76 + 80 + 71) / 3
+        preview = parse_weather_file(path, db)
+        assert preview["summary"]["data_granularity"] == "hourly"
+        assert preview["summary"]["valid_rows"] == 4
+        apply_weather_file(path, db, path.name, sha256_file(path), 1, preview["summary"]["rows_fingerprint"])
+        db.commit()
+        assert db.query(WeatherHourly).count() == 4
+        lunch = db.scalar(select(MealPeriodWeather).where(MealPeriodWeather.meal_type == "LUNCH"))
+        dinner = db.scalar(select(MealPeriodWeather).where(MealPeriodWeather.meal_type == "DINNER"))
+    assert lunch.avg_temp == 21
+    assert lunch.min_temp == 20
+    assert lunch.max_temp == 22
+    assert lunch.precipitation == 1.5
+    assert lunch.avg_humidity == 72
+    assert lunch.avg_wind_speed == 3
+    assert lunch.sample_count == 2
+    assert dinner.avg_temp == 25
+    assert dinner.precipitation == 0
+    assert dinner.avg_humidity == 62
+    assert dinner.avg_wind_speed == 4
+    assert dinner.sample_count == 2
+
+
+def test_hourly_reupload_is_idempotent(tmp_path):
+    path = tmp_path / "weather-hourly.csv"
+    path.write_text(
+        "observation_datetime,station_id,temperature\n"
+        "2026-09-17 11:00,156,20\n",
+        encoding="utf-8",
+    )
+    engine = make_db(tmp_path)
+    with Session(engine) as db:
+        first_preview = parse_weather_file(path, db)
+        apply_weather_file(path, db, path.name, sha256_file(path), 1, first_preview["summary"]["rows_fingerprint"])
+        db.commit()
+        second_preview = parse_weather_file(path, db)
+        assert second_preview["summary"]["skipped_rows"] == 1
+        apply_weather_file(path, db, path.name, sha256_file(path), 1, second_preview["summary"]["rows_fingerprint"])
+        db.commit()
+        assert db.query(WeatherHourly).count() == 1
+        assert db.query(MealPeriodWeather).count() == 1
+        assert db.scalar(select(WeatherHourly.observation_datetime)) == datetime(2026, 9, 17, 11, 0)
