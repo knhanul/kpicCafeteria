@@ -211,6 +211,75 @@ def test_menu_fallback_to_juchan_role_when_no_representative(tmp_path):
     assert result["representative_source"] == "주찬_fallback"
 
 
+def test_menu_explorer_exposes_coverage_months_and_recent_evidence(tmp_path):
+    engine = make_db(tmp_path)
+    start = date(2025, 4, 7)
+    with Session(engine) as db:
+        menu = Menu(name="특식", canonical_name="특식")
+        db.add(menu)
+        db.flush()
+        for index in range(6):
+            service = add_service(db, start + timedelta(days=index * 7), actual=index * 10, menu=menu)
+            db.add(MealServiceMenu(meal_service_id=service.id, menu_id=menu.id, menu_name_snapshot="중복", is_representative=True))
+        for index in range(6, 11):
+            add_service(db, start + timedelta(days=index * 7), actual=40)
+        add_service(db, start, meal_type="DINNER", actual=None, menu=menu)
+        db.commit()
+        result = menu_metrics(db, start, start + timedelta(days=70))
+    item = result["items"][0]
+    assert result["total_service_count"] == 12
+    assert result["missing_actual_count"] == 1
+    assert result["linked_service_count"] == 6
+    assert result["eligible_menu_count"] == 1
+    assert item["matched_occurrence_n"] == 6
+    assert item["average"] == 25
+    assert item["first_date"] == "2025-04-07"
+    assert item["last_date"] == "2025-05-12"
+    assert [(row["key"], row["n"], row["average"]) for row in item["monthly"]] == [("2025-04", 4, 15), ("2025-05", 2, 45)]
+    assert item["meal_types"] == [{"meal_type": "LUNCH", "n": 6}]
+    assert len(item["recent_services"]) == 6
+    assert item["recent_services"][0]["service_date"] == "2025-05-12"
+    assert item["recent_services"][-1]["actual_count"] == 0
+
+
+def test_menu_explorer_handles_zero_comparator_and_empty_actuals(tmp_path):
+    engine = make_db(tmp_path)
+    start = date(2025, 4, 7)
+    with Session(engine) as db:
+        menu = Menu(name="특식", canonical_name="특식")
+        db.add(menu)
+        db.flush()
+        for index in range(5):
+            add_service(db, start + timedelta(days=index * 7), actual=100, menu=menu)
+        for index in range(5, 10):
+            add_service(db, start + timedelta(days=index * 7), actual=0)
+        db.commit()
+        result = menu_metrics(db, start, start + timedelta(days=63))
+        empty = menu_metrics(db, start, start, "dinner")
+    assert result["items"][0]["lift"] == 100
+    assert result["items"][0]["lift_percent"] is None
+    assert result["items"][0]["matched_occurrence_n"] == 5
+    assert empty["linked_service_count"] == 0
+    assert empty["eligible_menu_count"] == 0
+    assert empty["items"] == []
+
+
+def test_menu_explorer_fallback_source_is_scoped_to_selected_period(tmp_path):
+    engine = make_db(tmp_path)
+    start = date(2025, 4, 7)
+    with Session(engine) as db:
+        menu = Menu(name="주찬", canonical_name="주찬", role="주찬")
+        db.add(menu)
+        db.flush()
+        add_service(db, start, menu=menu, representative=False)
+        add_service(db, start - timedelta(days=7), menu=menu)
+        db.commit()
+        result = menu_metrics(db, start, start)
+    assert result["representative_source"] == "주찬_fallback"
+    assert result["linked_service_count"] == 1
+    assert result["items"][0]["matched_occurrence_n"] == 0
+
+
 def test_menu_lift_ineligible_when_menu_or_comparator_below_five(tmp_path):
     engine = make_db(tmp_path)
     start = date(2025, 5, 5)

@@ -197,6 +197,7 @@ def _menu_rows_filtered(db: Session, service_ids: list[int], representative_only
             "canonical_name": canonical,
             "role": row.role or "기타",
             "canonical_linked": bool(linked_name),
+            "selection_source": "is_representative" if representative_only else "주찬_fallback",
         })
     return result
 
@@ -418,7 +419,8 @@ def plan_vs_actual(db: Session, start: date, end: date, meal_type: str = "all", 
 
 
 def menu_metrics(db: Session, start: date, end: date, meal_type: str = "all") -> dict[str, Any]:
-    services = [row for row in _service_rows(db, start, end, meal_type) if row["actual_count"] is not None]
+    all_services = _service_rows(db, start, end, meal_type)
+    services = [row for row in all_services if row["actual_count"] is not None]
     service_by_id = {row["id"]: row for row in services}
     links = _menu_rows(db, list(service_by_id))
     menu_services: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -453,6 +455,10 @@ def menu_metrics(db: Session, start: date, end: date, meal_type: str = "all") ->
         eligible = len(occurrences) >= MIN_SAMPLE and len(peers) >= MIN_SAMPLE and len(matched_baselines) == len(occurrences)
         menu_average = sum(values) / len(values)
         comparator_average = sum(matched_baselines) / len(matched_baselines) if matched_baselines else None
+        monthly: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for occurrence in occurrences:
+            monthly[occurrence["service_date"].strftime("%Y-%m")].append(occurrence)
+        ordered = sorted(occurrences, key=lambda row: (row["service_date"], row["id"]), reverse=True)
         items.append({
             "canonical_name": name,
             "menu_ids": sorted(menu_ids[name]),
@@ -466,6 +472,17 @@ def menu_metrics(db: Session, start: date, end: date, meal_type: str = "all") ->
             "lift_percent": _round((menu_average - comparator_average) / comparator_average * 100) if eligible and comparator_average != 0 else None,
             "lift_eligible": eligible,
             "sample_ok": len(occurrences) >= MIN_SAMPLE,
+            "matched_occurrence_n": len(matched_baselines),
+            "first_date": ordered[-1]["service_date"].isoformat(),
+            "last_date": ordered[0]["service_date"].isoformat(),
+            "monthly": [{"key": key, **_service_sample(monthly[key])} for key in sorted(monthly)],
+            "meal_types": [{"meal_type": code, "n": count} for code, count in sorted(Counter(row["meal_type"] for row in occurrences).items())],
+            "recent_services": [{
+                "service_date": row["service_date"].isoformat(),
+                "meal_type": row["meal_type"],
+                "planned_count": row["planned_count"],
+                "actual_count": row["actual_count"],
+            } for row in ordered[:12]],
         })
     items.sort(key=lambda item: (-item["occurrence_n"], item["canonical_name"]))
     eligible_items = [item for item in items if item["lift_eligible"]]
@@ -487,11 +504,18 @@ def menu_metrics(db: Session, start: date, end: date, meal_type: str = "all") ->
         insights.append({"code": "insufficient_sample", "n": 0, "message": "제공 5회 이상인 대표메뉴가 없어 메뉴 평균 비교를 수행하지 않았습니다."})
     if rankings["highest_lift"]:
         lifted = rankings["highest_lift"][0]
-        insights.append({"code": "highest_lift", "n": lifted["n"], "comparator_n": lifted["comparator_n"], "message": f"{lifted['canonical_name']} 제공일은 동일 요일·배식유형 비교군보다 평균 {lifted['lift_percent']:+.1f}% 높게 나타났습니다."})
+        difference = f"{lifted['lift_percent']:+.1f}%" if lifted["lift_percent"] is not None else f"{lifted['lift']:+.1f}명"
+        insights.append({"code": "highest_lift", "n": lifted["n"], "comparator_n": lifted["comparator_n"], "message": f"{lifted['canonical_name']} 제공일의 동일 요일·배식유형 비교군 대비 평균 차이는 {difference}였습니다."})
     role_items = [{"role": role, **_service_sample(list(by_service.values()))} for role, by_service in sorted(role_services.items())]
     combinations = Counter(tuple(sorted(set(names))) for names in service_menus.values() if names)
     combination_items = [{"menus": list(names), "count": count} for names, count in combinations.most_common(20)]
-    return {"items": items, "rankings": rankings, "roles": role_items, "combinations": combination_items, "menu_count": len(items), "service_count": len(services), "minimum_sample": MIN_SAMPLE, "representative_source": "is_representative" if _has_representative_menus(db) else "주찬_fallback", "insights": insights}
+    return {
+        "items": items, "rankings": rankings, "roles": role_items, "combinations": combination_items,
+        "menu_count": len(items), "service_count": len(services), "minimum_sample": MIN_SAMPLE,
+        "total_service_count": len(all_services), "missing_actual_count": len(all_services) - len(services),
+        "linked_service_count": len(service_menus), "eligible_menu_count": len(eligible_items),
+        "representative_source": links[0]["selection_source"] if links else "none", "insights": insights,
+    }
 
 
 def _season(value: date) -> str:

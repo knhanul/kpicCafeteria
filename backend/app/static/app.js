@@ -1502,14 +1502,17 @@ async function initAdvancedStatistics(key) {
     stationSelect.addEventListener('change', e=>{ current.station=e.target.value; load(); });
   }
   const content = $('#advanced-content', root);
+  let loadVersion=0;
   const load = async () => {
+    const version=++loadVersion;
     if (!current.start || !current.end) return;
     if(config.station&&current.stations.length>1&&!current.station){content.innerHTML='<div class="empty-editor">분석할 날씨 관측지점을 선택해 주세요.</div>';return;}
     content.innerHTML = '<div class="empty-editor">통계를 계산하고 있습니다.</div>';
     try {
       const data = await api(`/api/statistics/advanced/${config.endpoint}?${advancedQuery(current)}`);
+      if(version!==loadVersion||!content.isConnected)return;
       renderAdvancedStatistics(content, key, data, current);
-    } catch (e) { content.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`; }
+    } catch (e) { if(version===loadVersion&&content.isConnected)content.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`; }
   };
   renderPeriodSelector($('#advanced-period', root), { preset:'6m', onApply:(start,end)=>{ current.start=start; current.end=end; load(); } });
   $$('.stats-meal-type button', root).forEach(btn=>btn.addEventListener('click',()=>{ current.mealType=btn.dataset.meal; $$('.stats-meal-type button', root).forEach(x=>x.classList.toggle('active',x===btn)); load(); }));
@@ -1543,9 +1546,91 @@ function renderAdvancedPlan(root, data, current) {
   renderStatisticsDataTable($('#advanced-plan-monthly',root),{columns:[{key:'label',label:'월'},{key:'n',label:'N'},{key:'mae',label:'MAE',render:v=>advValue(v)},{key:'wape',label:'WAPE',render:v=>advValue(v,'%')},{key:'bias',label:'Bias',render:v=>advSigned(v)},{key:'bias_rate',label:'Bias율',render:v=>advSigned(v,'%')}],rows:periodRows,pageSize:10,filename:`plan_${current.unit}`});
 }
 function rankingList(items=[], field='average', suffix='명') { return `<ol class="ranking-list">${items.length?items.map(x=>`<li><span>${escapeHtml(x.canonical_name)}</span><strong>${field==='average'?advValue(x[field],suffix):advSigned(x[field],suffix)}</strong>${sampleBadge(x.n)}</li>`).join(''):'<li>데이터가 없습니다.</li>'}</ol>`; }
+function menuEvidenceStatus(item, minimum=5) {
+  if (item.n < minimum) return {label:'제공 기록 더 필요',tone:'limited',text:`이 메뉴의 실제 식수가 입력된 제공 기록은 ${item.n}회입니다. 최소 ${minimum}회가 모이기 전에는 비교 차이를 해석하지 않습니다.`};
+  if (item.comparator_n < minimum) return {label:'비교 기록 더 필요',tone:'limited',text:`같은 요일·배식유형의 다른 배식 기록이 ${item.comparator_n}회입니다. 비교군도 최소 ${minimum}회가 필요합니다.`};
+  if (!item.lift_eligible) return {label:'일부 요일 비교 불가',tone:'limited',text:`제공 ${item.n}회 중 ${item.matched_occurrence_n ?? 0}회만 같은 요일·배식유형의 비교 대상이 있습니다. 모든 제공 기록에 비교 대상이 있어야 차이를 계산합니다.`};
+  if (item.lift_percent === null || item.lift_percent === undefined) return {label:'인원 차이만 비교',tone:'neutral',text:'비교 평균이 0명이므로 비율은 계산하지 않습니다. 실제 인원 차이만 확인하세요.'};
+  return {label:'비교 조건 충족',tone:'ready',text:`제공·비교군 각각 ${minimum}회 이상이며 모든 제공 기록에 비교 대상이 있습니다. 통계적 유의성이나 인과관계가 입증되었다는 뜻은 아닙니다.`};
+}
+function menuExplorerRows(items, mode, query='') {
+  const rows=items.filter(item=>item.canonical_name.toLocaleLowerCase('ko').includes(query.trim().toLocaleLowerCase('ko')));
+  const nameOrder=(a,b)=>a.canonical_name.localeCompare(b.canonical_name,'ko');
+  if(mode==='compare') return rows.filter(x=>x.lift_eligible).sort((a,b)=>(b.lift_percent ?? -Infinity)-(a.lift_percent ?? -Infinity)||nameOrder(a,b));
+  if(mode==='plan') return rows.filter(x=>x.sample_ok).sort((a,b)=>Math.abs(b.average_plan_error)-Math.abs(a.average_plan_error)||nameOrder(a,b));
+  return rows.filter(x=>mode!=='observe'||!x.lift_eligible).sort((a,b)=>b.n-a.n||nameOrder(a,b));
+}
+function menuMonthlyGraphic(rows=[]) {
+  if(!rows.length) return '<div class="stats-empty">월별 제공 기록이 없습니다.</div>';
+  const max=Math.max(1,...rows.map(x=>Math.max(x.maximum ?? 0,x.average_planned ?? 0))), y=value=>180-value/max*145;
+  const x=index=>rows.length===1?300:55+index/(rows.length-1)*510, tick=Math.max(1,Math.ceil(rows.length/6));
+  return `<svg class="menu-trend" viewBox="0 0 610 225" role="img" aria-label="월별 실제 평균과 계획 평균, 실제 최소·최대 범위. 아래 월별 수치 표에서 동일 정보를 확인할 수 있습니다."><line x1="45" y1="35" x2="575" y2="35" class="grid-line"/><line x1="45" y1="180" x2="575" y2="180"/><text x="40" y="28">${numberText(max)}명</text><text x="20" y="184">0</text>${rows.map((row,index)=>`<g><title>${escapeHtml(row.key)} · 실제 평균 ${advValue(row.average,'명')} · 계획 평균 ${advValue(row.average_planned,'명')} · 최소 ${row.minimum} / 최대 ${row.maximum} · ${row.n}회</title><line class="range-line" x1="${x(index)}" y1="${y(row.minimum)}" x2="${x(index)}" y2="${y(row.maximum)}"/><rect class="plan-dot" x="${x(index)-4}" y="${y(row.average_planned)-4}" width="8" height="8"/><circle class="actual-dot" cx="${x(index)}" cy="${y(row.average)}" r="5"/>${index%tick===0||index===rows.length-1?`<text x="${x(index)}" y="205" text-anchor="middle">${escapeHtml(row.key)}</text>`:''}</g>`).join('')}</svg><div class="menu-chart-legend"><span><i class="actual-dot"></i>실제 평균</span><span><i class="plan-dot"></i>계획 평균</span><span>세로선: 실제 최소~최대 (신뢰구간 아님)</span></div>`;
+}
 function renderAdvancedMenus(root, data, current) {
-  root.innerHTML=`<div class="kpi-grid">${kpiCard({label:'대표메뉴',value:advValue(data.menu_count,'종'),sub:`실제 식수 서비스 ${data.service_count}건`})}${kpiCard({label:'최소 표본 기준',value:`N≥${data.minimum_sample}`,sub:'Lift는 메뉴·비교군 모두 충족 시 제공'})}</div>${data.representative_source==='주찬_fallback'?'<div class="aggregation-note">대표메뉴 표시(is_representative)가 없어 주찬 역할 메뉴로 대체 분석했습니다.</div>':''}<div class="chart-grid">${chartContainer({title:'실제 식수 상위',body:rankingList(data.rankings.highest_actual)})}${chartContainer({title:'실제 식수 하위',body:rankingList(data.rankings.lowest_actual)})}${chartContainer({title:'계획 오차 상위',subtitle:'계획-실제 평균',body:rankingList(data.rankings.largest_over_plan,'average_plan_error','명')})}${chartContainer({title:'비교군 대비 Lift 상위',subtitle:'동일 요일·배식유형 비교군',body:rankingList(data.rankings.highest_lift,'lift_percent','%')})}${chartContainer({title:'메뉴 역할별 실제 식수',body:`<div class="stat-list">${(data.roles||[]).map(x=>`<div class="stat-line sample-line"><span>${escapeHtml(x.role)}</span><strong>평균 ${advValue(x.average,'명')}</strong>${sampleBadge(x.n)}</div>`).join('')||'<div class="stats-empty">데이터가 없습니다.</div>'}</div>`})}${chartContainer({title:'대표메뉴 조합 빈도',body:`<div class="stat-list">${(data.combinations||[]).map(x=>`<div class="stat-line"><span>${escapeHtml(x.menus.join(' + '))}</span><strong>${x.count}회</strong></div>`).join('')||'<div class="stats-empty">데이터가 없습니다.</div>'}</div>`})}${chartContainer({title:'분석 요약',body:advancedInsights(data.insights)})}</div><section class="chart-container"><header class="chart-head"><div><h3>메뉴별 지표</h3><p>표본 수와 비교군을 함께 확인하세요.</p></div></header><div class="chart-body" id="advanced-menu-table"></div></section>`;
-  renderStatisticsDataTable($('#advanced-menu-table',root),{columns:[{key:'canonical_name',label:'대표메뉴'},{key:'occurrence_n',label:'제공 N',render:v=>`${v} ${v<5?'(표본 적음)':''}`},{key:'average',label:'실제 평균',render:v=>advValue(v,'명')},{key:'median',label:'중앙값',render:v=>advValue(v,'명')},{key:'average_planned',label:'계획 평균',render:v=>advValue(v,'명')},{key:'average_plan_error',label:'계획-실제',render:v=>advSigned(v,'명')},{key:'comparator_n',label:'비교 N'},{key:'lift_percent',label:'Lift',render:(v,r)=>r.lift_eligible?advSigned(v,'%'):'표본 부족'}],rows:data.items||[],pageSize:25,filename:'advanced_menu_metrics'});
+  const items=data.items||[], minimum=data.minimum_sample||5;
+  const eligible=items.filter(x=>x.lift_eligible), limited=items.length-eligible.length;
+  const highest=menuExplorerRows(items,'compare').find(x=>x.lift_percent>0), planning=menuExplorerRows(items,'plan')[0];
+  const explorer=current.menuExplorer||(current.menuExplorer={mode:eligible.length?'compare':'all',query:'',selected:null,limit:12});
+  const questions=[
+    {mode:'compare',title:'비슷한 날보다 더 많이 왔을까?',value:highest?advSigned(highest.lift_percent,'%'):`${eligible.length}종`,text:highest?`${highest.canonical_name} · 같은 요일·배식 비교`:'비교 조건을 갖춘 메뉴 살펴보기'},
+    {mode:'plan',title:'준비 인원을 다시 살펴볼까?',value:planning?`${numberText(Math.abs(planning.average_plan_error))}명`:'자료 부족',text:planning?`${planning.canonical_name} · 계획과 실제 평균 차이`:`제공 ${minimum}회 이상 기록이 필요합니다.`},
+    {mode:'observe',title:'어떤 메뉴를 더 관찰해볼까?',value:`${limited}종`,text:'자료가 적거나 비교 대상이 부족한 메뉴'},
+  ];
+  root.innerHTML=`<div class="menu-lab-hero"><div><span class="menu-lab-eyebrow">메뉴별 식수 탐색</span><h3>감으로 궁금했던 메뉴, 기록으로 살펴보세요.</h3><p>메뉴를 제공한 배식의 식수입니다. 그 메뉴를 먹은 사람 수나 만족도 점수는 아닙니다.</p></div><div class="menu-lab-coverage"><strong>${numberText(data.linked_service_count ?? 0)}건</strong><span>메뉴와 실제 식수가 연결된 배식</span><small>실제 입력 ${data.service_count}건 중 · 미입력 ${data.missing_actual_count ?? 0}건 제외</small></div></div>
+    <div class="menu-questions">${questions.map(q=>`<button type="button" class="menu-question" data-menu-mode="${q.mode}"><span>${q.title}</span><strong>${q.value}</strong><small>${escapeHtml(q.text)}</small><b>살펴보기 →</b></button>`).join('')}</div>
+    <div class="menu-lab-note">${current.mealType==='all'?'<strong>중식·석식이 함께 선택되어 있습니다.</strong> 평균 인원은 배식 규모의 영향을 받으므로 위에서 중식·석식을 나누어 보세요. ':''}${data.representative_source==='주찬_fallback'?'선택 범위에 대표메뉴가 없어 주찬 역할 메뉴로 분석했습니다.':'대표메뉴로 지정된 메뉴를 통계집계명으로 묶었습니다.'} 메뉴 미연결 배식은 ${Math.max(0,data.service_count-(data.linked_service_count ?? 0))}건입니다.${(data.insights||[]).map(i=>`<span class="menu-note-insight">${escapeHtml(i.message)}</span>`).join('')}</div>
+    <div class="menu-explorer-toolbar"><label for="menu-explorer-search">궁금한 메뉴 찾기<input type="search" id="menu-explorer-search" placeholder="통계집계메뉴명 검색" value="${escapeHtml(explorer.query)}"></label><button type="button" class="ghost-button" data-menu-mode="all">전체 메뉴 ${items.length}종</button><span id="menu-explorer-count" role="status"></span></div>
+    <div class="menu-explorer-grid"><section class="chart-container menu-explorer-list"><header class="chart-head"><div><h3 id="menu-explorer-title"></h3><p id="menu-explorer-description"></p></div></header><div id="menu-explorer-rows"></div><button type="button" class="ghost-button menu-more hidden" id="menu-explorer-more">12개 더 보기</button></section><section class="chart-container menu-evidence-panel" id="menu-evidence" aria-label="선택한 메뉴의 분석 근거"></section></div>
+    <details class="menu-method"><summary>어떤 기준으로 비교하나요?</summary><p>비교 대상은 선택한 기간 안에서 해당 통계집계명이 대표메뉴로 집계되지 않은 배식 중 요일과 배식유형이 같은 기록입니다. 각 제공일의 비교군 평균을 구한 뒤 제공 횟수에 맞춰 평균합니다. 비교 횟수는 중복을 제거한 배식 수입니다.</p><p>메뉴 제공과 비교군이 각각 ${minimum}회 이상이고 모든 제공일에 비교 대상이 있어야 차이를 표시합니다. 차이율 = (제공일 평균 − 비교 평균) ÷ 비교 평균 × 100. 이 기준은 탐색을 위한 최소 조건이지 신뢰도 점수가 아닙니다.</p><p>계절·날씨·행사·함께 제공된 메뉴는 통제하지 않았습니다. 메뉴 자체의 선호도나 효과로 단정하지 말고 실제 제공일의 기록을 함께 확인하세요. 한 배식에 대표메뉴가 여럿이면 각 메뉴에 그 배식이 포함되므로 메뉴별 식수를 합산하지 않습니다.</p></details>
+    <details class="menu-method"><summary>전체 메뉴 지표 · 검색 · CSV 내보내기</summary><div id="advanced-menu-table"></div></details>
+    <details class="menu-method"><summary>메뉴 역할과 함께 제공된 대표메뉴</summary><div class="chart-grid">${chartContainer({title:'역할별 제공 배식',body:`<div class="stat-list">${(data.roles||[]).map(x=>`<div class="stat-line"><span>${escapeHtml(x.role)}</span><strong>평균 ${advValue(x.average,'명')} · ${x.n}회</strong></div>`).join('')}`})}${chartContainer({title:'대표메뉴 조합 빈도',body:`<div class="stat-list">${(data.combinations||[]).map(x=>`<div class="stat-line"><span>${escapeHtml(x.menus.join(' + '))}</span><strong>${x.count}회</strong></div>`).join('')}`})}</div></details>`;
+  const list=$('#menu-explorer-rows',root), panel=$('#menu-evidence',root);
+  const showEvidence=item=>{
+    if(!item){panel.innerHTML='<div class="stats-empty">왼쪽에서 메뉴를 선택하면 비교 근거와 월별 흐름이 표시됩니다.</div>';return;}
+    const status=menuEvidenceStatus(item,minimum), comparable=item.lift_eligible;
+    const direction=item.lift>0?'많았습니다':item.lift<0?'적었습니다':'같았습니다';
+    const story=!comparable?'현재 자료로는 비교 차이를 판단하지 않습니다.':item.lift===0?'비교 대상과 평균 식수가 같았습니다.':`비교 대상보다 평균 ${numberText(Math.abs(item.lift))}명이 ${direction}${item.lift_percent!==null&&item.lift_percent!==undefined?` (${advSigned(item.lift_percent,'%')})`:''}.`;
+    const bars=[{label:'제공일 실제 평균',value:item.average,kind:'actual'},{label:'같은 요일·배식 비교',value:comparable?item.comparator_average:null,kind:'comparator'},{label:'제공일 계획 평균',value:item.average_planned,kind:'planned'}];
+    const max=Math.max(1,...bars.map(x=>x.value??0));
+    const recent=item.recent_services||[], monthly=item.monthly||[];
+    panel.innerHTML=`<header class="menu-evidence-head"><div><small>선택한 통계집계메뉴</small><h3>${escapeHtml(item.canonical_name)}</h3></div><span class="menu-evidence-badge ${status.tone}">${status.label}</span></header><p class="menu-evidence-story">${story}</p><p class="menu-evidence-caption">${status.text}</p>
+      <div class="menu-evidence-samples"><span>실제 입력된 제공 <strong>${item.n}회</strong></span><span>비교 배식 <strong>${item.comparator_n}회</strong></span>${(item.meal_types||[]).map(x=>`<span>${x.meal_type==='LUNCH'?'중식':'석식'} ${x.n}회</span>`).join('')}</div>
+      <div class="menu-comparison-bars">${bars.map(b=>`<div><span>${b.label}</span><div class="menu-comparison-track"><i class="${b.kind}" style="width:${(b.value??0)/max*100}%"></i></div><strong>${advValue(b.value,'명')}</strong></div>`).join('')}</div>
+      <div class="menu-range-facts"><span>실제 중앙값 <strong>${advValue(item.median,'명')}</strong></span><span>최소~최대 <strong>${advValue(item.minimum)}~${advValue(item.maximum)}명</strong></span></div>
+      <div class="menu-next-question"><strong>다음 편성 전에 확인해볼 점</strong><p>${!item.sample_ok?'제공 기록이 적습니다. 비슷한 요일·배식에 다시 제공한 뒤 흐름이 반복되는지 살펴보세요.':item.average_plan_error>0?`계획이 실제보다 평균 ${advValue(item.average_plan_error,'명')} 많았습니다. 준비 인원의 근거와 행사 여부를 확인해 보세요. 이 차이가 잔반량을 뜻하지는 않습니다.`:item.average_plan_error<0?`실제가 계획보다 평균 ${advValue(-item.average_plan_error,'명')} 많았습니다. 추가 배식 여부와 당시 특이사항을 확인해 보세요.`:'계획과 실제의 평균은 같습니다. 평균에 가려진 날짜별 변동도 살펴보세요.'}</p></div>
+      <h4>언제 제공해도 비슷했을까요?</h4><p class="menu-evidence-caption">제공 기록이 있는 월만 표시합니다. 월별 표본이 적거나 중식·석식 구성 비중이 바뀌면 평균도 달라질 수 있습니다.</p>${menuMonthlyGraphic(monthly)}
+      <details class="menu-month-values"><summary>월별 수치와 제공 횟수</summary><div class="stats-table-wrap"><table class="data-table"><caption class="sr-only">${escapeHtml(item.canonical_name)} 월별 식수</caption><thead><tr><th scope="col">월</th><th scope="col">제공</th><th scope="col">계획 평균</th><th scope="col">실제 평균</th><th scope="col">최소~최대</th></tr></thead><tbody>${monthly.map(x=>`<tr><td>${escapeHtml(x.key)}</td><td>${x.n}회${x.n<minimum?' · 표본 적음':''}</td><td>${advValue(x.average_planned)}</td><td>${advValue(x.average)}</td><td>${x.minimum}~${x.maximum}</td></tr>`).join('')}</tbody></table></div></details>
+      <h4>실제 제공일의 기록을 확인하세요</h4><p class="menu-evidence-caption">${escapeHtml(item.first_date||'')} ~ ${escapeHtml(item.last_date||'')} · 최근 ${recent.length}건. 날짜를 누르면 당시 계획·식수·특이사항을 볼 수 있습니다.</p><div class="menu-evidence-dates">${recent.map((x,index)=>`<button type="button" class="ghost-button" data-menu-evidence="${index}">${escapeHtml(x.service_date)} ${x.meal_type==='LUNCH'?'중식':'석식'}<span>계획 ${x.planned_count} / 실제 ${x.actual_count}명</span></button>`).join('')||'<span class="muted">제공일 정보가 없습니다.</span>'}</div>`;
+    $$('[data-menu-evidence]',panel).forEach(button=>button.addEventListener('click',()=>{const row=recent[Number(button.dataset.menuEvidence)];openAdvancedDrilldown({...current,start:row.service_date,end:row.service_date,mealType:row.meal_type==='LUNCH'?'lunch':'dinner',station:''});}));
+  };
+  const selectItem=item=>{
+    explorer.selected=item.canonical_name;
+    $$('[data-menu-index]',list).forEach(button=>{const selected=items[Number(button.dataset.menuIndex)].canonical_name===explorer.selected;button.classList.toggle('selected',selected);button.setAttribute('aria-pressed',String(selected));});
+    showEvidence(item);
+  };
+  const draw=()=>{
+    const rows=menuExplorerRows(items,explorer.mode,explorer.query), shown=rows.slice(0,explorer.limit);
+    const signed=explorer.mode==='compare'||explorer.mode==='plan', field=explorer.mode==='compare'?'lift_percent':explorer.mode==='plan'?'average_plan_error':'average', suffix=explorer.mode==='compare'?'%':'명';
+    const max=Math.max(1,...rows.map(x=>Math.abs(x[field]??0)));
+    const descriptions={compare:['같은 요일·배식 대비 식수 차이','차이율 높은 순 · 0을 기준으로 왼쪽은 적음, 오른쪽은 많음'],plan:['계획과 실제의 차이가 큰 메뉴','차이의 절댓값 순 · 왼쪽은 실제가 많음, 오른쪽은 계획이 많음'],observe:['비교 전에 기록을 더 모을 메뉴','제공 횟수 순 · 막대는 실제 평균이며 비교 순위가 아닙니다.'],all:['전체 메뉴 둘러보기','제공 횟수 순 · 막대는 실제 평균이며 선호도 순위가 아닙니다.']};
+    $('#menu-explorer-title',root).textContent=descriptions[explorer.mode][0];$('#menu-explorer-description',root).textContent=descriptions[explorer.mode][1];
+    $('#menu-explorer-count',root).textContent=`${rows.length}종 중 ${shown.length}종 표시`;
+    $$('[data-menu-mode]',root).forEach(button=>{const active=button.dataset.menuMode===explorer.mode;button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active));});
+    list.innerHTML=shown.map(item=>{
+      const value=item[field], valid=Number.isFinite(value), status=menuEvidenceStatus(item,minimum), width=valid?Math.abs(value)/max*(signed?50:100):0;
+      const left=signed?(value<0?50-width:50):0;
+      return `<button type="button" class="menu-explorer-row" data-menu-index="${items.indexOf(item)}" aria-pressed="false"><span class="menu-row-title"><strong>${escapeHtml(item.canonical_name)}</strong><b>${valid?(signed?advSigned(value,suffix):advValue(value,suffix)):'비율 계산 불가'}</b></span><span class="menu-difference-track ${signed?'signed':''}" aria-hidden="true"><i class="${value<0?'negative':'positive'}" style="left:${left}%;width:${width}%"></i></span><span class="menu-row-caption"><span>제공 ${item.n}회 · 비교 ${item.comparator_n}회</span><span class="menu-evidence-badge ${status.tone}">${status.label}</span></span></button>`;
+    }).join('')||`<div class="stats-empty"><strong>${items.length?'이 조건에 맞는 메뉴가 없습니다.':'이 기간에 분석할 메뉴가 없습니다.'}</strong><p>${!items.length?(data.service_count?'실제 식수는 있지만 연결된 대표메뉴·주찬이 없습니다. 식단의 대표메뉴와 메뉴역할을 확인하세요.':'조회 기간과 실제 식수 입력 여부를 확인하세요.'):'전체 메뉴를 보거나 검색어·기간을 바꾸어 살펴보세요.'}</p></div>`;
+    $('#menu-explorer-more',root).classList.toggle('hidden',rows.length<=shown.length);
+    const selected=shown.find(x=>x.canonical_name===explorer.selected)||shown[0];
+    if(selected)selectItem(selected);else showEvidence(null);
+  };
+  list.addEventListener('click',event=>{const button=event.target.closest('[data-menu-index]');if(button&&list.contains(button))selectItem(items[Number(button.dataset.menuIndex)]);});
+  $$('[data-menu-mode]',root).forEach(button=>button.addEventListener('click',()=>{explorer.mode=button.dataset.menuMode;explorer.limit=12;draw();}));
+  $('#menu-explorer-search',root).addEventListener('input',event=>{explorer.query=event.target.value;explorer.limit=12;draw();});
+  $('#menu-explorer-more',root).addEventListener('click',()=>{explorer.limit+=12;draw();});
+  renderStatisticsDataTable($('#advanced-menu-table',root),{columns:[{key:'canonical_name',label:'통계집계메뉴명',render:v=>escapeHtml(v)},{key:'n',label:'제공 횟수'},{key:'average',label:'실제 평균',render:v=>advValue(v,'명')},{key:'median',label:'중앙값',render:v=>advValue(v,'명')},{key:'average_planned',label:'계획 평균',render:v=>advValue(v,'명')},{key:'average_plan_error',label:'계획 − 실제',render:v=>advSigned(v,'명')},{key:'comparator_n',label:'비교 횟수'},{key:'lift_percent',label:'비교 대비 차이',render:(v,r)=>r.lift_eligible?advSigned(v,'%'):'비교 자료 부족'}],rows:items,pageSize:25,filename:'advanced_menu_metrics'});
+  draw();
 }
 function scatterPlot(items=[]) {
   const points=items.filter(x=>x.avg_temp!==null&&x.actual_count!==null).slice(0,500); if(!points.length)return '<div class="stats-empty">표시할 짝 표본이 없습니다.</div>';
