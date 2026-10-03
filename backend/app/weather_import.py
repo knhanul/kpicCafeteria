@@ -24,6 +24,8 @@ MAX_FILE_SIZE = 20 * 1024 * 1024
 MAX_UNCOMPRESSED_SIZE = 100 * 1024 * 1024
 MAX_ROWS = 100_000
 PREVIEW_TTL = timedelta(minutes=30)
+DAILY_MIN_HOURLY_SAMPLES = 20  # hourly -> daily aggregate only for (nearly) complete days
+HOURLY_COMPARE_FIELDS = ("station_name", "temperature", "precipitation", "humidity", "wind_speed", "source_kind")
 NULL_MARKERS = {"", "-", "--", "n/a", "na", "null"}
 WEATHER_FIELDS = (
     "avg_temp", "min_temp", "max_temp", "precipitation",
@@ -125,7 +127,7 @@ def validate_file(path: Path) -> None:
 
 def _decode_csv(path: Path) -> str:
     content = path.read_bytes()
-    for encoding in ("utf-8-sig", "cp949"):
+    for encoding in ("utf-8-sig", "cp949", "euc-kr"):
         try:
             return content.decode(encoding)
         except UnicodeDecodeError:
@@ -172,8 +174,10 @@ def tabular_rows(path: Path) -> Iterator[Iterator[tuple[str, int, list[Any]]]]:
             workbook.release_resources()
         return
     text = _decode_csv(path)
+    # weather.nuni.co.kr exports start with a "# source=KMA ..." metadata line; sniff on data lines only.
+    sample = "\n".join(line for line in text[:16384].splitlines() if not line.lstrip().startswith("#"))
     try:
-        dialect = csv.Sniffer().sniff(text[:8192], delimiters=",\t;|")
+        dialect = csv.Sniffer().sniff(sample[:8192], delimiters=",\t;|")
     except csv.Error:
         dialect = csv.excel
     yield (("CSV", number, row) for number, row in enumerate(csv.reader(text.splitlines(), dialect), start=1))
@@ -267,10 +271,17 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
     duplicate_keys: set[tuple[Any, str]] = set()
     hourly_mode = False
     source_rows = 0
+    source_note = ""
+    first_seen: dict[tuple[Any, str], dict[str, Any]] = {}
+    duplicate_rows = 0
+    precipitation_blank_as_zero = 0
 
     with tabular_rows(path) as source:
         for sheet_name, row_number, values in source:
             if mapping is None:
+                first_cell = str(values[0] if values else "").strip()
+                if first_cell.startswith("#") and not source_note:
+                    source_note = ",".join(str(value) for value in values if value not in (None, "")).lstrip("# ").strip()[:300]
                 if row_number > 30:
                     continue
                 try:
@@ -308,12 +319,30 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
                 weather[field] = value
                 if error:
                     warnings.append(f"{field}: {error} NULL로 처리합니다.")
+            if hourly_mode and "precipitation" in mapping and weather.get("precipitation") is None and not str(get("precipitation") or "").strip() \
+                    and (weather.get("temperature") is not None or weather.get("humidity") is not None):
+                # KMA hourly observations leave precipitation blank when it did not rain.
+                weather["precipitation"] = 0.0
+                precipitation_filled = True
+            else:
+                precipitation_filled = False
+            identical_duplicate = False
             key_value = observed_at if hourly_mode else observed
-            if key_value and station_id:
+            if key_value and station_id and not row_errors:
                 key = (key_value, station_id)
+                comparable = {"station_name": station_name, **weather, "source_kind": _station_value(get("source_kind")) if hourly_mode else ""}
                 if key in seen:
-                    duplicate_keys.add(key)
-                seen.add(key)
+                    if first_seen.get(key) == comparable:
+                        identical_duplicate = True  # e.g. "01:00" and "01:00:00" rows with the same values
+                        duplicate_rows += 1
+                    else:
+                        duplicate_keys.add(key)
+                else:
+                    seen.add(key)
+                    first_seen[key] = comparable
+            if identical_duplicate:
+                continue
+            precipitation_blank_as_zero += precipitation_filled
             row = {
                 "source_row": row_number,
                 "observation_date": observed.isoformat() if observed else "",
@@ -330,6 +359,7 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
 
     if mapping is None:
         raise WeatherImportError("파일의 처음 30행에서 필요한 헤더를 인식하지 못했습니다.")
+    del first_seen
     for row in rows:
         key_text = row["observation_datetime"] if hourly_mode else row["observation_date"]
         if key_text:
@@ -353,7 +383,7 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
                 )
             ).all()
             existing_map = {(row.observation_datetime, row.station_id): row for row in existing_rows}
-            compare_fields = ("station_name", "temperature", "precipitation", "humidity", "wind_speed", "source_kind")
+            compare_fields = HOURLY_COMPARE_FIELDS
             for row in valid_rows:
                 existing = existing_map.get((datetime.fromisoformat(row["observation_datetime"]), row["station_id"]))
                 row["existing"] = existing.id if existing else None
@@ -373,6 +403,11 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
                 row["status"] = "신규" if not existing else "수정" if any(getattr(existing, field) != row[field] for field in ("station_name", *WEATHER_FIELDS)) else "변경 없음"
 
     valid_dates = [date.fromisoformat(row["observation_date"]) for row in valid_rows]
+    hours_per_day: dict[tuple[str, str], int] = {}
+    if hourly_mode:
+        for row in valid_rows:
+            day_key = (row["observation_date"], row["station_id"])
+            hours_per_day[day_key] = hours_per_day.get(day_key, 0) + 1
     stations = sorted({(row["station_id"], row["station_name"]) for row in valid_rows})
     summary = {
         "sheet_name": selected_sheet,
@@ -391,6 +426,12 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
         "date_to": max(valid_dates).isoformat() if valid_dates else None,
         "stations": [{"station_id": station_id, "station_name": name} for station_id, name in stations],
         "rows_fingerprint": _fingerprint(valid_rows),
+        "source_note": source_note,
+        "duplicate_rows": duplicate_rows,
+        "precipitation_blank_as_zero": precipitation_blank_as_zero,
+        "daily_aggregate_days": sum(count >= DAILY_MIN_HOURLY_SAMPLES for count in hours_per_day.values()),
+        "partial_days": sum(count < DAILY_MIN_HOURLY_SAMPLES for count in hours_per_day.values()),
+        "daily_min_hourly_samples": DAILY_MIN_HOURLY_SAMPLES if hourly_mode else None,
     }
     return {"summary": summary, "rows": rows, "errors": errors}
 
@@ -465,6 +506,84 @@ def _refresh_meal_period_weather(db: Session, rows: list[dict[str, Any]], batch_
     db.execute(statement)
 
 
+def _refresh_daily_weather_from_hourly(db: Session, rows: list[dict[str, Any]], batch_id: int, now: datetime) -> int:
+    """Upsert weather_history daily rows (source KMA_HOURLY) from all stored hourly rows of the affected days.
+
+    Days with fewer than DAILY_MIN_HOURLY_SAMPLES hours are skipped, and a daily row that came from an
+    official daily file (source KMA_FILE, which also has snow/sunshine) is never overwritten.
+    """
+    affected = {(date.fromisoformat(row["observation_date"]), row["station_id"]) for row in rows}
+    if not affected:
+        return 0
+    dates = [item[0] for item in affected]
+    station_ids = {item[1] for item in affected}
+    hourly_rows = db.scalars(
+        select(WeatherHourly).where(
+            WeatherHourly.observation_datetime >= datetime.combine(min(dates), datetime.min.time()),
+            WeatherHourly.observation_datetime < datetime.combine(max(dates) + timedelta(days=1), datetime.min.time()),
+            WeatherHourly.station_id.in_(station_ids),
+        )
+    ).all()
+    official = {
+        (row.observation_date, row.station_id)
+        for row in db.execute(
+            select(WeatherHistory.observation_date, WeatherHistory.station_id).where(
+                WeatherHistory.observation_date.between(min(dates), max(dates)),
+                WeatherHistory.station_id.in_(station_ids),
+                WeatherHistory.source == "KMA_FILE",
+            )
+        )
+    }
+    grouped: dict[tuple[date, str], list[WeatherHourly]] = {}
+    for row in hourly_rows:
+        key = (row.observation_datetime.date(), row.station_id)
+        if key in affected and key not in official:
+            grouped.setdefault(key, []).append(row)
+    values = []
+    for (observation_date, station_id), samples in grouped.items():
+        if len(samples) < DAILY_MIN_HOURLY_SAMPLES:
+            continue
+
+        def numbers(field: str) -> list[float]:
+            return [float(value) for sample in samples if (value := getattr(sample, field)) is not None]
+
+        temperatures, precipitation, humidity = numbers("temperature"), numbers("precipitation"), numbers("humidity")
+        values.append({
+            "observation_date": observation_date,
+            "station_id": station_id,
+            "station_name": next((sample.station_name for sample in samples if sample.station_name), None),
+            "avg_temp": round(sum(temperatures) / len(temperatures), 1) if temperatures else None,
+            "min_temp": min(temperatures) if temperatures else None,
+            "max_temp": max(temperatures) if temperatures else None,
+            "precipitation": round(sum(precipitation), 1) if precipitation else None,
+            "avg_humidity": round(sum(humidity) / len(humidity), 1) if humidity else None,
+            "snow_depth": None,
+            "sunshine_hours": None,
+            "source": "KMA_HOURLY",
+            "upload_batch_id": batch_id,
+            "created_at": now,
+            "updated_at": now,
+        })
+    if not values:
+        return 0
+    insert = pg_insert(WeatherHistory) if db.bind and db.bind.dialect.name == "postgresql" else sqlite_insert(WeatherHistory)
+    for start in range(0, len(values), 1000):
+        statement = insert.values(values[start:start + 1000])
+        statement = statement.on_conflict_do_update(
+            index_elements=[WeatherHistory.observation_date, WeatherHistory.station_id],
+            set_={
+                "station_name": statement.excluded.station_name,
+                **{field: getattr(statement.excluded, field) for field in WEATHER_FIELDS},
+                "source": statement.excluded.source,
+                "upload_batch_id": statement.excluded.upload_batch_id,
+                "updated_at": statement.excluded.updated_at,
+            },
+            where=WeatherHistory.source != "KMA_FILE",
+        )
+        db.execute(statement)
+    return len(values)
+
+
 def apply_weather_file(path: Path, db: Session, filename: str, checksum: str, user_id: int, expected_fingerprint: str) -> tuple[WeatherUploadHistory, dict[str, int]]:
     parsed = parse_weather_file(path, db)
     if parsed["summary"]["rows_fingerprint"] != expected_fingerprint:
@@ -490,6 +609,7 @@ def apply_weather_file(path: Path, db: Session, filename: str, checksum: str, us
     db.flush()
     now = datetime.now(timezone.utc)
     changed = [row for row in parsed["rows"] if row["status"] in {"신규", "수정"}]
+    daily_refreshed = 0
     if changed:
         if summary["data_granularity"] == "hourly":
             values = [{
@@ -523,6 +643,7 @@ def apply_weather_file(path: Path, db: Session, filename: str, checksum: str, us
                 )
                 db.execute(statement)
             _refresh_meal_period_weather(db, changed, batch.id, now)
+            daily_refreshed = _refresh_daily_weather_from_hourly(db, changed, batch.id, now)
         else:
             values = [{
                 "observation_date": date.fromisoformat(row["observation_date"]),
@@ -556,5 +677,7 @@ def apply_weather_file(path: Path, db: Session, filename: str, checksum: str, us
         "updated_rows": summary["updated_rows"],
         "skipped_rows": summary["skipped_rows"],
         "error_rows": summary["error_rows"],
+        "duplicate_rows": summary.get("duplicate_rows", 0),
+        "daily_aggregated_days": daily_refreshed,
     }
     return batch, result
