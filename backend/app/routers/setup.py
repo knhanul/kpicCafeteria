@@ -5,14 +5,14 @@ import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..actual_meal_import import MAX_FILE_SIZE, EXPECTED_FILENAME, ActualMealUploadError, apply_actual_meals, preview_actual_meals, sha256_file
 from ..config import settings
-from ..db import get_db
+from ..db import SessionLocal, get_db
 from ..deps import admin_user, current_user
 from ..importer import MigrationImporter
 from .admin import create_backup
@@ -67,51 +67,82 @@ def preview_import(
     return {"token": token, "summary": summary, "errors": errors}
 
 
+# PREVIEWED: first run. FAILED: the import rolled back, so the same upload may be retried (UI re-enables the button).
+CLAIMABLE_IMPORT_STATUSES = ("PREVIEWED", "FAILED")
+
+
+def _run_migration_import(token: str, mode: str, user_id: int) -> None:
+    with SessionLocal() as db:
+        job = db.scalar(select(ImportJob).where(ImportJob.token == token))
+        if not job or job.status != "PROCESSING":
+            return
+        try:
+            result = MigrationImporter(Path(job.storage_path)).apply(db, mode=mode, user_id=user_id)
+            job = db.scalar(select(ImportJob).where(ImportJob.token == token))
+            if job:
+                job.status = "COMPLETED"
+                job.summary = {**(job.summary or {}), "result": result}
+                job.completed_at = datetime.now(timezone.utc)
+                db.commit()
+        except BaseException as exc:
+            # Any failure (including cancellation) must release the PROCESSING claim so the job never gets stuck.
+            try:
+                db.rollback()
+                job = db.scalar(select(ImportJob).where(ImportJob.token == token))
+                if job and job.status != "COMPLETED":
+                    job.status = "FAILED"
+                    job.errors = [*(job.errors or []), {"type": "IMPORT_ERROR", "message": str(exc) or exc.__class__.__name__}]
+                    db.commit()
+            except Exception:
+                db.rollback()
+            if not isinstance(exc, Exception):
+                raise
+
+
 @router.post("/import/apply")
 def apply_import(
     body: ApplyBody,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: User = Depends(current_user),
 ):
+    if body.mode not in {"replace", "merge"}:
+        raise HTTPException(status_code=400, detail="기초데이터 반영 방식이 올바르지 않습니다.")
     job = db.scalar(select(ImportJob).where(ImportJob.token == body.token))
     if not job:
         raise HTTPException(status_code=404, detail="업로드 작업을 찾을 수 없습니다.")
     if job.status == "INVALID":
         raise HTTPException(status_code=400, detail="검증에 실패한 파일입니다.")
-    if job.status in {"RUNNING", "COMPLETED"}:
-        raise HTTPException(status_code=409, detail="이미 처리 중이거나 완료된 작업입니다. 새로 생성하려면 파일을 다시 업로드해 주세요.")
+    if job.status not in CLAIMABLE_IMPORT_STATUSES:
+        raise HTTPException(status_code=409, detail="이미 처리 중이거나 완료된 업로드 작업입니다. 새로 생성하려면 파일을 다시 업로드해 주세요.")
     # Claim the job atomically so a double click / retry cannot start a second import in parallel.
     claimed = db.execute(
         update(ImportJob)
-        .where(ImportJob.token == body.token, ImportJob.status.not_in(["RUNNING", "COMPLETED", "INVALID"]))
-        .values(status="RUNNING")
+        .where(ImportJob.token == body.token, ImportJob.status.in_(CLAIMABLE_IMPORT_STATUSES))
+        .values(status="PROCESSING")
     ).rowcount
     db.commit()
     if not claimed:
-        raise HTTPException(status_code=409, detail="이미 처리 중이거나 완료된 작업입니다. 새로 생성하려면 파일을 다시 업로드해 주세요.")
+        raise HTTPException(status_code=409, detail="이미 처리 중이거나 완료된 업로드 작업입니다. 새로 생성하려면 파일을 다시 업로드해 주세요.")
     db.refresh(job)
-    try:
-        result = MigrationImporter(Path(job.storage_path)).apply(db, mode=body.mode, user_id=user.id)
-        job.status = "COMPLETED"
-        job.summary = {**(job.summary or {}), "result": result}
-        job.completed_at = datetime.now(timezone.utc)
-        db.add(job)
-        db.commit()
-        return {"ok": True, "result": result}
-    except BaseException as exc:
-        # Any failure (including cancellation) must release the RUNNING claim so the job never gets stuck.
-        try:
-            db.rollback()
-            job = db.scalar(select(ImportJob).where(ImportJob.token == body.token))
-            if job and job.status != "COMPLETED":
-                job.status = "FAILED"
-                job.errors = [*(job.errors or []), {"type": "IMPORT_ERROR", "message": str(exc)}]
-                db.commit()
-        except Exception:
-            db.rollback()
-        if not isinstance(exc, Exception):
-            raise
-        raise HTTPException(status_code=400, detail=f"이관 실패: {exc}") from exc
+    job.summary = {**(job.summary or {}), "mode": body.mode}
+    db.commit()
+    background_tasks.add_task(_run_migration_import, job.token, body.mode, user.id)
+    return {"ok": True, "token": job.token, "status": job.status}
+
+
+@router.get("/import/jobs/{token}")
+def get_import_job(token: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    job = db.scalar(select(ImportJob).where(ImportJob.token == token))
+    if not job:
+        raise HTTPException(status_code=404, detail="업로드 작업을 찾을 수 없습니다.")
+    return {
+        "token": job.token,
+        "status": job.status,
+        "result": (job.summary or {}).get("result"),
+        "errors": job.errors or [],
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+    }
 
 
 @router.post("/actual-meals/preview")

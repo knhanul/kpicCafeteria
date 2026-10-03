@@ -2239,13 +2239,35 @@ function showMigrationPreviewResult(result){
   if(ok)$('#apply-migration').addEventListener('click',applyMigration);
 }
 async function previewMigration(){const file=$('#migration-file').files[0];if(!file){toast('XLSX 파일을 선택해 주세요.',true);return;}const data=new FormData();data.append('file',file);try{$('#migration-result').innerHTML='<div class="result-card">검증 중입니다.</div>';const result=await api('/api/setup/import/preview',{method:'POST',body:data});showMigrationPreviewResult(result);}catch(e){toast(e.message,true);}}
+async function waitForMigrationImport(token){
+  let connectionErrors=0;
+  while(true){
+    await new Promise(resolve=>setTimeout(resolve,2000));
+    let job;
+    try{job=await api(`/api/setup/import/jobs/${encodeURIComponent(token)}`);connectionErrors=0;}
+    catch(e){
+      connectionErrors++;
+      $('#migration-result').innerHTML=`<div class="result-card"><h3>기초데이터 생성 중</h3><p>서버 작업은 계속 진행 중이며 진행 상태를 다시 확인하고 있습니다 (${connectionErrors}회).</p></div>`;
+      continue;
+    }
+    if(job.status==='PROCESSING'){
+      $('#migration-result').innerHTML='<div class="result-card"><h3>기초데이터 생성 중</h3><p>대량 데이터를 반영하고 있습니다. 이 화면을 닫지 않아도 서버에서 작업은 계속됩니다.</p></div>';
+      continue;
+    }
+    if(job.status==='COMPLETED')return job.result||{};
+    const message=(job.errors||[]).map(item=>item.message).filter(Boolean).join('\\n')||`처리 상태: ${job.status}`;
+    throw new Error(message);
+  }
+}
 async function applyMigration(){
   if(!confirm('선택한 방식으로 기초데이터와 과거 식단을 생성할까요?'))return;
   const btn=$('#apply-migration');
   try{
     btn.disabled=true;btn.textContent='생성 중…';
-    const result=await api('/api/setup/import/apply',json('POST',{token:state.importToken,mode:$('#import-mode').value}));
-    $('#migration-result').innerHTML=`<div class="result-card"><h3>생성 완료</h3><pre>${escapeHtml(JSON.stringify(result.result,null,2))}</pre></div>`;
+    await api('/api/setup/import/apply',json('POST',{token:state.importToken,mode:$('#import-mode').value}));
+    $('#migration-result').innerHTML='<div class="result-card"><h3>기초데이터 생성 중</h3><p>서버에서 반영 작업을 시작했습니다.</p></div>';
+    const result=await waitForMigrationImport(state.importToken);
+    $('#migration-result').innerHTML=`<div class="result-card"><h3>생성 완료</h3><pre>${escapeHtml(JSON.stringify(result,null,2))}</pre></div>`;
     state.weekStart=mondayOf(new Date());await loadWorkspace(false);toast('기초데이터 생성을 완료했습니다.');
   }catch(e){
     btn.disabled=false;btn.textContent='기초데이터 생성';

@@ -465,6 +465,8 @@ class MigrationImporter:
 
             if mode == "replace":
                 self._restore_service_records(db, preserved_records, service_map, counters)
+                # origin/main contract name for the same count (kept alongside actuals_restored).
+                counters["actuals_preserved"] = counters["actuals_restored"]
 
             db.add(
                 AuditLog(
@@ -538,6 +540,9 @@ class MigrationImporter:
             counter_key = "actuals_restored" if label == "actuals" else "preservation_restored"
             counters[counter_key] += 0
             for (service_date_iso, meal_type), values in snapshot.get(label, {}).items():
+                if label == "actuals" and values.get("actual_count") is None and not values.get("note"):
+                    # An actual row with neither a count nor a note carries no data; do not resurrect it.
+                    continue
                 service = service_map.get((service_date_iso, meal_type))
                 if service is None:
                     # The new workbook has no menu for this date/meal: keep the record on an empty default service.
