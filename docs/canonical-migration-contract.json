@@ -1,13 +1,13 @@
 {
-  "contract_version": "1.1",
+  "contract_version": "1.2",
   "input_format": "xlsx",
   "required_sheets": {
     "01_배식설정": ["배식유형", "기본계획식수", "기본배식시간", "사용여부", "설명"],
     "02_메뉴기준정보": ["메뉴ID", "메뉴명", "통계집계메뉴명", "메뉴역할", "사용여부", "검토상태"],
     "03_재료기준정보": ["재료ID", "표준재료명", "통계분석군", "기본단위", "kg환산계수", "분석제외", "사용여부", "검토상태"],
     "04_재료별칭_선택": ["원재료별칭", "재료ID", "표준재료명", "출처"],
-    "05_메뉴별재료_기준": ["메뉴ID", "메뉴명", "레시피명", "재료ID", "표준재료명", "100인기준수량", "단위", "원본행", "원본비고", "검토상태"],
-    "06_식단이력_이관": ["일자", "배식유형", "계획식수", "배식시간", "메뉴순서", "메뉴ID", "메뉴명", "메인메뉴여부", "메뉴비고"],
+    "05_메뉴별재료_기준": ["메뉴ID", "메뉴명", "레시피명", "재료ID", "표준재료명", "100인기준수량", "단위", "원본행", "원본비고", "검토상태", "재료순서"],
+    "06_식단이력_이관": ["일자", "배식유형", "계획식수", "배식시간", "메뉴순서", "메뉴ID", "메뉴명", "레시피명", "메인메뉴여부", "메뉴비고"],
     "07_식단재료_이관": ["일자", "배식유형", "메뉴순서", "메뉴ID", "메뉴명", "재료순서", "재료ID", "표준재료명", "원본재료명", "수량", "단위", "원본비고", "원본행"]
   },
   "identifiers": {
@@ -17,7 +17,8 @@
     "service_key": ["일자", "배식유형"]
   },
   "optional_columns": {
-    "06_식단이력_이관": ["메인메뉴여부"]
+    "05_메뉴별재료_기준": ["레시피명"],
+    "06_식단이력_이관": ["레시피명", "메인메뉴여부"]
   },
   "meal_type": {"중식": "LUNCH", "석식": "DINNER", "LUNCH": "LUNCH", "DINNER": "DINNER"},
   "units": ["kg", "g", "L", "ml", "개", "봉", "팩", "판", "통", "캔", "병", "박스", "단", "묶음", "장", "줄", "포", "관", "밧트"],
@@ -37,6 +38,22 @@
       "explicit_n_overwrites": true,
       "invalid_or_duplicate": "ERROR_WITH_ROW_NUMBER_NO_AUTO_PICK",
       "when_column_absent": "AUTO_LOWEST_MENU_ORDER_JUCHAN_FOR_NEW_ROWS"
+    },
+    "recipe_name": {
+      "column": "05_메뉴별재료_기준.레시피명",
+      "db_field": "Recipe.name",
+      "blank_or_absent": "기본 레시피 vN",
+      "block_boundary": ["재료순서 restarts", "레시피명 changes"],
+      "one_name_per_composition_per_menu": "ERROR_WITH_ROW_NUMBER",
+      "merge_existing_composition": "UPDATE_NAME"
+    },
+    "meal_recipe_link": {
+      "column": "06_식단이력_이관.레시피명",
+      "db_field": "MealServiceMenu.recipe_id, recipe_name_snapshot",
+      "must_match": "05.레시피명 of the same 메뉴ID",
+      "unknown_name": "ERROR_WITH_ROW_NUMBER_BEFORE_WRITE",
+      "overrides_composition_match": true,
+      "blank_or_absent": "07 exact composition match, else menu default recipe"
     }
   }
 }

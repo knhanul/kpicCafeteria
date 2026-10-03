@@ -45,7 +45,7 @@ Canonical XLSX Sheet:
 - Ingredient: 재료ID, 표준재료명, 통계분석군, 기본단위, kg환산계수, 분석제외, 사용여부
 - RecipeIngredient: 메뉴ID, 레시피명, 재료ID, 100인기준수량, 단위, 재료순서
 - MealService: 일자, 배식유형, 계획식수, 배식시간
-- MealServiceMenu: 메뉴ID, 메뉴명, 메뉴순서, 메인메뉴여부(Y/N, 식단별 Y 최대 1건), 메뉴비고
+- MealServiceMenu: 메뉴ID, 메뉴명, 메뉴순서, 레시피명(같은 메뉴ID의 05 레시피명), 메인메뉴여부(Y/N, 식단별 Y 최대 1건), 메뉴비고
 - Snapshot Ingredient: 재료ID, 표준재료명, 수량, 100인기준수량, 단위, 재료순서, 원본행
 
 허용 배식유형:
