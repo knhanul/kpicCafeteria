@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from contextlib import nullcontext
 from datetime import datetime, time, timezone
 from pathlib import Path
 from typing import Any
@@ -115,7 +116,14 @@ class MigrationImporter:
         if mode not in {"replace", "merge"}:
             raise ValueError("mode must be replace or merge")
         counters = defaultdict(int)
-        with SimpleXlsxReader(self.path) as reader:
+        # In replace mode every business table is emptied first, so per-row "does it already exist?"
+        # queries can only ever match rows created earlier in this same run. Those are tracked in local
+        # dict caches instead (same matching keys as the original queries), which removes tens of
+        # thousands of DB round trips and per-row flushes. Merge mode keeps the original query/flush path.
+        is_replace = mode == "replace"
+        self._settings_cache: dict[str, MealTypeSetting | None] = {}
+        flush_guard = db.no_autoflush if is_replace else nullcontext()
+        with SimpleXlsxReader(self.path) as reader, flush_guard:
             missing = [name for name in EXPECTED_SHEETS if name not in reader.sheets]
             if missing:
                 raise ValueError(f"필수 시트가 없습니다: {', '.join(missing)}")
@@ -131,7 +139,7 @@ class MigrationImporter:
                 if not name:
                     continue
                 code = MEAL_CODE_MAP.get(name, name.upper())
-                setting = db.scalar(select(MealTypeSetting).where(MealTypeSetting.code == code))
+                setting = None if is_replace else db.scalar(select(MealTypeSetting).where(MealTypeSetting.code == code))
                 if not setting:
                     setting = MealTypeSetting(code=code, name=name)
                     db.add(setting)
@@ -143,43 +151,68 @@ class MigrationImporter:
                 counters["meal_types"] += 1
             db.flush()
 
+            # replace-mode caches mirroring the source_code / name lookups below
+            menus_by_source: dict[str, Menu] = {}
+            menus_by_name: dict[str, Menu] = {}
             for row in reader.sheet_rows("02_메뉴기준정보"):
                 code = clean_text(row.get("메뉴ID"))
                 name = clean_text(row.get("메뉴명"))
                 if not name:
                     continue
                 menu = None
-                if code:
-                    menu = db.scalar(select(Menu).where(Menu.source_code == code))
-                if not menu:
-                    menu = db.scalar(select(Menu).where(Menu.name == name))
+                if is_replace:
+                    if code:
+                        menu = menus_by_source.get(code)
+                    if not menu:
+                        menu = menus_by_name.get(name)
+                else:
+                    if code:
+                        menu = db.scalar(select(Menu).where(Menu.source_code == code))
+                    if not menu:
+                        menu = db.scalar(select(Menu).where(Menu.name == name))
                 if not menu:
                     menu = Menu(name=name, canonical_name=name)
                     db.add(menu)
+                if is_replace:
+                    self._reindex(menus_by_source, menu, menu.source_code, code or menu.source_code)
+                    self._reindex(menus_by_name, menu, menu.name, name)
                 menu.source_code = code or menu.source_code
                 menu.name = name
                 menu.canonical_name = clean_text(row.get("통계집계메뉴명")) or name
                 menu.role = clean_text(row.get("메뉴역할")) or "기타"
                 menu.active = clean_bool(row.get("사용여부"), True)
                 menu.review_status = clean_text(row.get("검토상태")) or "정상"
-                db.flush()
+                if not is_replace:
+                    db.flush()
                 if code:
                     menu_by_code[code] = menu
                 counters["menus"] += 1
+            db.flush()
 
+            ingredients_by_source: dict[str, Ingredient] = {}
+            ingredients_by_name: dict[str, Ingredient] = {}
             for row in reader.sheet_rows("03_재료기준정보"):
                 code = clean_text(row.get("재료ID"))
                 name = clean_text(row.get("표준재료명"))
                 if not name:
                     continue
                 ingredient = None
-                if code:
-                    ingredient = db.scalar(select(Ingredient).where(Ingredient.source_code == code))
-                if not ingredient:
-                    ingredient = db.scalar(select(Ingredient).where(Ingredient.name == name))
+                if is_replace:
+                    if code:
+                        ingredient = ingredients_by_source.get(code)
+                    if not ingredient:
+                        ingredient = ingredients_by_name.get(name)
+                else:
+                    if code:
+                        ingredient = db.scalar(select(Ingredient).where(Ingredient.source_code == code))
+                    if not ingredient:
+                        ingredient = db.scalar(select(Ingredient).where(Ingredient.name == name))
                 if not ingredient:
                     ingredient = Ingredient(name=name)
                     db.add(ingredient)
+                if is_replace:
+                    self._reindex(ingredients_by_source, ingredient, ingredient.source_code, code or ingredient.source_code)
+                    self._reindex(ingredients_by_name, ingredient, ingredient.name, name)
                 ingredient.source_code = code or ingredient.source_code
                 ingredient.name = name
                 ingredient.stat_group = clean_text(row.get("통계분석군")) or "기타"
@@ -188,17 +221,19 @@ class MigrationImporter:
                 ingredient.analysis_excluded = clean_bool(row.get("분석제외"), False)
                 ingredient.active = clean_bool(row.get("사용여부"), True)
                 ingredient.review_status = clean_text(row.get("검토상태")) or "정상"
-                db.flush()
+                if not is_replace:
+                    db.flush()
                 if code:
                     ingredient_by_code[code] = ingredient
                 counters["ingredients"] += 1
+            db.flush()
 
             for row in reader.sheet_rows("04_재료별칭_선택"):
                 alias_name = clean_text(row.get("원재료별칭"))
                 ingredient_code = clean_text(row.get("재료ID"))
                 if not alias_name or ingredient_code not in ingredient_by_code:
                     continue
-                alias = db.scalar(select(IngredientAlias).where(IngredientAlias.alias == alias_name))
+                alias = None if is_replace else db.scalar(select(IngredientAlias).where(IngredientAlias.alias == alias_name))
                 if not alias:
                     alias = IngredientAlias(alias=alias_name, ingredient=ingredient_by_code[ingredient_code])
                     db.add(alias)
@@ -235,12 +270,17 @@ class MigrationImporter:
             grouped_rows = self._group_recipe_rows_by_composition(recipe_source_rows)
             recipe_map_by_menu: dict[int, dict[str, Recipe]] = defaultdict(dict)
             default_recipe_by_menu: dict[int, Recipe] = {}
+            max_version_by_menu: dict[int, int] = {}
 
             for menu_id, recipe_groups in grouped_rows.items():
                 for composition_key, rows_in_group in recipe_groups.items():
                     recipe = existing_recipes_by_menu.get(menu_id, {}).get(composition_key)
                     if not recipe:
-                        max_version = db.scalar(select(Recipe.version).where(Recipe.menu_id == menu_id).order_by(Recipe.version.desc())) or 0
+                        if is_replace:
+                            max_version = max_version_by_menu.get(menu_id, 0)
+                        else:
+                            max_version = db.scalar(select(Recipe.version).where(Recipe.menu_id == menu_id).order_by(Recipe.version.desc())) or 0
+                        max_version_by_menu[menu_id] = max_version + 1
                         recipe = Recipe(
                             menu_id=menu_id,
                             name=f"기본 레시피 v{max_version + 1}",
@@ -250,13 +290,14 @@ class MigrationImporter:
                             active=True,
                         )
                         db.add(recipe)
-                        db.flush()
+                        if not is_replace:
+                            db.flush()
 
                     item_by_ingredient_id: dict[int, RecipeIngredient] = {}
                     for row_data in rows_in_group:
                         ingredient: Ingredient = row_data["ingredient"]
                         item = item_by_ingredient_id.get(ingredient.id)
-                        if not item:
+                        if not item and not is_replace:
                             item = db.scalar(
                                 select(RecipeIngredient).where(
                                     RecipeIngredient.recipe_id == recipe.id,
@@ -287,6 +328,8 @@ class MigrationImporter:
             service_menu_by_id: dict[int, MealServiceMenu] = {}
             service_menu_ingredient_ids: dict[int, set[int]] = defaultdict(set)
             service_has_representative: dict[int, bool] = {}
+            # replace mode: (service object identity, sort_order, menu_name) -> MealServiceMenu created this run
+            service_menu_by_natural_key: dict[tuple[int, int, str], MealServiceMenu] = {}
             for row in reader.sheet_rows("06_식단이력_이관"):
                 service_date = excel_serial_to_date(row.get("일자"))
                 meal_name = clean_text(row.get("배식유형"))
@@ -299,7 +342,7 @@ class MigrationImporter:
                 service_key = (service_date.isoformat(), meal_type)
                 service = service_map.get(service_key)
                 if not service:
-                    service = db.scalar(
+                    service = None if is_replace else db.scalar(
                         select(MealService).where(
                             MealService.service_date == service_date,
                             MealService.meal_type == meal_type,
@@ -310,23 +353,28 @@ class MigrationImporter:
                         db.add(service)
                     service.planned_count = clean_int(row.get("계획식수")) or self._default_count(db, meal_type)
                     service.service_time = parse_time(row.get("배식시간")) or self._default_time(db, meal_type)
-                    db.flush()
+                    if not is_replace:
+                        db.flush()
                     service_map[service_key] = service
                     counters["services"] += 1
                 menu = menu_by_code.get(menu_code)
                 menu_key = (service_date.isoformat(), meal_type, menu_code or menu_name, menu_order)
+                service_key_id = id(service) if is_replace else service.id
                 service_menu = service_menu_map.get(menu_key)
                 if not service_menu:
-                    service_menu = db.scalar(
-                        select(MealServiceMenu).where(
-                            MealServiceMenu.meal_service_id == service.id,
-                            MealServiceMenu.sort_order == menu_order,
-                            MealServiceMenu.menu_name_snapshot == menu_name,
+                    if is_replace:
+                        service_menu = service_menu_by_natural_key.get((service_key_id, menu_order, menu_name))
+                    else:
+                        service_menu = db.scalar(
+                            select(MealServiceMenu).where(
+                                MealServiceMenu.meal_service_id == service.id,
+                                MealServiceMenu.sort_order == menu_order,
+                                MealServiceMenu.menu_name_snapshot == menu_name,
+                            )
                         )
-                    )
                 if not service_menu:
                     source_recipe = default_recipe_by_menu.get(menu.id) if menu else None
-                    is_rep = menu is not None and menu.role == "주찬" and not service_has_representative.get(service.id, False)
+                    is_rep = menu is not None and menu.role == "주찬" and not service_has_representative.get(service_key_id, False)
                     service_menu = MealServiceMenu(
                         service=service,
                         menu=menu,
@@ -338,13 +386,21 @@ class MigrationImporter:
                         is_representative=is_rep,
                     )
                     if is_rep:
-                        service_has_representative[service.id] = True
+                        service_has_representative[service_key_id] = True
                     db.add(service_menu)
+                    if is_replace:
+                        service_menu_by_natural_key[(service_key_id, menu_order, menu_name)] = service_menu
                 service_menu.note = clean_text(row.get("메뉴비고")) or None
-                db.flush()
+                if not is_replace:
+                    db.flush()
+                    service_menu_by_id[service_menu.id] = service_menu
                 service_menu_map[menu_key] = service_menu
-                service_menu_by_id[service_menu.id] = service_menu
                 counters["meal_history_rows"] += 1
+            if is_replace:
+                # one flush for the whole sheet; IDs are needed from here on
+                db.flush()
+                for service_menu in service_menu_map.values():
+                    service_menu_by_id[service_menu.id] = service_menu
 
             for row in reader.sheet_rows("07_식단재료_이관"):
                 service_date = excel_serial_to_date(row.get("일자"))
@@ -367,7 +423,7 @@ class MigrationImporter:
                 if ingredient:
                     service_menu_ingredient_ids[service_menu.id].add(ingredient.id)
                 sort_order = clean_int(row.get("재료순서")) or 1
-                existing = db.scalar(
+                existing = None if is_replace else db.scalar(
                     select(MealServiceMenuIngredient).where(
                         MealServiceMenuIngredient.meal_service_menu_id == service_menu.id,
                         MealServiceMenuIngredient.sort_order == sort_order,
@@ -415,15 +471,31 @@ class MigrationImporter:
             db.commit()
         return dict(counters)
 
-    @staticmethod
-    def _default_count(db: Session, meal_type: str) -> int:
-        setting = db.scalar(select(MealTypeSetting).where(MealTypeSetting.code == meal_type))
+    def _meal_type_setting(self, db: Session, meal_type: str) -> MealTypeSetting | None:
+        # Settings are only written in sheet 01 (and flushed) before any service row is read,
+        # so caching the lookup per meal type does not change results.
+        cache = getattr(self, "_settings_cache", None)
+        if cache is None:
+            cache = self._settings_cache = {}
+        if meal_type not in cache:
+            cache[meal_type] = db.scalar(select(MealTypeSetting).where(MealTypeSetting.code == meal_type))
+        return cache[meal_type]
+
+    def _default_count(self, db: Session, meal_type: str) -> int:
+        setting = self._meal_type_setting(db, meal_type)
         return setting.default_planned_count if setting else 0
 
-    @staticmethod
-    def _default_time(db: Session, meal_type: str) -> time | None:
-        setting = db.scalar(select(MealTypeSetting).where(MealTypeSetting.code == meal_type))
+    def _default_time(self, db: Session, meal_type: str) -> time | None:
+        setting = self._meal_type_setting(db, meal_type)
         return setting.default_service_time if setting else None
+
+    @staticmethod
+    def _reindex(index: dict[str, Any], obj: Any, old_key: str | None, new_key: str | None) -> None:
+        """Keep a key -> object cache in sync when an object's lookup key changes (mirrors DB lookups)."""
+        if old_key and old_key != new_key and index.get(old_key) is obj:
+            del index[old_key]
+        if new_key and new_key not in index:
+            index[new_key] = obj
 
     @staticmethod
     def _clear_business_data(db: Session) -> None:

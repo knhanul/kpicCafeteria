@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..actual_meal_import import MAX_FILE_SIZE, EXPECTED_FILENAME, ActualMealUploadError, apply_actual_meals, preview_actual_meals, sha256_file
@@ -78,6 +78,18 @@ def apply_import(
         raise HTTPException(status_code=404, detail="업로드 작업을 찾을 수 없습니다.")
     if job.status == "INVALID":
         raise HTTPException(status_code=400, detail="검증에 실패한 파일입니다.")
+    if job.status in {"RUNNING", "COMPLETED"}:
+        raise HTTPException(status_code=409, detail="이미 처리 중이거나 완료된 작업입니다. 새로 생성하려면 파일을 다시 업로드해 주세요.")
+    # Claim the job atomically so a double click / retry cannot start a second import in parallel.
+    claimed = db.execute(
+        update(ImportJob)
+        .where(ImportJob.token == body.token, ImportJob.status.not_in(["RUNNING", "COMPLETED", "INVALID"]))
+        .values(status="RUNNING")
+    ).rowcount
+    db.commit()
+    if not claimed:
+        raise HTTPException(status_code=409, detail="이미 처리 중이거나 완료된 작업입니다. 새로 생성하려면 파일을 다시 업로드해 주세요.")
+    db.refresh(job)
     try:
         result = MigrationImporter(Path(job.storage_path)).apply(db, mode=body.mode, user_id=user.id)
         job.status = "COMPLETED"
@@ -86,13 +98,19 @@ def apply_import(
         db.add(job)
         db.commit()
         return {"ok": True, "result": result}
-    except Exception as exc:
-        db.rollback()
-        job = db.scalar(select(ImportJob).where(ImportJob.token == body.token))
-        if job:
-            job.status = "FAILED"
-            job.errors = [*(job.errors or []), {"type": "IMPORT_ERROR", "message": str(exc)}]
-            db.commit()
+    except BaseException as exc:
+        # Any failure (including cancellation) must release the RUNNING claim so the job never gets stuck.
+        try:
+            db.rollback()
+            job = db.scalar(select(ImportJob).where(ImportJob.token == body.token))
+            if job and job.status != "COMPLETED":
+                job.status = "FAILED"
+                job.errors = [*(job.errors or []), {"type": "IMPORT_ERROR", "message": str(exc)}]
+                db.commit()
+        except Exception:
+            db.rollback()
+        if not isinstance(exc, Exception):
+            raise
         raise HTTPException(status_code=400, detail=f"이관 실패: {exc}") from exc
 
 
