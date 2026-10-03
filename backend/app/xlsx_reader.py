@@ -108,21 +108,40 @@ class SimpleXlsxReader:
             self.sheets[sheet.attrib["name"]] = SheetInfo(sheet.attrib["name"], target)
 
     def sheet_rows(self, sheet_name: str) -> Iterator[dict[str, object]]:
+        for _, record in self.sheet_rows_with_numbers(sheet_name):
+            yield record
+
+    def sheet_headers(self, sheet_name: str) -> list[str]:
+        """Return the header row (first row) of a sheet without reading the rest of it."""
         info = self.sheets.get(sheet_name)
         if not info:
             raise KeyError(f"워크북에 '{sheet_name}' 시트가 없습니다.")
-        headers: list[str] = []
         with self.archive.open(info.target) as stream:
             for _, elem in ET.iterparse(stream, events=("end",)):
                 if elem.tag != f"{M}row":
                     continue
-                row_values: dict[int, object] = {}
-                for cell in elem.findall(f"{M}c"):
-                    reference = cell.attrib.get("r", "A1")
-                    index = excel_column_index(reference)
-                    row_values[index] = self._cell_value(cell)
-                max_index = max(row_values.keys(), default=-1)
-                values = [row_values.get(i, "") for i in range(max_index + 1)]
+                values = self._row_values(elem)
+                return [str(value).strip() for value in values]
+        return []
+
+    def sheet_rows_with_numbers(self, sheet_name: str) -> Iterator[tuple[int, dict[str, object]]]:
+        """Yield (Excel row number, record) for each non-empty data row, so errors can point to the exact row."""
+        info = self.sheets.get(sheet_name)
+        if not info:
+            raise KeyError(f"워크북에 '{sheet_name}' 시트가 없습니다.")
+        headers: list[str] = []
+        position = 0
+        with self.archive.open(info.target) as stream:
+            for _, elem in ET.iterparse(stream, events=("end",)):
+                if elem.tag != f"{M}row":
+                    continue
+                position += 1
+                try:
+                    row_number = int(elem.attrib.get("r", position))
+                except ValueError:
+                    row_number = position
+                position = row_number
+                values = self._row_values(elem)
                 if not headers:
                     headers = [str(value).strip() for value in values]
                 else:
@@ -132,8 +151,17 @@ class SimpleXlsxReader:
                         if header
                     }
                     if any(value not in (None, "") for value in record.values()):
-                        yield record
+                        yield row_number, record
                 elem.clear()
+
+    def _row_values(self, elem: ET.Element) -> list[object]:
+        row_values: dict[int, object] = {}
+        for cell in elem.findall(f"{M}c"):
+            reference = cell.attrib.get("r", "A1")
+            index = excel_column_index(reference)
+            row_values[index] = self._cell_value(cell)
+        max_index = max(row_values.keys(), default=-1)
+        return [row_values.get(i, "") for i in range(max_index + 1)]
 
     def read_sheet(self, sheet_name: str) -> list[dict[str, object]]:
         return list(self.sheet_rows(sheet_name))

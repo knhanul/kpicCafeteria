@@ -616,9 +616,9 @@ def menu_metrics(db: Session, start: date, end: date, meal_type: str = "all") ->
     insights = []
     if eligible_items:
         highest = max(eligible_items, key=lambda item: item["average"])
-        insights.append({"code": "highest_menu", "n": highest["n"], "message": f"제공 {minimum}회 이상 대표메뉴 중 {highest['canonical_name']} 제공일의 평균 실제식수가 가장 높았습니다."})
+        insights.append({"code": "highest_menu", "n": highest["n"], "message": f"제공 {minimum}회 이상 메인 메뉴 중 {highest['canonical_name']} 제공일의 평균 실제식수가 가장 높았습니다."})
     else:
-        insights.append({"code": "insufficient_sample", "n": 0, "message": f"제공 {minimum}회 이상인 대표메뉴가 없어 선호도(보정 lift)를 계산하지 않았습니다."})
+        insights.append({"code": "insufficient_sample", "n": 0, "message": f"제공 {minimum}회 이상인 메인 메뉴가 없어 선호도(보정 lift)를 계산하지 않았습니다."})
     if rankings["highest_lift"]:
         lifted = rankings["highest_lift"][0]
         insights.append({"code": "highest_lift", "n": lifted["n"], "comparator_n": lifted["comparator_n"], "message": f"{lifted['canonical_name']} 제공일은 연간 평균(같은 요일·배식) 대비 보정 lift {lifted['lift_percent']:+.1f}%였습니다."})
@@ -1006,7 +1006,7 @@ def export_xlsx(db: Session, start: date, end: date, meal_type: str = "all", sta
     for label, value in summary_rows:
         summary.append((label, "" if value is None else value))
     detail = workbook.create_sheet("상세자료")
-    detail.append(["일자", "식사유형", "연간평균", "실제식수", "연간평균-실제", "대표메뉴", "평균기온", "강수량", "평균습도", "적설량", "일조시간", "지점", "비고"])
+    detail.append(["일자", "식사유형", "연간평균", "실제식수", "연간평균-실제", "메인 메뉴", "평균기온", "강수량", "평균습도", "적설량", "일조시간", "지점", "비고"])
     for item in items:
         weather = item["weather"] or {}
         detail.append([

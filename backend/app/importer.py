@@ -37,6 +37,21 @@ EXPECTED_SHEETS = [
 
 MEAL_CODE_MAP = {"중식": "LUNCH", "석식": "DINNER", "LUNCH": "LUNCH", "DINNER": "DINNER"}
 
+# Optional column of 06_식단이력_이관. When present it is authoritative for MealServiceMenu.is_representative
+# (shown to users as "메인 메뉴"); when absent the legacy automatic rule (first 주찬) is used.
+MAIN_MENU_COLUMN = "메인메뉴여부"
+MAIN_MENU_ERROR_LIMIT = 20
+
+
+def parse_main_menu_flag(value: object) -> bool | None:
+    """Strict Y/N parser for 메인메뉴여부. Returns None for anything else (including blank)."""
+    text = clean_text(value).upper()
+    if text == "Y":
+        return True
+    if text == "N":
+        return False
+    return None
+
 
 def clean_text(value: object) -> str:
     return "" if value is None else str(value).strip()
@@ -96,6 +111,11 @@ class MigrationImporter:
                     if sheet in reader.sheets:
                         count = sum(1 for _ in reader.sheet_rows(sheet))
                         summary["sheets"][sheet] = count
+                if "06_식단이력_이관" in reader.sheets:
+                    has_main_column = MAIN_MENU_COLUMN in reader.sheet_headers("06_식단이력_이관")
+                    summary["main_menu_column"] = has_main_column
+                    if has_main_column:
+                        errors.extend(self._validate_main_menu_flags(reader))
                 summary.update(
                     {
                         "meal_types": summary["sheets"].get("01_배식설정", 0),
@@ -127,6 +147,13 @@ class MigrationImporter:
             missing = [name for name in EXPECTED_SHEETS if name not in reader.sheets]
             if missing:
                 raise ValueError(f"필수 시트가 없습니다: {', '.join(missing)}")
+
+            # Validate 메인메뉴여부 before anything is cleared or written, so a bad file never half-applies.
+            has_main_column = MAIN_MENU_COLUMN in reader.sheet_headers("06_식단이력_이관")
+            if has_main_column:
+                main_menu_errors = self._validate_main_menu_flags(reader)
+                if main_menu_errors:
+                    raise ValueError("\n".join(error["message"] for error in main_menu_errors))
 
             preserved_records: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
             if mode == "replace":
@@ -331,7 +358,13 @@ class MigrationImporter:
             service_menu_map: dict[tuple[str, str, str, int], MealServiceMenu] = {}
             service_menu_by_id: dict[int, MealServiceMenu] = {}
             service_menu_ingredient_ids: dict[int, set[int]] = defaultdict(set)
-            service_has_representative: dict[int, bool] = {}
+            # 메인 메뉴 bookkeeping (see MAIN_MENU_COLUMN)
+            explicit_main_by_service: dict[int, MealServiceMenu | None] = {}  # column present: file's choice per service
+            explicit_services: dict[int, MealService] = {}
+            fallback_candidate: dict[int, tuple[int, int, MealServiceMenu]] = {}  # column absent: lowest 메뉴순서 주찬
+            fallback_services: dict[int, MealService] = {}
+            new_service_menu_keys: set[int] = set()
+            row_sequence = 0
             # replace mode: (service object identity, sort_order, menu_name) -> MealServiceMenu created this run
             service_menu_by_natural_key: dict[tuple[int, int, str], MealServiceMenu] = {}
             for row in reader.sheet_rows("06_식단이력_이관"):
@@ -376,9 +409,10 @@ class MigrationImporter:
                                 MealServiceMenu.menu_name_snapshot == menu_name,
                             )
                         )
+                created = False
                 if not service_menu:
+                    created = True
                     source_recipe = default_recipe_by_menu.get(menu.id) if menu else None
-                    is_rep = menu is not None and menu.role == "주찬" and not service_has_representative.get(service_key_id, False)
                     service_menu = MealServiceMenu(
                         service=service,
                         menu=menu,
@@ -387,14 +421,31 @@ class MigrationImporter:
                         menu_name_snapshot=menu_name,
                         recipe_name_snapshot=source_recipe.name if source_recipe else None,
                         recipe_version_snapshot=source_recipe.version if source_recipe else None,
-                        is_representative=is_rep,
+                        is_representative=False,
                     )
-                    if is_rep:
-                        service_has_representative[service_key_id] = True
                     db.add(service_menu)
                     if is_replace:
                         service_menu_by_natural_key[(service_key_id, menu_order, menu_name)] = service_menu
                 service_menu.note = clean_text(row.get("메뉴비고")) or None
+                row_sequence += 1
+                if has_main_column:
+                    # Explicit Y and explicit N both overwrite the stored value (values were validated above).
+                    is_main = parse_main_menu_flag(row.get(MAIN_MENU_COLUMN)) is True
+                    service_menu.is_representative = is_main
+                    explicit_services[service_key_id] = service
+                    if is_main:
+                        explicit_main_by_service[service_key_id] = service_menu
+                        counters["main_menus"] += 1
+                    else:
+                        explicit_main_by_service.setdefault(service_key_id, None)
+                else:
+                    if created:
+                        new_service_menu_keys.add(id(service_menu))
+                    if id(service_menu) in new_service_menu_keys and menu is not None and menu.role == "주찬":
+                        current = fallback_candidate.get(service_key_id)
+                        if current is None or (menu_order, row_sequence) < (current[0], current[1]):
+                            fallback_candidate[service_key_id] = (menu_order, row_sequence, service_menu)
+                        fallback_services[service_key_id] = service
                 if not is_replace:
                     db.flush()
                     service_menu_by_id[service_menu.id] = service_menu
@@ -405,6 +456,16 @@ class MigrationImporter:
                 db.flush()
                 for service_menu in service_menu_map.values():
                     service_menu_by_id[service_menu.id] = service_menu
+            self._finalize_main_menus(
+                db,
+                is_replace,
+                has_main_column,
+                explicit_main_by_service,
+                explicit_services,
+                fallback_candidate,
+                fallback_services,
+                counters,
+            )
 
             for row in reader.sheet_rows("07_식단재료_이관"):
                 service_date = excel_serial_to_date(row.get("일자"))
@@ -479,6 +540,133 @@ class MigrationImporter:
             )
             db.commit()
         return dict(counters)
+
+    @staticmethod
+    def _validate_main_menu_flags(reader: SimpleXlsxReader) -> list[dict[str, Any]]:
+        """Check 메인메뉴여부: only Y/N, and at most one Y per 일자×배식유형. Never picks a row on the user's behalf."""
+        errors: list[dict[str, Any]] = []
+        sheet = "06_식단이력_이관"
+        flags_by_menu: dict[tuple[str, str, str, int], tuple[bool, int]] = {}
+        main_rows_by_service: dict[tuple[str, str], list[tuple[int, str]]] = defaultdict(list)
+        meal_label: dict[str, str] = {}
+        for row_number, row in reader.sheet_rows_with_numbers(sheet):
+            service_date = excel_serial_to_date(row.get("일자"))
+            meal_name = clean_text(row.get("배식유형"))
+            meal_type = MEAL_CODE_MAP.get(meal_name, meal_name.upper())
+            menu_code = clean_text(row.get("메뉴ID"))
+            menu_name = clean_text(row.get("메뉴명"))
+            menu_order = clean_int(row.get("메뉴순서")) or 1
+            if not service_date or not meal_type or not menu_name:
+                continue  # the importer skips these rows as well
+            raw = row.get(MAIN_MENU_COLUMN)
+            flag = parse_main_menu_flag(raw)
+            where = f"{sheet} {row_number}행({service_date.isoformat()} {meal_name} 메뉴순서 {menu_order} {menu_name})"
+            if flag is None:
+                shown = clean_text(raw) or "빈 값"
+                errors.append(
+                    {
+                        "type": "INVALID_MAIN_MENU_FLAG",
+                        "sheet": sheet,
+                        "row": row_number,
+                        "message": f"{where}: {MAIN_MENU_COLUMN} 값 '{shown}'이(가) 올바르지 않습니다. Y 또는 N만 입력해 주세요.",
+                    }
+                )
+                continue
+            menu_key = (service_date.isoformat(), meal_type, menu_code or menu_name, menu_order)
+            previous = flags_by_menu.get(menu_key)
+            if previous is not None:
+                if previous[0] != flag:
+                    errors.append(
+                        {
+                            "type": "CONFLICTING_MAIN_MENU_FLAG",
+                            "sheet": sheet,
+                            "row": row_number,
+                            "message": f"{where}: 같은 메뉴가 {previous[1]}행과 다른 {MAIN_MENU_COLUMN} 값을 가지고 있습니다.",
+                        }
+                    )
+                continue
+            flags_by_menu[menu_key] = (flag, row_number)
+            if flag:
+                main_rows_by_service[(service_date.isoformat(), meal_type)].append((row_number, menu_name))
+                meal_label.setdefault(meal_type, meal_name or meal_type)
+        for (service_date_iso, meal_type), rows in main_rows_by_service.items():
+            meal_name = meal_label.get(meal_type, meal_type)
+            if len(rows) > 1:
+                listed = ", ".join(f"{row_number}행 {menu_name}" for row_number, menu_name in rows)
+                errors.append(
+                    {
+                        "type": "DUPLICATE_MAIN_MENU",
+                        "sheet": sheet,
+                        "row": rows[1][0],
+                        "message": f"{sheet} {service_date_iso} {meal_name}: {MAIN_MENU_COLUMN}가 Y인 행이 {len(rows)}개입니다({listed}). 한 식단에는 Y를 하나만 지정해 주세요.",
+                    }
+                )
+        errors.sort(key=lambda error: error.get("row", 0))
+        if len(errors) > MAIN_MENU_ERROR_LIMIT:
+            hidden = len(errors) - MAIN_MENU_ERROR_LIMIT
+            errors = errors[:MAIN_MENU_ERROR_LIMIT] + [
+                {"type": "MAIN_MENU_FLAG_MORE", "sheet": sheet, "message": f"{MAIN_MENU_COLUMN} 오류가 {hidden}건 더 있습니다."}
+            ]
+        return errors
+
+    @staticmethod
+    def _finalize_main_menus(
+        db: Session,
+        is_replace: bool,
+        has_main_column: bool,
+        explicit_main_by_service: dict[int, MealServiceMenu | None],
+        explicit_services: dict[int, MealService],
+        fallback_candidate: dict[int, tuple[int, int, MealServiceMenu]],
+        fallback_services: dict[int, MealService],
+        counters: dict[str, int],
+    ) -> None:
+        """Enforce "at most one 메인 메뉴 per 일자×배식유형" after sheet 06 has been read and flushed.
+
+        Replace mode: every service menu was created from the file, so the in-loop values are already final and
+        no queries are issued. Merge mode: service menus that exist in the DB but not in the file are reconciled
+        with set-based queries per chunk of services (no per-row queries).
+        """
+        if has_main_column:
+            if is_replace:
+                return
+            keep_ids = {menu.id for menu in explicit_main_by_service.values() if menu is not None}
+            service_ids = [service.id for service in explicit_services.values()]
+            for start in range(0, len(service_ids), 500):
+                chunk = service_ids[start : start + 500]
+                stale = db.scalars(
+                    select(MealServiceMenu).where(
+                        MealServiceMenu.meal_service_id.in_(chunk),
+                        MealServiceMenu.is_representative.is_(True),
+                    )
+                ).all()
+                for item in stale:
+                    if item.id not in keep_ids:
+                        item.is_representative = False
+                        counters["main_menus_cleared"] += 1
+            db.flush()
+            return
+
+        # Column absent (legacy file): automatic rule — the 주찬 with the lowest 메뉴순서 among menus created by
+        # this import, only when the 일자×배식유형 has no 메인 메뉴 yet.
+        services_with_main: set[int] = set()
+        if not is_replace and fallback_candidate:
+            service_ids = [service.id for service in fallback_services.values()]
+            for start in range(0, len(service_ids), 500):
+                chunk = service_ids[start : start + 500]
+                services_with_main.update(
+                    db.scalars(
+                        select(MealServiceMenu.meal_service_id).where(
+                            MealServiceMenu.meal_service_id.in_(chunk),
+                            MealServiceMenu.is_representative.is_(True),
+                        )
+                    ).all()
+                )
+        for key, (_, _, service_menu) in fallback_candidate.items():
+            if not is_replace and fallback_services[key].id in services_with_main:
+                continue
+            service_menu.is_representative = True
+            counters["main_menus"] += 1
+        db.flush()
 
     def _meal_type_setting(self, db: Session, meal_type: str) -> MealTypeSetting | None:
         # Settings are only written in sheet 01 (and flushed) before any service row is read,

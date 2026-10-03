@@ -297,7 +297,9 @@ def add_menu(
         menu=menu,
         sort_order=len(service.menus) + 1,
         menu_name_snapshot=menu.name,
-        is_representative=not any(value.is_representative for value in service.menus) and menu.role == "주찬",
+        # 메인 메뉴 is auto-suggested only when composing an empty 식단. Once a 식단 has menus, its 메인 메뉴
+        # (or the deliberate absence of one) is left as the user set it.
+        is_representative=not service.menus and menu.role == "주찬",
     )
     db.add(item)
     db.flush()
@@ -368,7 +370,12 @@ def batch_add_menus(
 
     # All validation passed — create service menus in a transaction
     base_sort = len(service.menus)
-    has_representative = any(value.is_representative for value in service.menus)
+    # Same rule as add_menu: only an empty 식단 gets an automatic 메인 메뉴 — the 주찬 with the lowest sort_order.
+    auto_main_menu_id = None
+    if not service.menus:
+        main_candidates = [item for item in body.items if menu_map[item.menu_id].role == "주찬"]
+        if main_candidates:
+            auto_main_menu_id = min(main_candidates, key=lambda item: item.sort_order).menu_id
     for item in body.items:
         menu = menu_map[item.menu_id]
         active_recipes = [r for r in menu.recipes if r.active]
@@ -377,16 +384,13 @@ def batch_add_menus(
         else:
             recipe = next((r for r in active_recipes if r.is_default), None) or (active_recipes[0] if active_recipes else None)
 
-        is_rep = menu.role == "주찬" and not has_representative
         new_item = MealServiceMenu(
             service=service,
             menu=menu,
             sort_order=base_sort + item.sort_order,
             menu_name_snapshot=menu.name,
-            is_representative=is_rep,
+            is_representative=item.menu_id == auto_main_menu_id,
         )
-        if is_rep:
-            has_representative = True
         db.add(new_item)
         db.flush()
         _copy_recipe_to_service_menu(db, new_item, recipe)
@@ -421,6 +425,21 @@ def change_service_menu_recipe(
     return meal_service_dict(service_detail(db, item.meal_service_id))
 
 
+def _set_main_menu(db: Session, item: MealServiceMenu, is_main: bool) -> None:
+    """Set or clear the 메인 메뉴 (is_representative) of one 식단 메뉴, keeping at most one per 일자×배식유형."""
+    if is_main:
+        siblings = db.scalars(
+            select(MealServiceMenu).where(
+                MealServiceMenu.meal_service_id == item.meal_service_id,
+                MealServiceMenu.id != item.id,
+                MealServiceMenu.is_representative.is_(True),
+            )
+        ).all()
+        for sibling in siblings:
+            sibling.is_representative = False
+    item.is_representative = is_main
+
+
 @router.put("/service-menus/{item_id}")
 def update_service_menu(
     item_id: int,
@@ -432,7 +451,7 @@ def update_service_menu(
     if not item:
         raise HTTPException(status_code=404, detail="식단 메뉴를 찾을 수 없습니다.")
     item.note = body.note
-    item.is_representative = body.is_representative
+    _set_main_menu(db, item, body.is_representative)
     db.commit()
     return meal_service_dict(service_detail(db, item.meal_service_id))
 
@@ -511,7 +530,22 @@ def save_meal_editor(
     service.concept_title = body.concept_title
     service.note = body.note
 
-    # 2. Save each menu's note, representative, and ingredients
+    # 메인 메뉴 (is_representative): at most one per 일자×배식유형; all unchecked is allowed.
+    own_menu_ids = {menu.id for menu in service.menus}
+    main_ids = [
+        menu_body.service_menu_id
+        for menu_body in body.menus
+        if menu_body.service_menu_id in own_menu_ids and menu_body.is_representative
+    ]
+    if len(set(main_ids)) > 1:
+        raise HTTPException(status_code=400, detail="메인 메뉴는 한 식단에 하나만 지정할 수 있습니다.")
+    if main_ids:
+        # The chosen 메인 메뉴 replaces any other one in this 식단, including menus not sent in this request.
+        for sibling in service.menus:
+            if sibling.id != main_ids[0]:
+                sibling.is_representative = False
+
+    # 2. Save each menu's note, 메인 메뉴 flag, and ingredients
     for menu_body in body.menus:
         if menu_body.service_menu_id:
             item = db.get(MealServiceMenu, menu_body.service_menu_id)
