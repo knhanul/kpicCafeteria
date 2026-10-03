@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, time
 
 from openpyxl import Workbook
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.actual_meal_import import EXPECTED_SHEET, apply_actual_meals, preview_actual_meals
@@ -84,3 +85,55 @@ def test_apply_is_idempotent_and_updates_note(tmp_path):
         actuals = db.query(MealActual).all()
         assert len(actuals) == 2
         assert {row.note for row in actuals} == {"메모"}
+
+
+def test_preview_does_not_write_missing_services(tmp_path):
+    path = tmp_path / "actual.xlsx"
+    make_workbook(path, [
+        {"date": date(2025, 4, 1), "lunch": 390, "dinner": 90},
+        {"date": date(2025, 4, 2), "lunch": 410, "dinner": 95},
+    ])
+    engine = make_db(tmp_path)
+    with Session(engine) as db:
+        before = db.scalar(select(func.count()).select_from(MealService))
+        result = preview_actual_meals(path, db)
+        db.commit()  # the router commits after preview; nothing from preview may be persisted
+    with Session(engine) as db:
+        after = db.scalar(select(func.count()).select_from(MealService))
+        assert db.scalar(select(func.count()).select_from(MealActual)) == 0
+    assert before == after == 2
+    assert result["summary"]["service_created_count"] == 2
+    new_rows = [row for row in result["rows"] if row["service_created"]]
+    assert {row["date"] for row in new_rows} == {"2025-04-02"}
+    assert all(row["service_id"] is None and row["status"] == "신규" for row in new_rows)
+
+
+def test_preview_then_apply_succeeds_when_new_dates_present(tmp_path):
+    path = tmp_path / "actual.xlsx"
+    make_workbook(path, [
+        {"date": date(2025, 4, 1), "lunch": 390, "dinner": 90},
+        {"date": date(2025, 4, 2), "lunch": 410, "dinner": None, "note": "신규일"},
+    ])
+    engine = make_db(tmp_path)
+    with Session(engine) as db:
+        preview = preview_actual_meals(path, db)
+        db.commit()
+    fingerprint = preview["summary"]["rows_fingerprint"]
+    with Session(engine) as db:
+        result = apply_actual_meals(path, db, 1, fingerprint)
+        db.commit()
+    assert result["new_count"] == 3
+    assert result["service_created_count"] == 1
+    with Session(engine) as db:
+        service = db.scalar(select(MealService).where(MealService.service_date == date(2025, 4, 2), MealService.meal_type == "LUNCH"))
+        assert service is not None and service.planned_count == 400 and service.service_time == time(12)
+        assert service.actual.actual_count == 410 and service.actual.note == "신규일"
+        assert db.scalar(select(func.count()).select_from(MealActual)) == 3
+    # a second preview/apply of the same file is a no-op and still passes the fingerprint check
+    with Session(engine) as db:
+        again = preview_actual_meals(path, db)
+        db.commit()
+    with Session(engine) as db:
+        result2 = apply_actual_meals(path, db, 1, again["summary"]["rows_fingerprint"])
+        db.commit()
+    assert result2["unchanged_count"] == 3 and result2["service_created_count"] == 0

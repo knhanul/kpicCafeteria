@@ -128,7 +128,11 @@ class MigrationImporter:
             if missing:
                 raise ValueError(f"필수 시트가 없습니다: {', '.join(missing)}")
 
+            preserved_records: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
             if mode == "replace":
+                # Actual meal counts and preservation records are operational results that are not part of the
+                # base-data workbook; keep them across the wipe and re-attach them by (service_date, meal_type).
+                preserved_records = self._snapshot_service_records(db)
                 self._clear_business_data(db)
 
             menu_by_code: dict[str, Menu] = {}
@@ -459,6 +463,9 @@ class MigrationImporter:
                 service_menu.recipe_name_snapshot = recipe.name
                 service_menu.recipe_version_snapshot = recipe.version
 
+            if mode == "replace":
+                self._restore_service_records(db, preserved_records, service_map, counters)
+
             db.add(
                 AuditLog(
                     user_id=user_id,
@@ -496,6 +503,56 @@ class MigrationImporter:
             del index[old_key]
         if new_key and new_key not in index:
             index[new_key] = obj
+
+    _PRESERVED_MODELS = (("actuals", MealActual), ("preservation", PreservationRecord))
+
+    @classmethod
+    def _snapshot_service_records(cls, db: Session) -> dict[str, dict[tuple[str, str], dict[str, Any]]]:
+        """Copy MealActual / PreservationRecord values keyed by (service_date ISO, meal_type).
+
+        Column-level selects are used on purpose so no ORM instances of the soon-to-be-deleted rows
+        stay in the session identity map.
+        """
+        snapshot: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
+        for label, model in cls._PRESERVED_MODELS:
+            columns = [c for c in model.__table__.columns if c.name not in ("id", "meal_service_id")]
+            rows = db.execute(
+                select(MealService.service_date, MealService.meal_type, *columns).join(
+                    MealService, MealService.id == model.meal_service_id
+                )
+            ).all()
+            snapshot[label] = {
+                (row[0].isoformat(), row[1]): {column.key: row[index + 2] for index, column in enumerate(columns)}
+                for row in rows
+            }
+        return snapshot
+
+    def _restore_service_records(
+        self,
+        db: Session,
+        snapshot: dict[str, dict[tuple[str, str], dict[str, Any]]],
+        service_map: dict[tuple[str, str], MealService],
+        counters: dict[str, int],
+    ) -> None:
+        for label, model in self._PRESERVED_MODELS:
+            counter_key = "actuals_restored" if label == "actuals" else "preservation_restored"
+            counters[counter_key] += 0
+            for (service_date_iso, meal_type), values in snapshot.get(label, {}).items():
+                service = service_map.get((service_date_iso, meal_type))
+                if service is None:
+                    # The new workbook has no menu for this date/meal: keep the record on an empty default service.
+                    service = MealService(
+                        service_date=datetime.fromisoformat(service_date_iso).date(),
+                        meal_type=meal_type,
+                        planned_count=self._default_count(db, meal_type),
+                        service_time=self._default_time(db, meal_type),
+                    )
+                    db.add(service)
+                    service_map[(service_date_iso, meal_type)] = service
+                    counters["services_created_for_restore"] += 1
+                db.add(model(service=service, **values))
+                counters[counter_key] += 1
+        db.flush()
 
     @staticmethod
     def _clear_business_data(db: Session) -> None:

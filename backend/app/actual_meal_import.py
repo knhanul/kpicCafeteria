@@ -227,18 +227,11 @@ def preview_actual_meals(path: Path, db: Session) -> dict[str, Any]:
                     row.update({"existing_count": None, "status": "오류", "service_id": None})
                     row["error"] = f"활성 배식유형 '{row['meal_type_name']}'을 찾을 수 없습니다."
                     continue
-                service = MealService(
-                    service_date=date.fromisoformat(row["date"]),
-                    meal_type=setting.code,
-                    planned_count=setting.default_planned_count,
-                    service_time=setting.default_service_time,
-                )
-                db.add(service)
-                db.flush()
-                service_map[(service.service_date, service.meal_type)] = service
-                row["service_created"] = True
-            else:
-                row["service_created"] = False
+                # Preview must never write to the DB: the missing service is only created by apply,
+                # inside its own transaction. This keeps preview and apply fingerprints identical.
+                row.update({"service_created": True, "service_id": None, "existing_count": None, "existing_note": "", "status": "신규"})
+                continue
+            row["service_created"] = False
             existing = service.actual
             row["service_id"] = service.id
             row["existing_count"] = existing.actual_count if existing else None
@@ -284,7 +277,15 @@ def apply_actual_meals(path: Path, db: Session, user_id: int, expected_fingerpri
     now = datetime.now(timezone.utc)
     result = {"candidate_count": len(parsed["rows"]), "new_count": 0, "update_count": 0, "unchanged_count": 0, "service_created_count": 0, "excluded_count": parsed["summary"]["excluded_count"], "failed_count": 0}
     for row in parsed["rows"]:
-        service = db.get(MealService, row["service_id"])
+        if row["service_id"]:
+            service = db.get(MealService, row["service_id"])
+        else:
+            service = db.scalar(
+                select(MealService).where(
+                    MealService.service_date == date.fromisoformat(row["date"]),
+                    MealService.meal_type == row["meal_type"],
+                )
+            )
         if not service:
             setting = db.scalar(select(MealTypeSetting).where(MealTypeSetting.code == row["meal_type"], MealTypeSetting.active.is_(True)))
             if not setting:
