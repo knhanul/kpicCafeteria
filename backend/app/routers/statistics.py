@@ -19,6 +19,7 @@ from ..advanced_statistics import (
     weather_metrics,
 )
 from ..dashboard_service import operations_dashboard
+from ..forecast_statistics import forecast as forecast_statistics
 from ..db import get_db
 from ..deps import current_user
 from ..ingredient_statistics import ingredient_detail, ingredient_statistics
@@ -50,6 +51,20 @@ def advanced_stations(
     if start_date and end_date:
         start_date, end_date = _resolved_range(start_date, end_date)
     return station_list(db, start_date, end_date)
+
+
+@router.get("/advanced/forecast")
+def advanced_forecast(
+    as_of: date | None = None,
+    days: int = Query(14, ge=1, le=60),
+    eval_start: date | None = None,
+    eval_end: date | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    if eval_start and eval_end and eval_start > eval_end:
+        eval_start, eval_end = eval_end, eval_start
+    return forecast_statistics(db, as_of, days, eval_start, eval_end)
 
 
 @router.get("/advanced/overview")

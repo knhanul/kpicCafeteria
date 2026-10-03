@@ -47,6 +47,12 @@ def add_service(db, day, meal_type="LUNCH", planned=100, actual=100, menu=None, 
     return service
 
 
+def seed_baseline(db, day, value, meal_type="LUNCH", weeks=8):
+    """Add `weeks` same-weekday services before `day` so its yearly weekday average is exactly `value`."""
+    for week in range(1, weeks + 1):
+        add_service(db, day - timedelta(days=7 * week), meal_type, planned=1, actual=value)
+
+
 def add_weather(db, day, station="108", name="서울", temp=10, rain=0, humidity=50, snow=0, sunshine=5):
     db.add(WeatherHistory(
         observation_date=day,
@@ -68,7 +74,8 @@ def test_service_grain_prevents_menu_and_station_duplicate_sums(tmp_path):
         second = Menu(name="B", canonical_name="B")
         db.add_all([first, second])
         db.flush()
-        service = add_service(db, day, planned=100, actual=80, menu=first)
+        seed_baseline(db, day, 100)
+        service = add_service(db, day, planned=7, actual=80, menu=first)
         db.add(MealServiceMenu(meal_service_id=service.id, menu_id=second.id, menu_name_snapshot="B", is_representative=True))
         add_weather(db, day, "108", "서울")
         add_weather(db, day, "119", "수원")
@@ -76,53 +83,55 @@ def test_service_grain_prevents_menu_and_station_duplicate_sums(tmp_path):
         summary = overview(db, day, day)
         selected = weather_metrics(db, day, day, station_id="108")
     assert summary["service_count"] == 1
-    assert summary["planned_sum"] == 100
+    assert summary["planned_sum"] == 100  # yearly weekday average, not the scheduled planned count (7)
+    assert summary["baseline_label"] == "연간 평균"
     assert summary["actual_sum"] == 80
     assert selected["matched_service_count"] == 1
 
-
 def test_exact_plan_actual_formulas_zero_threshold_and_null_exclusion(tmp_path):
     engine = make_db(tmp_path)
-    start = date(2025, 2, 1)
+    start = date(2025, 2, 3)
     with Session(engine) as db:
-        add_service(db, start, planned=110, actual=100)
-        add_service(db, start + timedelta(days=1), planned=50, actual=0)
-        add_service(db, start + timedelta(days=2), planned=180, actual=200)
-        add_service(db, start + timedelta(days=3), planned=999, actual=None)
-        add_service(db, start + timedelta(days=4), planned=999, actual="absent")
+        for offset, baseline in enumerate([110, 50, 180, 999, 999]):
+            seed_baseline(db, start + timedelta(days=offset), baseline)
+        add_service(db, start, planned=1, actual=100)
+        add_service(db, start + timedelta(days=1), planned=1, actual=0)  # 0 = closed -> excluded
+        add_service(db, start + timedelta(days=2), planned=1, actual=200)
+        add_service(db, start + timedelta(days=3), planned=1, actual=None)
+        add_service(db, start + timedelta(days=4), planned=1, actual="absent")
         db.commit()
         result = plan_vs_actual(db, start, start + timedelta(days=4))
-    assert result["n"] == 3
-    assert result["planned_sum"] == 340
+    assert result["n"] == 2
+    assert result["planned_sum"] == 290
     assert result["actual_sum"] == 300
-    assert result["mae"] == 26.67
-    assert result["wape"] == 26.67
-    assert result["bias"] == 13.33
-    assert result["bias_rate"] == 13.33
-    assert result["over_count"] == 2
+    assert result["mae"] == 15
+    assert result["wape"] == 10
+    assert result["bias"] == -5
+    assert result["bias_rate"] == -3.33
+    assert result["over_count"] == 1
     assert result["under_count"] == 1
-    assert result["actual_over_plan_count"] == 1
-    assert result["actual_under_plan_count"] == 2
     assert result["threshold_n"] == 2
     assert result["within_5_count"] == 0
-    assert result["within_5_rate"] == 0
     assert result["within_10_count"] == 2
     assert result["within_10_rate"] == 100
-
+    assert result["error_distribution"][-1] == {"bucket": "actual=0", "count": 0}
 
 def test_overview_total_plans_series_and_guarded_deterministic_insights(tmp_path):
     engine = make_db(tmp_path)
     start = date(2025, 1, 6)
     with Session(engine) as db:
         for index in range(6):
-            add_service(db, start + timedelta(days=index), "LUNCH", planned=100 + index, actual=90 + index if index < 5 else None)
-        add_service(db, start, "DINNER", planned=40, actual=30)
+            seed_baseline(db, start + timedelta(days=index), 100 + index)
+            add_service(db, start + timedelta(days=index), "LUNCH", planned=1, actual=90 + index if index < 5 else None)
+        seed_baseline(db, start, 40, "DINNER")
+        add_service(db, start, "DINNER", planned=1, actual=30)
         db.commit()
         result = overview(db, start, start + timedelta(days=5))
         lunch = overview(db, start, start + timedelta(days=4), "lunch")
-    assert result["planned_sum"] == sum(range(100, 106)) + 40
+    assert result["planned_sum"] == sum(range(100, 105)) + 40
     assert result["comparison_planned_sum"] == sum(range(100, 105)) + 40
     assert result["difference"] == result["actual_sum"] - result["comparison_planned_sum"]
+    assert result["missing_actual_count"] == 1
     assert len(result["daily"]) == 6
     assert len(result["weekly"]) == 1
     assert len(result["weekday"]) == 7
@@ -131,30 +140,35 @@ def test_overview_total_plans_series_and_guarded_deterministic_insights(tmp_path
     assert [item["key"] for item in result["meal_types"]] == ["LUNCH", "DINNER"]
     assert result["insights"][0]["code"] == "plan_bias"
     assert lunch["insights"][0]["code"] == "plan_bias"
-
+    usage = result["usage_index"]
+    assert set(usage["meals"]) == {"LUNCH", "DINNER"}
+    monday = next(item for item in usage["meals"]["LUNCH"]["daily"] if item["date"] == "2025-01-06")
+    assert monday["index"] == 90.0
 
 def test_plan_monthly_weekday_distribution_and_iqr_outlier_context(tmp_path):
     engine = make_db(tmp_path)
-    start = date(2025, 3, 1)
+    start = date(2025, 3, 3)
     with Session(engine) as db:
         menu = Menu(name="특식", canonical_name="특식")
         db.add(menu)
         db.flush()
+        for index in range(7):
+            seed_baseline(db, start + timedelta(days=index), 110)
         for index in range(10):
             day = start + timedelta(days=index)
             actual = 300 if index == 9 else 100
-            add_service(db, day, planned=110, actual=actual, menu=menu if index == 9 else None, note="확인")
+            add_service(db, day, planned=1, actual=actual, menu=menu if index == 9 else None, note="확인")
             add_weather(db, day, temp=10 + index)
         db.commit()
         result = plan_vs_actual(db, start, start + timedelta(days=9))
-    assert result["monthly"][0]["planned_sum"] == 1100
+    assert result["monthly"][0]["n"] == 10
+    assert result["daily"][0]["planned_sum"] == 110
     assert len(result["weekday"]) == 7
     assert sum(item["count"] for item in result["error_distribution"]) == 10
     assert len(result["outliers"]) == 1
     assert result["outliers"][0]["representative_menus"] == ["특식"]
     assert result["outliers"][0]["weather"]["avg_temp"] == 19
     assert result["outliers"][0]["note"] == "actual-확인"
-
 
 def test_representative_canonical_fallback_dedupe_and_rankings(tmp_path):
     engine = make_db(tmp_path)
@@ -164,6 +178,7 @@ def test_representative_canonical_fallback_dedupe_and_rankings(tmp_path):
         ignored = Menu(name="무시", canonical_name="무시")
         db.add_all([special, ignored])
         db.flush()
+        seed_baseline(db, start, 100)
         for index in range(5):
             service = add_service(db, start + timedelta(days=index * 7), planned=130, actual=150, menu=special)
             db.add(MealServiceMenu(meal_service_id=service.id, menu_id=special.id, menu_name_snapshot="중복", is_representative=True))
@@ -172,18 +187,22 @@ def test_representative_canonical_fallback_dedupe_and_rankings(tmp_path):
             add_service(db, start + timedelta(days=index * 7), planned=100, actual=100, snapshot="스냅샷메뉴")
         db.commit()
         result = menu_metrics(db, start, start + timedelta(days=63))
+    # leak-free baselines: 8 seeded Mondays at 100 plus earlier in-period Mondays at 150
+    baselines = [(800 + 150 * k) / (8 + k) for k in range(5)]
+    ratios = [150 / b - 1 for b in baselines]
+    expected_lift = round(sum(ratios) / 5 * 5 / (5 + 8) * 100, 1)
     by_name = {item["canonical_name"]: item for item in result["items"]}
     assert set(by_name) == {"정규메뉴", "스냅샷메뉴"}
     assert by_name["정규메뉴"]["occurrence_n"] == 5
-    assert by_name["정규메뉴"]["average_planned"] == 130
-    assert by_name["정규메뉴"]["average_plan_error"] == -20
+    assert abs(by_name["정규메뉴"]["average_planned"] - sum(baselines) / 5) < 0.01
     assert by_name["정규메뉴"]["comparator_n"] == 5
     assert by_name["정규메뉴"]["lift_eligible"] is True
-    assert by_name["정규메뉴"]["lift"] == 50
+    assert by_name["정규메뉴"]["lift_percent"] == expected_lift
+    assert by_name["정규메뉴"]["preference_bucket"] == "선호"
+    assert by_name["스냅샷메뉴"]["preference_bucket"] == "비선호"
     assert result["rankings"]["highest_lift"][0]["canonical_name"] == "정규메뉴"
     assert result["roles"][0]["n"] == 10
     assert result["combinations"]
-
 
 def test_menu_fallback_to_juchan_role_when_no_representative(tmp_path):
     """When no is_representative=True menus exist, fall back to role='주찬' menus."""
@@ -228,19 +247,18 @@ def test_menu_explorer_exposes_coverage_months_and_recent_evidence(tmp_path):
         result = menu_metrics(db, start, start + timedelta(days=70))
     item = result["items"][0]
     assert result["total_service_count"] == 12
-    assert result["missing_actual_count"] == 1
-    assert result["linked_service_count"] == 6
-    assert result["eligible_menu_count"] == 1
-    assert item["matched_occurrence_n"] == 6
-    assert item["average"] == 25
-    assert item["first_date"] == "2025-04-07"
+    assert result["missing_actual_count"] == 2  # NULL and 0 are both treated as closed
+    assert result["linked_service_count"] == 5
+    assert result["eligible_menu_count"] == 0
+    assert item["matched_occurrence_n"] == 4  # 4/14 has no earlier open day -> no baseline
+    assert item["average"] == 30
+    assert item["first_date"] == "2025-04-14"
     assert item["last_date"] == "2025-05-12"
-    assert [(row["key"], row["n"], row["average"]) for row in item["monthly"]] == [("2025-04", 4, 15), ("2025-05", 2, 45)]
-    assert item["meal_types"] == [{"meal_type": "LUNCH", "n": 6}]
-    assert len(item["recent_services"]) == 6
+    assert [(row["key"], row["n"], row["average"]) for row in item["monthly"]] == [("2025-04", 3, 20), ("2025-05", 2, 45)]
+    assert item["meal_types"] == [{"meal_type": "LUNCH", "n": 5}]
+    assert len(item["recent_services"]) == 5
     assert item["recent_services"][0]["service_date"] == "2025-05-12"
-    assert item["recent_services"][-1]["actual_count"] == 0
-
+    assert item["recent_services"][-1]["actual_count"] == 10
 
 def test_menu_explorer_handles_zero_comparator_and_empty_actuals(tmp_path):
     engine = make_db(tmp_path)
@@ -256,13 +274,17 @@ def test_menu_explorer_handles_zero_comparator_and_empty_actuals(tmp_path):
         db.commit()
         result = menu_metrics(db, start, start + timedelta(days=63))
         empty = menu_metrics(db, start, start, "dinner")
-    assert result["items"][0]["lift"] == 100
-    assert result["items"][0]["lift_percent"] is None
-    assert result["items"][0]["matched_occurrence_n"] == 5
+    item = result["items"][0]
+    assert result["missing_actual_count"] == 5
+    assert item["occurrence_n"] == 5
+    assert item["matched_occurrence_n"] == 4
+    assert item["lift_eligible"] is False
+    assert item["lift_percent"] is None
+    assert item["preference_bucket"] == "더 관찰 필요"
     assert empty["linked_service_count"] == 0
     assert empty["eligible_menu_count"] == 0
     assert empty["items"] == []
-
+    assert empty["minimum_sample"] == 4
 
 def test_menu_explorer_fallback_source_is_scoped_to_selected_period(tmp_path):
     engine = make_db(tmp_path)
@@ -277,27 +299,28 @@ def test_menu_explorer_fallback_source_is_scoped_to_selected_period(tmp_path):
         result = menu_metrics(db, start, start)
     assert result["representative_source"] == "주찬_fallback"
     assert result["linked_service_count"] == 1
-    assert result["items"][0]["matched_occurrence_n"] == 0
+    assert result["items"][0]["matched_occurrence_n"] == 1
 
-
-def test_menu_lift_ineligible_when_menu_or_comparator_below_five(tmp_path):
+def test_menu_lift_minimum_samples_lunch_five_dinner_four(tmp_path):
     engine = make_db(tmp_path)
     start = date(2025, 5, 5)
     with Session(engine) as db:
         menu = Menu(name="메뉴", canonical_name="메뉴")
         db.add(menu)
         db.flush()
-        for index in range(4):
-            add_service(db, start + timedelta(days=index * 7), actual=150, menu=menu)
-        for index in range(4, 9):
-            add_service(db, start + timedelta(days=index * 7), actual=100)
+        for meal in ("LUNCH", "DINNER"):
+            seed_baseline(db, start, 100, meal)
+            for index in range(4):
+                add_service(db, start + timedelta(days=index * 7), meal, actual=150, menu=menu)
         db.commit()
-        item = menu_metrics(db, start, start + timedelta(days=56))["items"][0]
-    assert item["occurrence_n"] == 4
-    assert item["comparator_n"] == 5
-    assert item["lift_eligible"] is False
-    assert item["lift"] is None
-
+        lunch = menu_metrics(db, start, start + timedelta(days=56), "lunch")["items"][0]
+        dinner = menu_metrics(db, start, start + timedelta(days=56), "dinner")["items"][0]
+    assert lunch["occurrence_n"] == 4 and dinner["occurrence_n"] == 4
+    assert lunch["lift_eligible"] is False
+    assert lunch["lift"] is None
+    assert lunch["preference_bucket"] == "더 관찰 필요"
+    assert dinner["lift_eligible"] is True
+    assert dinner["preference_bucket"] == "선호"
 
 def test_exact_weather_bins_null_dry_rain_humidity_snow_scatter_and_pearson(tmp_path):
     engine = make_db(tmp_path)
@@ -306,7 +329,7 @@ def test_exact_weather_bins_null_dry_rain_humidity_snow_scatter_and_pearson(tmp_
     with Session(engine) as db:
         for index, temp in enumerate(temperatures):
             day = start + timedelta(days=index)
-            add_service(db, day, actual=index * 10)
+            add_service(db, day, actual=(index + 1) * 10)
             if index < 11:
                 add_weather(
                     db,
@@ -319,8 +342,9 @@ def test_exact_weather_bins_null_dry_rain_humidity_snow_scatter_and_pearson(tmp_
         db.commit()
         result = weather_metrics(db, start, start + timedelta(days=11))
     assert [item["bucket"] for item in result["temperature"]] == ["<0", "0~4.9", "5~9.9", "10~14.9", "15~19.9", "20~24.9", "25~29.9", ">=30"]
-    assert result["temperature"][0]["average_planned"] == 100
-    assert result["temperature"][0]["average_plan_error"] == 100
+    assert result["temperature"][0]["average_planned"] is None  # first day: no earlier actuals
+    assert result["temperature"][1]["average_planned"] == 10  # <8 same-weekday records -> meal overall average
+    assert result["temperature"][1]["average_plan_error"] == -10
     rain = {item["bucket"]: item for item in result["rain"]}
     assert rain["NULL"]["n"] == 1
     assert rain["0"]["n"] == 1
@@ -420,7 +444,7 @@ def test_data_quality_counts_rates_and_canonical_denominator(tmp_path):
         result = data_quality(db, start, start + timedelta(days=2))
     metrics = result["metrics"]
     assert metrics["actual"] == {"count": 2, "rate": 66.67, "denominator": 3}
-    assert metrics["planned"]["rate"] == 100
+    assert metrics["planned"]["count"] == 2  # yearly average exists only after the first open day
     assert metrics["representative_menu"]["count"] == 2
     assert metrics["canonical_linkage"] == {"count": 1, "rate": 50.0, "denominator": 2}
     assert metrics["weather_match"]["count"] == 2
@@ -454,7 +478,7 @@ def test_database_pagination_filters_and_summary_detail_export(tmp_path):
         content = export_xlsx(db, start, start + timedelta(days=2), rain="rain", menu="국", temp_bucket="25~29.9")
     assert page["total"] == 1
     assert len(page["items"]) == 1
-    assert len(statements) <= 5
+    assert len(statements) <= 6  # +1 history query for the leak-free yearly average
     workbook = load_workbook(BytesIO(content), read_only=True)
     assert workbook.sheetnames == ["요약", "상세자료"]
     assert len(list(workbook["상세자료"].rows)) == 2
@@ -467,6 +491,7 @@ def test_plan_statistics_does_not_choose_between_multiple_weather_stations(tmp_p
     engine = make_db(tmp_path)
     day = date(2025, 11, 1)
     with Session(engine) as db:
+        seed_baseline(db, day, 100)
         add_service(db, day, actual=100)
         add_weather(db, day, "108", "서울")
         add_weather(db, day, "119", "수원")

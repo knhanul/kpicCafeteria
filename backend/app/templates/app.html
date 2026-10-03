@@ -21,7 +21,8 @@
         <button type="button" class="side-nav-toggle" data-group="stats">통계 분석 <span class="group-caret">▾</span></button>
         <div class="side-nav-sub">
           <button data-view="dashboard">운영현황</button>
-          <button data-view="stats-meals">계획 대비 실제</button>
+          <button data-view="stats-forecast">예상식수</button>
+          <button data-view="stats-meals">연간 평균 대비 실제</button>
           <button data-view="stats-menus">메뉴별 식수</button>
           <button data-view="stats-weather">날씨 연관분석</button>
           <button data-view="stats-menu-weather">메뉴 × 날씨</button>
@@ -140,21 +141,28 @@
 
     <main id="view-dashboard" class="view">
       <div class="page-card">
-        <div class="section-heading"><div><h2>운영현황</h2><p>기간별 계획·실제 식수와 입력 현황을 확인합니다.</p></div></div>
+        <div class="section-heading"><div><h2>운영현황</h2><p>기간별 실제 식수를 연간 평균(같은 요일·배식)과 비교하고 이용지수를 확인합니다.</p></div></div>
         <div id="dashboard-root"></div>
+      </div>
+    </main>
+
+    <main id="view-stats-forecast" class="view">
+      <div class="page-card">
+        <div class="section-heading"><div><h2>예상식수</h2><p>앞으로 2주의 중식·석식 예상 인원과 예측 방법별 정확도를 확인합니다.</p></div></div>
+        <div id="stats-forecast-root"></div>
       </div>
     </main>
 
     <main id="view-stats-meals" class="view">
       <div class="page-card">
-        <div class="section-heading"><div><h2>계획 대비 실제</h2><p>오차 지표와 분포, 월·요일별 편차 및 특이값을 분석합니다.</p></div></div>
+        <div class="section-heading"><div><h2>연간 평균 대비 실제</h2><p>연간 평균(직전 365일 같은 요일·배식)과 실제 식수의 차이, 분포, 특이값을 분석합니다.</p></div></div>
         <div id="stats-meals-root"></div>
       </div>
     </main>
 
     <main id="view-stats-menus" class="view">
       <div class="page-card">
-        <div class="section-heading"><div><h2>메뉴별 식수</h2><p>대표메뉴 제공일의 실제 식수와 비교군 대비 차이를 확인합니다.</p></div></div>
+        <div class="section-heading"><div><h2>메뉴별 식수</h2><p>대표메뉴 제공일의 실제 식수를 연간 평균과 비교한 선호도(보정 lift)와 조리법·단백질·재료군별 경향을 확인합니다.</p></div></div>
         <div id="stats-menus-root"></div>
       </div>
     </main>

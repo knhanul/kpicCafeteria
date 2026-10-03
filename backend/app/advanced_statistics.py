@@ -11,7 +11,30 @@ from openpyxl import Workbook
 from sqlalchemy import and_, case, exists, func, literal, or_, select, union_all
 from sqlalchemy.orm import Session
 
+from .forecast_statistics import (
+    MEALS,
+    MIN_GROUP_SAMPLES,
+    MIN_INGREDIENT_SAMPLES,
+    MIN_MENU_SAMPLES,
+    YEAR_DAYS,
+    ActualIndex,
+    attach_baseline,
+    classify_cooking,
+    classify_protein,
+    history_rows,
+    ingredient_groups_by_service,
+    is_valid_actual,
+    menu_ingredient_groups,
+    preference_item,
+    usage_index,
+)
 from .models import MealActual, MealPeriodWeather, MealService, MealServiceMenu, Menu, WeatherHistory
+
+# NOTE: throughout this module ``planned_count`` holds the *yearly weekday×meal average* (연간 평균) of
+# actual counts, computed leak-free from the 365 days before each date (see forecast_statistics).
+# The scheduled planned count is kept as ``scheduled_planned_count``. Closed days (no actual / 0) are
+# excluded from every comparison.
+HISTORY_DAYS = YEAR_DAYS + 40  # 365-day baseline + previous-year same month for YoY cards
 
 WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]
 MIN_SAMPLE = 5
@@ -49,9 +72,26 @@ def _service_stmt(start: date, end: date, meal_type: str = "all"):
     return stmt.where(MealService.meal_type == code) if code else stmt
 
 
+def _service_rows_with_index(db: Session, start: date, end: date, meal_type: str = "all") -> tuple[list[dict[str, Any]], ActualIndex]:
+    """One query covering the selected period plus the year before it (for the leak-free baseline)."""
+    history = history_rows(db, start - timedelta(days=HISTORY_DAYS), end, _meal_code(meal_type))
+    index = ActualIndex((row["service_date"], row["meal_type"], row["actual_count"]) for row in history)
+    rows = [row for row in history if row["service_date"] >= start]
+    attach_baseline(rows, index)
+    return rows, index
+
+
 def _service_rows(db: Session, start: date, end: date, meal_type: str = "all") -> list[dict[str, Any]]:
-    stmt = _service_stmt(start, end, meal_type).order_by(MealService.service_date, MealService.meal_type, MealService.id)
-    return [dict(row._mapping) for row in db.execute(stmt)]
+    return _service_rows_with_index(db, start, end, meal_type)[0]
+
+
+def _comparable(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rows that can be compared with the yearly average: open day (actual > 0) and a baseline exists."""
+    return [row for row in rows if is_valid_actual(row["actual_count"]) and row["planned_count"] is not None]
+
+
+def _avg(values: list[float]) -> float | None:
+    return _round(sum(values) / len(values)) if values else None
 
 
 def station_list(db: Session, start: date | None = None, end: date | None = None) -> dict[str, Any]:
@@ -213,14 +253,16 @@ def _sample(values: list[int | float]) -> dict[str, Any]:
 
 
 def _service_sample(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    result = _sample([row["actual_count"] for row in rows])
-    result["average_planned"] = _round(sum(row["planned_count"] for row in rows) / len(rows)) if rows else None
-    result["average_plan_error"] = _round(sum(row["planned_count"] - row["actual_count"] for row in rows) / len(rows)) if rows else None
+    result = _sample([row["actual_count"] for row in rows if row["actual_count"] is not None])
+    comparable = _comparable(rows)
+    result["average_planned"] = _avg([row["planned_count"] for row in rows if row["planned_count"] is not None])
+    result["average_plan_error"] = _avg([row["planned_count"] - row["actual_count"] for row in comparable])
+    result["comparison_n"] = len(comparable)
     return result
 
 
 def _comparison(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    actual_rows = [row for row in rows if row["actual_count"] is not None]
+    actual_rows = _comparable(rows)
     actual_total = sum(row["actual_count"] for row in actual_rows)
     comparison_planned = sum(row["planned_count"] for row in actual_rows)
     errors = [row["planned_count"] - row["actual_count"] for row in actual_rows]
@@ -259,13 +301,14 @@ def _series(rows: list[dict[str, Any]], key_func, labels: list[Any] | None = Non
     for key in keys:
         subset = grouped.get(key, [])
         comparison = _comparison(subset)
+        comparable = _comparable(subset)
         result.append({
             "key": key,
             "service_count": len(subset),
-            "planned_sum": sum(row["planned_count"] for row in subset),
+            "planned_sum": _round(sum(row["planned_count"] for row in comparable)),
             "analyzed_count": comparison["n"],
             "comparison_planned_sum": comparison["comparison_planned_sum"],
-            "planned_average": _round(sum(row["planned_count"] for row in subset) / len(subset)) if subset else None,
+            "planned_average": _avg([row["planned_count"] for row in comparable]),
             "actual_sum": comparison["actual_sum"],
             "actual_average": _round(comparison["actual_sum"] / comparison["n"]) if comparison["n"] else None,
         })
@@ -273,9 +316,9 @@ def _series(rows: list[dict[str, Any]], key_func, labels: list[Any] | None = Non
 
 
 def _insights(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    actual_rows = [row for row in rows if row["actual_count"] is not None]
+    actual_rows = _comparable(rows)
     if len(actual_rows) < MIN_SAMPLE:
-        return [{"code": "insufficient_sample", "n": len(actual_rows), "message": "비교 가능한 실제식수 표본이 5건 미만입니다."}]
+        return [{"code": "insufficient_sample", "n": len(actual_rows), "message": "연간 평균과 비교 가능한 실제식수 표본이 5건 미만입니다."}]
     comparison = _comparison(actual_rows)
     weekday_groups = defaultdict(list)
     for row in actual_rows:
@@ -285,7 +328,7 @@ def _insights(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     insights = [{
         "code": "plan_bias",
         "n": comparison["n"],
-        "message": f"계획-실제 평균 오차는 {comparison['bias']:+.2f}식, Bias율은 {bias_rate_text}입니다.",
+        "message": f"연간 평균-실제 평균 차이는 {comparison['bias']:+.2f}식, Bias율은 {bias_rate_text}입니다.",
     }]
     if eligible:
         weekday, values = max(eligible, key=lambda item: (sum(item[1]) / len(item[1]), -item[0]))
@@ -294,15 +337,21 @@ def _insights(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "n": len(values),
             "message": f"표본 5건 이상 요일 중 {WEEKDAYS[weekday]}요일 실제식수 평균이 가장 높습니다.",
         })
-    missing = len(rows) - len(actual_rows)
+    missing = sum(not is_valid_actual(row["actual_count"]) for row in rows)
     if missing:
-        insights.append({"code": "missing_actual", "n": missing, "message": f"실제식수 미입력 서비스가 {missing}건입니다."})
+        insights.append({"code": "missing_actual", "n": missing, "message": f"실제식수가 없는(휴무로 보는) 서비스가 {missing}건입니다."})
     return insights
 
 
 def overview(db: Session, start: date, end: date, meal_type: str = "all") -> dict[str, Any]:
-    rows = _service_rows(db, start, end, meal_type)
+    all_rows, index = _service_rows_with_index(db, start, end, "all")
+    code = _meal_code(meal_type)
+    rows = [row for row in all_rows if row["meal_type"] == code] if code else all_rows
     comparison = _comparison(rows)
+    actual_present = sum(is_valid_actual(row["actual_count"]) for row in rows)
+    menus_by_service: dict[int, list[str]] = defaultdict(list)
+    for item in _menu_rows(db, [row["id"] for row in all_rows if is_valid_actual(row["actual_count"])]):
+        menus_by_service[item["meal_service_id"]].append(item["canonical_name"])
     daily = _series(rows, lambda row: row["service_date"].isoformat())
     weekly = _series(rows, lambda row: (row["service_date"] - timedelta(days=row["service_date"].weekday())).isoformat())
     monthly = _series(rows, lambda row: row["service_date"].strftime("%Y-%m"))
@@ -316,20 +365,23 @@ def overview(db: Session, start: date, end: date, meal_type: str = "all") -> dic
         "meal_type": meal_type,
         "service_count": len(rows),
         "analyzed_count": comparison["n"],
-        "missing_actual_count": len(rows) - comparison["n"],
+        "actual_present_count": actual_present,
+        "missing_actual_count": len(rows) - actual_present,
         "actual_zero_count": sum(row["actual_count"] == 0 for row in rows if row["actual_count"] is not None),
-        "actual_input_rate": _round(comparison["n"] / len(rows) * 100) if rows else None,
-        "planned_sum": sum(row["planned_count"] for row in rows),
+        "actual_input_rate": _round(actual_present / len(rows) * 100) if rows else None,
+        "baseline_label": "연간 평균",
+        "planned_sum": comparison["planned_sum"],
         "comparison_planned_sum": comparison["comparison_planned_sum"],
         "actual_sum": comparison["actual_sum"],
         "difference": comparison["actual_sum"] - comparison["comparison_planned_sum"] if comparison["actual_sum"] is not None else None,
-        "actual": _sample([row["actual_count"] for row in rows if row["actual_count"] is not None]),
+        "actual": _sample([row["actual_count"] for row in rows if is_valid_actual(row["actual_count"])]),
         "daily": daily,
         "weekly": weekly,
         "monthly": monthly,
         "weekday": weekday,
         "meal_types": meal_types,
         "insights": _insights(rows),
+        "usage_index": usage_index(index, all_rows, start, end, menus_by_service),
     }
 
 
@@ -387,8 +439,9 @@ def _outliers(rows: list[dict[str, Any]], menus: list[dict[str, Any]], weather: 
 
 def plan_vs_actual(db: Session, start: date, end: date, meal_type: str = "all", station_id: str | None = None) -> dict[str, Any]:
     all_rows = _service_rows(db, start, end, meal_type)
-    rows = [row for row in all_rows if row["actual_count"] is not None]
+    rows = _comparable(all_rows)
     result = _comparison(rows)
+    result["baseline_label"] = "연간 평균"
     daily_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     weekly_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     monthly_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -407,7 +460,7 @@ def plan_vs_actual(db: Session, start: date, end: date, meal_type: str = "all", 
         "average_error": _round(sum(row["planned_count"] - row["actual_count"] for row in weekday_groups[index]) / len(weekday_groups[index])) if weekday_groups[index] else None,
     } for index in range(7)]
     result["error_distribution"] = _error_distribution(rows)
-    result["error_definition"] = "planned_count - actual_count; percentage denominators use non-zero actual_count"
+    result["error_definition"] = "연간 평균(직전 365일 같은 요일·배식 평균) - 실제; 실제 식수가 없는 날은 휴무로 제외"
     resolved_id, station_name, weather = _optional_weather_rows(db, start, end, station_id)
     menus = _menu_rows(db, [row["id"] for row in rows])
     result["station_id"] = resolved_id
@@ -418,43 +471,101 @@ def plan_vs_actual(db: Session, start: date, end: date, meal_type: str = "all", 
     return result
 
 
+def _co_occurrence(key: str, occurrences: list[dict[str, Any]], co_groups: dict[int, set[str]], prevalence: dict[str, float]) -> tuple[list[dict[str, Any]], bool]:
+    """Groups served together with `key` clearly more often than usual (share - usual share >= 20%p).
+    Confounded when such a group shows up in >= 70% of `key` days: its effect can't be separated."""
+    together = Counter(other for row in occurrences for other in co_groups.get(row["id"], set()) if other != key)
+    rows = []
+    for other, count in together.items():
+        share = count / len(occurrences) * 100
+        usual = prevalence.get(other, 0) * 100
+        if share - usual >= 20:
+            rows.append({"key": other, "share_percent": _round(share, 1), "usual_percent": _round(usual, 1)})
+    rows.sort(key=lambda row: -(row["share_percent"] - row["usual_percent"]))
+    return rows[:3], any(row["share_percent"] >= 70 for row in rows)
+
+
+def _group_view(name: str, by_service: dict[str, dict[int, dict[str, Any]]], minimum: int, co_groups: dict[int, set[str]] | None = None, prevalence: dict[str, float] | None = None) -> list[dict[str, Any]]:
+    """Shrunk lift per category; each service counts once per category."""
+    items = []
+    for key, services in by_service.items():
+        occurrences = _comparable(list(services.values()))
+        item = preference_item(key, occurrences, minimum)
+        item["dimension"] = name
+        if co_groups is not None and occurrences:
+            item["co_occurring"], item["confounded"] = _co_occurrence(key, occurrences, co_groups, prevalence or {})
+        items.append(item)
+    items.sort(key=lambda item: (item["bucket"] == "더 관찰 필요", -(item["shrunk_lift_percent"] or 0), item["key"]))
+    return items
+
+
+def _bucketed(items: list[dict[str, Any]]) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {"선호": [], "보통": [], "비선호": [], "더 관찰 필요": []}
+    for item in items:
+        result[item["bucket"]].append(item["key"])
+    return result
+
+
+def _meal_groups(meal: str, services: list[dict[str, Any]], service_menus: dict[int, list[str]], service_groups: dict[int, set[str]], menu_groups: dict[tuple[int, str], set[str]]) -> dict[str, Any]:
+    cooking: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
+    protein: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
+    ingredient: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
+    for service in services:
+        if service["meal_type"] != meal:
+            continue
+        for name in service_menus.get(service["id"], []):
+            cooking[classify_cooking(name)][service["id"]] = service
+            protein[classify_protein(name, menu_groups.get((service["id"], name), ()))][service["id"]] = service
+        for group in service_groups.get(service["id"], set()):
+            ingredient[group][service["id"]] = service
+    cooking_items = _group_view("cooking", cooking, MIN_GROUP_SAMPLES)
+    protein_items = _group_view("protein", protein, MIN_GROUP_SAMPLES)
+    meal_ids = {service["id"] for service in services if service["meal_type"] == meal}
+    prevalence = {group: len(by_id) / len(meal_ids) for group, by_id in ingredient.items()} if meal_ids else {}
+    ingredient_items = _group_view("ingredient", ingredient, MIN_INGREDIENT_SAMPLES, service_groups, prevalence)
+    return {
+        "meal_type": meal,
+        "cooking": cooking_items,
+        "protein": protein_items,
+        "ingredient": ingredient_items,
+        "buckets": {"cooking": _bucketed(cooking_items), "protein": _bucketed(protein_items)},
+        "ingredient_warning": "재료군은 한 끼에 여러 개가 함께 쓰이고 요일·계절·다른 메뉴와 겹치므로(교란) 인과로 해석하지 마세요. 평소보다 20%p 이상 자주 함께 나오고 그 비율이 70% 이상인 재료군이 있으면 '교란 주의'로 표시합니다.",
+    }
+
+
 def menu_metrics(db: Session, start: date, end: date, meal_type: str = "all") -> dict[str, Any]:
+    """Menu preference = shrunk lift of actual vs the leak-free yearly weekday×meal average.
+
+    lift% = mean(actual/baseline - 1) * n / (n + 8). Closed days (no actual) are excluded.
+    """
     all_services = _service_rows(db, start, end, meal_type)
-    services = [row for row in all_services if row["actual_count"] is not None]
+    services = [row for row in all_services if is_valid_actual(row["actual_count"])]  # open days
     service_by_id = {row["id"]: row for row in services}
     links = _menu_rows(db, list(service_by_id))
-    menu_services: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    code = _meal_code(meal_type)
+    minimum = MIN_MENU_SAMPLES.get(code or "", max(MIN_MENU_SAMPLES.values()))
+    menu_services: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
     menu_ids: dict[str, set[int]] = defaultdict(set)
     role_services: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
     service_menus: dict[int, list[str]] = defaultdict(list)
     for link in links:
         service = service_by_id.get(link["meal_service_id"])
         if service:
-            menu_services[link["canonical_name"]].append(service)
+            menu_services[link["canonical_name"]][service["id"]] = service
             role_services[link["role"]][service["id"]] = service
-            service_menus[service["id"]].append(link["canonical_name"])
+            if link["canonical_name"] not in service_menus[service["id"]]:
+                service_menus[service["id"]].append(link["canonical_name"])
             if link["menu_id"] is not None:
                 menu_ids[link["canonical_name"]].add(link["menu_id"])
-    strata: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
-    for service in services:
-        strata[(service["meal_type"], service["service_date"].weekday())].append(service)
     items = []
-    for name, occurrences in menu_services.items():
-        occurrence_ids = {row["id"] for row in occurrences}
-        comparator: dict[int, dict[str, Any]] = {}
-        matched_baselines: list[float] = []
-        for occurrence in occurrences:
-            peers = [peer for peer in strata[(occurrence["meal_type"], occurrence["service_date"].weekday())] if peer["id"] not in occurrence_ids]
-            for peer in peers:
-                comparator[peer["id"]] = peer
-            if peers:
-                matched_baselines.append(sum(peer["actual_count"] for peer in peers) / len(peers))
+    for name, by_id in menu_services.items():
+        occurrences = list(by_id.values())
         values = [row["actual_count"] for row in occurrences]
-        planned = [row["planned_count"] for row in occurrences]
-        peers = list(comparator.values())
-        eligible = len(occurrences) >= MIN_SAMPLE and len(peers) >= MIN_SAMPLE and len(matched_baselines) == len(occurrences)
-        menu_average = sum(values) / len(values)
-        comparator_average = sum(matched_baselines) / len(matched_baselines) if matched_baselines else None
+        comparable = _comparable(occurrences)
+        planned = [row["planned_count"] for row in comparable]
+        preference = preference_item(name, comparable, minimum)
+        eligible = preference["sample_ok"]
+        baseline_average = sum(planned) / len(planned) if planned else None
         monthly: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for occurrence in occurrences:
             monthly[occurrence["service_date"].strftime("%Y-%m")].append(occurrence)
@@ -464,19 +575,25 @@ def menu_metrics(db: Session, start: date, end: date, meal_type: str = "all") ->
             "menu_ids": sorted(menu_ids[name]),
             **_sample(values),
             "occurrence_n": len(occurrences),
-            "average_planned": _round(sum(planned) / len(planned)),
-            "average_plan_error": _round(sum(p - a for p, a in zip(planned, values)) / len(values)),
-            "comparator_n": len(peers),
-            "comparator_average": _round(comparator_average),
-            "lift": _round(menu_average - comparator_average) if eligible else None,
-            "lift_percent": _round((menu_average - comparator_average) / comparator_average * 100) if eligible and comparator_average != 0 else None,
+            "average_planned": _round(baseline_average),
+            "average_plan_error": _avg([row["planned_count"] - row["actual_count"] for row in comparable]),
+            "comparator_n": len(comparable),
+            "comparator_average": _round(baseline_average),
+            "lift": preference["shrunk_lift_people"] if eligible else None,
+            "lift_percent": preference["shrunk_lift_percent"] if eligible else None,
+            "raw_lift_percent": preference["raw_lift_percent"],
+            "shrunk_lift_percent": preference["shrunk_lift_percent"],
+            "preference_bucket": preference["bucket"],
             "lift_eligible": eligible,
-            "sample_ok": len(occurrences) >= MIN_SAMPLE,
-            "matched_occurrence_n": len(matched_baselines),
+            "sample_ok": eligible,
+            "minimum_sample": minimum,
+            "matched_occurrence_n": len(comparable),
+            "cooking_method": classify_cooking(name),
+            "protein_source": classify_protein(name),
             "first_date": ordered[-1]["service_date"].isoformat(),
             "last_date": ordered[0]["service_date"].isoformat(),
             "monthly": [{"key": key, **_service_sample(monthly[key])} for key in sorted(monthly)],
-            "meal_types": [{"meal_type": code, "n": count} for code, count in sorted(Counter(row["meal_type"] for row in occurrences).items())],
+            "meal_types": [{"meal_type": meal, "n": count} for meal, count in sorted(Counter(row["meal_type"] for row in occurrences).items())],
             "recent_services": [{
                 "service_date": row["service_date"].isoformat(),
                 "meal_type": row["meal_type"],
@@ -492,29 +609,41 @@ def menu_metrics(db: Session, start: date, end: date, meal_type: str = "all") ->
         "lowest_actual": sorted(items, key=lambda item: ((item["average"] or 0), item["canonical_name"]))[:ranking_count],
         "largest_over_plan": sorted(items, key=lambda item: (-(item["average_plan_error"] or 0), item["canonical_name"]))[:ranking_count],
         "largest_under_plan": sorted(items, key=lambda item: ((item["average_plan_error"] or 0), item["canonical_name"]))[:ranking_count],
-        "highest_lift": sorted(eligible_items, key=lambda item: (-item["lift"], item["canonical_name"]))[:10],
-        "lowest_lift": sorted(eligible_items, key=lambda item: (item["lift"], item["canonical_name"]))[:10],
+        "highest_lift": sorted(eligible_items, key=lambda item: (-item["lift_percent"], item["canonical_name"]))[:10],
+        "lowest_lift": sorted(eligible_items, key=lambda item: (item["lift_percent"], item["canonical_name"]))[:10],
+        "needs_observation": sorted([item for item in items if not item["lift_eligible"]], key=lambda item: (-item["occurrence_n"], item["canonical_name"]))[:20],
     }
-    sample_items = [item for item in items if item["sample_ok"]]
     insights = []
-    if sample_items:
-        highest = max(sample_items, key=lambda item: item["average"])
-        insights.append({"code": "highest_menu", "n": highest["n"], "message": f"제공 5회 이상 대표메뉴 중 {highest['canonical_name']} 제공일의 평균 실제식수가 가장 높았습니다."})
+    if eligible_items:
+        highest = max(eligible_items, key=lambda item: item["average"])
+        insights.append({"code": "highest_menu", "n": highest["n"], "message": f"제공 {minimum}회 이상 대표메뉴 중 {highest['canonical_name']} 제공일의 평균 실제식수가 가장 높았습니다."})
     else:
-        insights.append({"code": "insufficient_sample", "n": 0, "message": "제공 5회 이상인 대표메뉴가 없어 메뉴 평균 비교를 수행하지 않았습니다."})
+        insights.append({"code": "insufficient_sample", "n": 0, "message": f"제공 {minimum}회 이상인 대표메뉴가 없어 선호도(보정 lift)를 계산하지 않았습니다."})
     if rankings["highest_lift"]:
         lifted = rankings["highest_lift"][0]
-        difference = f"{lifted['lift_percent']:+.1f}%" if lifted["lift_percent"] is not None else f"{lifted['lift']:+.1f}명"
-        insights.append({"code": "highest_lift", "n": lifted["n"], "comparator_n": lifted["comparator_n"], "message": f"{lifted['canonical_name']} 제공일의 동일 요일·배식유형 비교군 대비 평균 차이는 {difference}였습니다."})
+        insights.append({"code": "highest_lift", "n": lifted["n"], "comparator_n": lifted["comparator_n"], "message": f"{lifted['canonical_name']} 제공일은 연간 평균(같은 요일·배식) 대비 보정 lift {lifted['lift_percent']:+.1f}%였습니다."})
     role_items = [{"role": role, **_service_sample(list(by_service.values()))} for role, by_service in sorted(role_services.items())]
     combinations = Counter(tuple(sorted(set(names))) for names in service_menus.values() if names)
     combination_items = [{"menus": list(names), "count": count} for names, count in combinations.most_common(20)]
+    service_ids = list(service_by_id)
+    service_groups = ingredient_groups_by_service(db, service_ids)
+    menu_groups = menu_ingredient_groups(db, service_ids)
+    meals = [code] if code else list(MEALS)
+    groups = {meal: _meal_groups(meal, services, service_menus, service_groups, menu_groups) for meal in meals}
     return {
         "items": items, "rankings": rankings, "roles": role_items, "combinations": combination_items,
-        "menu_count": len(items), "service_count": len(services), "minimum_sample": MIN_SAMPLE,
-        "total_service_count": len(all_services), "missing_actual_count": len(all_services) - len(services),
+        "menu_count": len(items), "service_count": len(services), "minimum_sample": minimum,
+        "total_service_count": len(all_services), "missing_actual_count": sum(not is_valid_actual(row["actual_count"]) for row in all_services),
         "linked_service_count": len(service_menus), "eligible_menu_count": len(eligible_items),
         "representative_source": links[0]["selection_source"] if links else "none", "insights": insights,
+        "groups": groups,
+        "method": {
+            "baseline": "연간 평균(직전 365일 같은 요일·배식 평균, 같은 요일 8건 미만이면 배식 전체 평균)",
+            "lift": "보정 lift = 평균(실제/연간평균 − 1) × n/(n+8)",
+            "minimum": {"중식 메뉴": MIN_MENU_SAMPLES["LUNCH"], "석식 메뉴": MIN_MENU_SAMPLES["DINNER"], "조리법·단백질 그룹": MIN_GROUP_SAMPLES, "재료군": MIN_INGREDIENT_SAMPLES},
+            "buckets": "보정 lift ≥ +5% 선호, ≤ −5% 비선호, 그 사이 보통, 최소 표본 미만은 더 관찰 필요",
+            "classification": "조리법·단백질은 메뉴명 키워드와 재료 통계그룹으로 자동 분류(새 컬럼 없음)",
+        },
     }
 
 
@@ -575,7 +704,7 @@ def _group_service_samples(groups: dict[str, list[dict[str, Any]]], order: list[
 
 
 def weather_metrics(db: Session, start: date, end: date, meal_type: str = "all", station_id: str | None = None) -> dict[str, Any]:
-    services = [row for row in _service_rows(db, start, end, meal_type) if row["actual_count"] is not None]
+    services = [row for row in _service_rows(db, start, end, meal_type) if is_valid_actual(row["actual_count"])]
     resolved_id, station_name, weather = _weather_rows(db, start, end, station_id)
     temperature: dict[str, list[dict[str, Any]]] = defaultdict(list)
     humidity: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -659,7 +788,7 @@ def weather_metrics(db: Session, start: date, end: date, meal_type: str = "all",
 
 
 def menu_weather_metrics(db: Session, start: date, end: date, meal_type: str = "all", station_id: str | None = None) -> dict[str, Any]:
-    services = [row for row in _service_rows(db, start, end, meal_type) if row["actual_count"] is not None]
+    services = [row for row in _service_rows(db, start, end, meal_type) if is_valid_actual(row["actual_count"])]
     service_by_id = {row["id"]: row for row in services}
     menus = _menu_rows(db, list(service_by_id))
     resolved_id, station_name, weather = _weather_rows(db, start, end, station_id)
@@ -723,7 +852,7 @@ def data_quality(db: Session, start: date, end: date, meal_type: str = "all", st
     rain_count = sum(row is not None and row["precipitation"] is not None for row in service_weather)
     metrics = {
         "actual": _quality(actual_count, total),
-        "planned": _quality(sum(row["planned_count"] is not None for row in services), total),
+        "planned": _quality(sum(row["planned_count"] is not None for row in services), total),  # yearly average available
         "representative_menu": _quality(len(services_with_menu), total),
         "canonical_linkage": _quality(canonical_menu_count, len(menus)),
         "weather_match": _quality(weather_count, total),
@@ -816,6 +945,10 @@ def _detail_items(db: Session, stmt, resolved_id: str | None, offset: int | None
     if limit is not None:
         ordered = ordered.limit(limit)
     rows = [dict(row._mapping) for row in db.execute(ordered)]
+    if rows:
+        first, last = min(row["service_date"] for row in rows), max(row["service_date"] for row in rows)
+        history = history_rows(db, first - timedelta(days=YEAR_DAYS), last)
+        attach_baseline(rows, ActualIndex((row["service_date"], row["meal_type"], row["actual_count"]) for row in history))
     menus = _menu_rows(db, [row["id"] for row in rows])
     menus_by_service: dict[int, list[str]] = defaultdict(list)
     for item in menus:
@@ -831,7 +964,7 @@ def _detail_items(db: Session, stmt, resolved_id: str | None, offset: int | None
             "meal_type": row["meal_type"],
             "planned_count": row["planned_count"],
             "actual_count": row["actual_count"],
-            "plan_error": row["planned_count"] - row["actual_count"] if row["actual_count"] is not None else None,
+            "plan_error": _round(row["planned_count"] - row["actual_count"]) if is_valid_actual(row["actual_count"]) and row["planned_count"] is not None else None,
             "representative_menus": menus_by_service.get(row["id"], []),
             "weather": weather,
             "note": row["actual_note"] or row["service_note"],
@@ -855,7 +988,7 @@ def export_xlsx(db: Session, start: date, end: date, meal_type: str = "all", sta
         raise StationSelectionError("날씨 상세 필터를 사용하려면 날씨 지점이 필요합니다.")
     stmt = _filtered_detail_stmt(db, start, end, meal_type, resolved_id, rain, menu, temp_bucket)
     items = _detail_items(db, stmt, resolved_id)
-    comparable = [item for item in items if item["actual_count"] is not None]
+    comparable = [item for item in items if item["plan_error"] is not None]
     actual_sum = sum(item["actual_count"] for item in comparable)
     planned_comparison = sum(item["planned_count"] for item in comparable)
     errors = [item["plan_error"] for item in comparable]
@@ -865,15 +998,15 @@ def export_xlsx(db: Session, start: date, end: date, meal_type: str = "all", sta
     summary_rows = [
         ("기간", f"{start.isoformat()} ~ {end.isoformat()}"), ("식사유형", meal_type), ("지점", station_name or ""),
         ("강수필터", rain), ("메뉴필터", menu or ""), ("기온구간", temp_bucket or ""), ("서비스수", len(items)),
-        ("계획합계", sum(item["planned_count"] for item in items)), ("비교 N", len(comparable)),
-        ("비교 계획합계", planned_comparison), ("실제합계", actual_sum),
+        ("기준", "연간 평균(직전 365일 같은 요일·배식 평균), 실제식수 없는 날은 휴무로 제외"),
+        ("비교 N", len(comparable)), ("비교 연간평균합계", _round(planned_comparison)), ("실제합계", actual_sum),
         ("WAPE(%)", _round(sum(abs(value) for value in errors) / actual_sum * 100) if actual_sum else None),
         ("Bias율(%)", _round(sum(errors) / actual_sum * 100) if actual_sum else None),
     ]
-    for row in summary_rows:
-        summary.append(row)
+    for label, value in summary_rows:
+        summary.append((label, "" if value is None else value))
     detail = workbook.create_sheet("상세자료")
-    detail.append(["일자", "식사유형", "계획식수", "실제식수", "계획-실제", "대표메뉴", "평균기온", "강수량", "평균습도", "적설량", "일조시간", "지점", "비고"])
+    detail.append(["일자", "식사유형", "연간평균", "실제식수", "연간평균-실제", "대표메뉴", "평균기온", "강수량", "평균습도", "적설량", "일조시간", "지점", "비고"])
     for item in items:
         weather = item["weather"] or {}
         detail.append([
