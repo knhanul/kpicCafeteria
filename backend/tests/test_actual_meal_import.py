@@ -65,6 +65,25 @@ def test_preview_rejects_invalid_values_and_duplicate_keys(tmp_path):
     assert any("중복" in error["message"] for error in result["errors"])
 
 
+def test_apply_preserves_existing_count_when_upload_cell_is_blank(tmp_path):
+    path = tmp_path / "actual.xlsx"
+    make_workbook(path, [{"date": date(2025, 4, 1), "lunch": None, "dinner": 80}])
+    engine = make_db(tmp_path)
+    with Session(engine) as db:
+        lunch = db.query(MealService).filter_by(meal_type="LUNCH").one()
+        db.add(MealActual(meal_service_id=lunch.id, actual_count=350, note="기존 기록"))
+        db.commit()
+        preview = preview_actual_meals(path, db)
+        assert preview["summary"]["candidate_count"] == 1
+        result = apply_actual_meals(path, db, 1, preview["summary"]["rows_fingerprint"])
+        db.commit()
+        assert result["new_count"] == 1
+        actuals = {row.service.meal_type: row for row in db.query(MealActual).all()}
+        assert actuals["LUNCH"].actual_count == 350
+        assert actuals["LUNCH"].note == "기존 기록"
+        assert actuals["DINNER"].actual_count == 80
+
+
 def test_apply_is_idempotent_and_updates_note(tmp_path):
     path = tmp_path / "actual.xlsx"
     make_workbook(path, [{"date": date(2025, 4, 1), "lunch": 400, "dinner": 80, "note": "메모"}])

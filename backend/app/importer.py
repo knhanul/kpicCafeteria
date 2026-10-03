@@ -120,7 +120,21 @@ class MigrationImporter:
             if missing:
                 raise ValueError(f"필수 시트가 없습니다: {', '.join(missing)}")
 
+            preserved_actuals: dict[tuple[date, str], tuple[int | None, str | None, datetime | None]] = {}
             if mode == "replace":
+                preserved_actuals = {
+                    (row.service_date, row.meal_type): (row.actual_count, row.actual_note, row.recorded_at)
+                    for row in db.execute(
+                        select(
+                            MealService.service_date,
+                            MealService.meal_type,
+                            MealActual.actual_count,
+                            MealActual.note.label("actual_note"),
+                            MealActual.recorded_at,
+                        ).join(MealActual, MealActual.meal_service_id == MealService.id)
+                    )
+                    if row.actual_count is not None or row.actual_note
+                }
                 self._clear_business_data(db)
 
             menu_by_code: dict[str, Menu] = {}
@@ -402,6 +416,21 @@ class MigrationImporter:
                 service_menu.recipe_id = recipe.id
                 service_menu.recipe_name_snapshot = recipe.name
                 service_menu.recipe_version_snapshot = recipe.version
+
+            if mode == "replace":
+                for service in service_map.values():
+                    actual_data = preserved_actuals.get((service.service_date, service.meal_type))
+                    if actual_data is None:
+                        continue
+                    db.add(
+                        MealActual(
+                            meal_service_id=service.id,
+                            actual_count=actual_data[0],
+                            note=actual_data[1],
+                            recorded_at=actual_data[2],
+                        )
+                    )
+                    counters["actuals_preserved"] += 1
 
             db.add(
                 AuditLog(
