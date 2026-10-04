@@ -319,7 +319,8 @@ def test_popular_menus_rank_by_average_difference_with_min_count(engine):
     assert [r["name"] for r in by_name["items"]][:1] == ["갈비찜 - 매운맛"]
     assert "LA갈비찜" not in [r["name"] for r in by_name["items"]]
     assert "카레" in [r["name"] for r in one["items"]]
-    assert default["min_days"] == 5 and [r["name"] for r in default["items"]] == ["밥"]  # only 밥 was served 5+ times
+    assert default["min_days"] == 1 and [r["name"] for r in default["items"]] == [r["name"] for r in one["items"]]
+    assert default["basis_name"] == "대표 메뉴명"
     assert "밥" in [r["name"] for r in one["items"]]  # every menu counts unless main-only is chosen
 
 
@@ -349,11 +350,12 @@ def test_menu_compare_name_vs_group_and_multiple_series(engine):
             analysis.menu_compare(db, "LUNCH", start, end, "group", [f"메뉴{i}" for i in range(6)])
         with pytest.raises(analysis.AnalysisError):
             analysis.menu_compare(db, "LUNCH", start, end, "group", [])
+    assert group["mode_name"] == "대표 메뉴명"
     assert [i["name"] for i in group["items"]] == ["갈비찜", "짜장면"]  # duplicates removed, order kept
     assert [i["days"] for i in group["items"]] == [3, 2]
     assert group["items"][0]["points"][0]["actual"] == 440
     assert len(group["usual_line"]) == 5 and group["dates"] == sorted(group["dates"])
-    # exact menu name: "갈비찜" is only a 통계집계명, not a menu name
+    # exact menu name: "갈비찜" is only a 대표 메뉴명, not a menu name
     assert [i["days"] for i in name["items"]] == [1, 0]
     assert {f["name"] for f in found} == {"갈비찜 - 매운맛", "LA갈비찜"}
 
@@ -525,7 +527,7 @@ def test_popular_scope_main_dish_main_menu_with_side_and_all(engine):
     assert names(with_side) == {"제육볶음", "계란말이"}
     assert names(every) == {"제육볶음", "계란말이", "배추김치", "미역국", "비빔밥"}
     assert names(legacy) == names(main_menu) and legacy["scope"] == "main_menu"
-    assert (default_main["min_days"], default_dinner["min_days"], default_dish["min_days"]) == (3, 2, 5)
+    assert (default_main["min_days"], default_dinner["min_days"], default_dish["min_days"]) == (1, 1, 1)
     assert main_dish["scope_name"] == "주찬만" and main_menu["main_only"] is True
     # empty result still tells the largest count found, for the "가장 많이 나온 메뉴도 N번" message
     assert empty["items"] == [] and empty["max_days"] == 3 and empty["excluded_too_few"] == 1
@@ -566,3 +568,31 @@ def test_menu_search_and_compare_respect_scope(engine):
         assert menus["items"][0]["days"] == 2 and menus["scope_name"] == "메인 메뉴만"
         excel = client.get("/api/analysis/export.xlsx", params=[*params, ("tab", "popular"), ("scope", "main_dish"), ("min_days", "1")])
         assert excel.status_code == 200 and excel.content[:2] == b"PK"
+        earliest = client.get("/api/analysis/earliest-date", params={"meal_type": "LUNCH"}).json()
+        assert earliest["date"] == (MONDAY - timedelta(days=1)).isoformat()
+
+
+def test_earliest_counted_date(engine):
+    with Session(engine) as db:
+        # When empty, returns None
+        assert analysis.earliest_counted_date(db) is None
+
+        # Add service without actual
+        s1 = MealService(service_date=date(2024, 1, 1), meal_type="LUNCH", planned_count=100)
+        db.add(s1)
+        db.commit()
+        # Fallback to service date if no actual
+        assert analysis.earliest_counted_date(db) == date(2024, 1, 1)
+
+        # Add service with actual
+        s2 = MealService(service_date=date(2024, 2, 1), meal_type="DINNER", planned_count=100)
+        db.add(s2)
+        db.flush()
+        db.add(MealActual(meal_service_id=s2.id, actual_count=80))
+        db.commit()
+
+        # Since s2 has actual_count > 0, it is prioritized
+        assert analysis.earliest_counted_date(db) == date(2024, 2, 1)
+        assert analysis.earliest_counted_date(db, "DINNER") == date(2024, 2, 1)
+        # LUNCH has no actual, so it falls back to s2 date
+        assert analysis.earliest_counted_date(db, "LUNCH") == date(2024, 2, 1)

@@ -1622,7 +1622,7 @@ async function renderMenuMasterPanel(id=null,emptyWhenNoSelection=false){
       <div class="recipe-list-column"><div class="recipe-list">${recipes.map(r=>`<button class="recipe-list-item ${recipe?.id===r.id?'active':''}" data-recipe-id="${r.id}"><div class="recipe-list-item-head"><strong>${escapeHtml(recipeNameWithoutVersion(r.name))}</strong>${r.is_default?'<em class="recipe-default-label">기본</em>':''}</div><span>재료 ${r.ingredient_count}개${r.active?'':' · 미사용'}</span></button>`).join('')||'<p class="muted">등록된 레시피가 없습니다.</p>'}</div></div>
       <div id="recipe-editor" class="recipe-editor-column">${recipe?recipeEditorHtml(recipe):'<div class="empty-editor">새 레시피를 등록해 주세요.</div>'}</div>
     </div></section>`;
-  const content=detailTab==='history'?'<div id="master-menu-history-root" class="master-menu-history-root"><div class="master-history-loading">사용 이력을 불러오는 중...</div></div>':`<div class="master-menu-detail-content"><section class="master-menu-section"><div class="master-section-heading"><h4>메뉴 기본정보</h4></div><div class="menu-basic-fields"><div class="menu-basic-name-row"><label class="field">메뉴명<input id="mm-name" value="${escapeHtml(data.name)}"></label><label class="field">통계 집계명<input id="mm-canonical" value="${escapeHtml(data.canonical_name||data.name)}"></label></div><div class="menu-meta-row"><label class="inline-field">메뉴 역할<select id="mm-role">${state.codes.menu_roles.map(x=>`<option ${x===data.role?'selected':''}>${x}</option>`).join('')}</select></label><label class="inline-field">사용 여부<select id="mm-active"><option value="true" ${data.active?'selected':''}>사용</option><option value="false" ${!data.active?'selected':''}>미사용</option></select></label>${id?'<div class="menu-delete-action"><button type="button" class="danger-button" id="archive-menu">메뉴 삭제</button></div>':''}</div></div></section>${id?recipeContent:'<p class="muted">메뉴를 먼저 등록하면 레시피를 관리할 수 있습니다.</p>'}</div>`;
+  const content=detailTab==='history'?'<div id="master-menu-history-root" class="master-menu-history-root"><div class="master-history-loading">사용 이력을 불러오는 중...</div></div>':`<div class="master-menu-detail-content"><section class="master-menu-section"><div class="master-section-heading"><h4>메뉴 기본정보</h4></div><div class="menu-basic-fields"><div class="menu-basic-name-row"><label class="field">메뉴명<input id="mm-name" value="${escapeHtml(data.name)}"></label><label class="field">대표 메뉴명<input id="mm-canonical" value="${escapeHtml(data.canonical_name||data.name)}"></label></div><div class="menu-meta-row"><label class="inline-field">메뉴 역할<select id="mm-role">${state.codes.menu_roles.map(x=>`<option ${x===data.role?'selected':''}>${x}</option>`).join('')}</select></label><label class="inline-field">사용 여부<select id="mm-active"><option value="true" ${data.active?'selected':''}>사용</option><option value="false" ${!data.active?'selected':''}>미사용</option></select></label>${id?'<div class="menu-delete-action"><button type="button" class="danger-button" id="archive-menu">메뉴 삭제</button></div>':''}</div></div></section>${id?recipeContent:'<p class="muted">메뉴를 먼저 등록하면 레시피를 관리할 수 있습니다.</p>'}</div>`;
   panel.innerHTML=header+tabs+content+`<datalist id="ingredient-options">${state.ingredientCache.map(i=>`<option value="${escapeHtml(i.name)}"></option>`).join('')}</datalist>`;
   $$('[data-master-menu-detail]').forEach(button=>button.addEventListener('click',()=>{state.masterMenuDetailTab=button.dataset.masterMenuDetail;renderMenuMasterPanel(id);}));
   const saveButton=$('#save-master-menu');
@@ -1768,7 +1768,7 @@ async function renderIngredientMasterPanel(id=null){
   const detailTab=id?(state.masterIngredientDetailTab||'info'):'info';
   const header=`<div class="master-ingredient-workspace-header"><div><h3>${escapeHtml(id?data.name:'새 재료')}</h3><small>${id?`${escapeHtml(data.stat_group)} · ${data.active?'사용':'미사용'}`:'재료 기본정보를 입력하세요.'}</small></div>${detailTab==='info'?`<button class="primary-button" id="save-master-ingredient">${id?'재료 정보 저장':'재료 등록'}</button>`:''}</div>`;
   const tabs=id?`<div class="master-ingredient-detail-tabs" role="tablist"><button type="button" class="master-ingredient-detail-tab ${detailTab==='info'?'active':''}" data-master-ingredient-detail="info" role="tab" aria-selected="${detailTab==='info'}">재료 정보</button><button type="button" class="master-ingredient-detail-tab ${detailTab==='usage'?'active':''}" data-master-ingredient-detail="usage" role="tab" aria-selected="${detailTab==='usage'}">사용 메뉴</button></div>`:'';
-  const info=`<div class="master-ingredient-detail-content"><section class="master-menu-section"><div class="master-section-heading"><h4>재료 정보</h4></div><div class="field-grid"><label class="field">표준재료명<input id="im-name" value="${escapeHtml(data.name)}"></label><label class="field">통계 집계명<select id="im-group">${state.codes.stat_groups.map(x=>`<option ${x===data.stat_group?'selected':''}>${x}</option>`).join('')}</select></label><label class="field">기본단위<select id="im-unit"><option value="">미지정</option>${state.codes.units.map(x=>`<option ${x===(data.default_unit||'')?'selected':''}>${x}</option>`).join('')}</select></label><label class="field">kg 환산계수(선택)<input id="im-factor" type="number" step="0.0001" value="${data.kg_factor??''}"></label></div><div class="recipe-options"><label><input id="im-excluded" type="checkbox" ${data.analysis_excluded?'checked':''}> 통계 분석 제외</label><label><input id="im-active" type="checkbox" ${data.active?'checked':''}> 사용</label></div>${id&&data.aliases?.length?`<div class="alias-list"><strong>별칭</strong><span>${data.aliases.map(x=>escapeHtml(x.alias)).join(' · ')}</span></div>`:''}${id?'<div class="master-menu-danger-row"><button type="button" class="danger-button" id="archive-ingredient">재료 삭제</button></div>':''}</section></div>`;
+  const info=`<div class="master-ingredient-detail-content"><section class="master-menu-section"><div class="master-section-heading"><h4>재료 정보</h4></div><div class="field-grid"><label class="field">표준재료명<input id="im-name" value="${escapeHtml(data.name)}"></label><label class="field">통계분석군<select id="im-group">${state.codes.stat_groups.map(x=>`<option ${x===data.stat_group?'selected':''}>${x}</option>`).join('')}</select></label><label class="field">기본단위<select id="im-unit"><option value="">미지정</option>${state.codes.units.map(x=>`<option ${x===(data.default_unit||'')?'selected':''}>${x}</option>`).join('')}</select></label><label class="field">kg 환산계수(선택)<input id="im-factor" type="number" step="0.0001" value="${data.kg_factor??''}"></label></div><div class="recipe-options"><label><input id="im-excluded" type="checkbox" ${data.analysis_excluded?'checked':''}> 통계 분석 제외</label><label><input id="im-active" type="checkbox" ${data.active?'checked':''}> 사용</label></div>${id&&data.aliases?.length?`<div class="alias-list"><strong>별칭</strong><span>${data.aliases.map(x=>escapeHtml(x.alias)).join(' · ')}</span></div>`:''}${id?'<div class="master-menu-danger-row"><button type="button" class="danger-button" id="archive-ingredient">재료 삭제</button></div>':''}</section></div>`;
   const content=detailTab==='usage'?'<div id="master-ingredient-usage-root" class="master-ingredient-usage-root"><div class="master-ingredient-loading">사용 메뉴를 불러오는 중...</div></div>':info;
   panel.innerHTML=header+tabs+content;
   $$('[data-master-ingredient-detail]').forEach(button=>button.addEventListener('click',()=>{state.masterIngredientDetailTab=button.dataset.masterIngredientDetail;renderIngredientMasterPanel(id);if(button.dataset.masterIngredientDetail==='usage')loadIngredientUsage(id);}));
@@ -1793,7 +1793,7 @@ function renderIngredientUsage(){
   const toolbar=`<div class="ingredient-usage-toolbar"><strong>사용 메뉴 ${usage.total}개</strong><span class="search-submit-row"><input id="ingredient-usage-search" placeholder="메뉴 검색 후 Enter" value="${escapeHtml(state.masterIngredientUsageQuery)}"><button type="button" class="secondary-button" id="ingredient-usage-search-btn">조회</button></span></div>`;
   if(usage.loading&&!usage.items.length){root.innerHTML=toolbar+'<div class="master-ingredient-loading">사용 메뉴를 불러오는 중...</div>';bindIngredientUsageSearch();return;}
   if(!usage.items.length){root.innerHTML=toolbar+'<div class="master-history-empty">사용 메뉴가 없습니다.<small>현재 기준 레시피나 과거 식단에서 이 재료가 사용된 기록이 없습니다.</small></div>';bindIngredientUsageSearch();return;}
-  root.innerHTML=toolbar+`<div class="ingredient-usage-list">${usage.items.map(item=>{const recent=item.has_historical_usage?`최근 ${item.last_used.date.replaceAll('-','.')} · ${escapeHtml({LUNCH:'중식',DINNER:'석식'}[item.last_used.meal_type]||item.last_used.meal_type)} · 실제 식수 ${item.last_used.actual_count==null?'-':`${numberText(item.last_used.actual_count)}명`} · ${item.historical_usage_count}회`:'최근 사용 없음';const badges=[item.menu_role,item.menu_canonical_name?`집계: ${item.menu_canonical_name}`:null].filter(Boolean);return `<article class="ingredient-usage-card"><div class="ingredient-usage-card-content"><div class="ingredient-usage-card-title"><strong>${escapeHtml(item.menu_name)}</strong><span class="ingredient-usage-badges">${badges.map(badge=>`<span>${escapeHtml(badge)}</span>`).join('')}</span></div><div class="ingredient-usage-card-meta">${recent}</div></div></article>`;}).join('')}</div>${usage.hasMore?'<button class="secondary-button master-history-more" id="ingredient-usage-more">더 보기</button>':''}`;
+  root.innerHTML=toolbar+`<div class="ingredient-usage-list">${usage.items.map(item=>{const recent=item.has_historical_usage?`최근 ${item.last_used.date.replaceAll('-','.')} · ${escapeHtml({LUNCH:'중식',DINNER:'석식'}[item.last_used.meal_type]||item.last_used.meal_type)} · 실제 식수 ${item.last_used.actual_count==null?'-':`${numberText(item.last_used.actual_count)}명`} · ${item.historical_usage_count}회`:'최근 사용 없음';const badges=[item.menu_role,item.menu_canonical_name?`대표: ${item.menu_canonical_name}`:null].filter(Boolean);return `<article class="ingredient-usage-card"><div class="ingredient-usage-card-content"><div class="ingredient-usage-card-title"><strong>${escapeHtml(item.menu_name)}</strong><span class="ingredient-usage-badges">${badges.map(badge=>`<span>${escapeHtml(badge)}</span>`).join('')}</span></div><div class="ingredient-usage-card-meta">${recent}</div></div></article>`;}).join('')}</div>${usage.hasMore?'<button class="secondary-button master-history-more" id="ingredient-usage-more">더 보기</button>':''}`;
   bindIngredientUsageSearch();$('#ingredient-usage-more')?.addEventListener('click',()=>loadIngredientUsage(usage.ingredientId,true));
 }
 function bindIngredientUsageSearch(){bindSearchSubmit($('#ingredient-usage-search'),$('#ingredient-usage-search-btn'),value=>{state.masterIngredientUsageQuery=value.trim();loadIngredientUsage(state.masterIngredientUsage.ingredientId);});}
@@ -2554,11 +2554,11 @@ window.addEventListener('beforeunload',e=>{if(isUILocked()){e.preventDefault();e
 
 /* ==================== 식수 분석 ==================== */
 const ANALYSIS_TABS = {daily:'날짜별 식수', popular:'인기 메뉴', menu:'메뉴별 식수', ingredient:'재료별 식수', weather:'날씨별 식수'};
-const ANALYSIS_MIN_DAYS = {LUNCH:5, DINNER:4};
-const ANALYSIS_MAIN_MENU_MIN_DAYS = {LUNCH:3, DINNER:2};
+const ANALYSIS_MIN_DAYS = {LUNCH:1, DINNER:1};
+const ANALYSIS_MAIN_MENU_MIN_DAYS = {LUNCH:1, DINNER:1};
 const ANALYSIS_SCOPES = {main_dish:'주찬만', main_menu:'메인 메뉴만', with_side:'부찬 포함', all:'전체'};
 function analysisMinDefault(mealType, scope){ return (scope==='main_menu'?ANALYSIS_MAIN_MENU_MIN_DAYS:ANALYSIS_MIN_DAYS)[mealType]; }
-const ANALYSIS_MENU_MODES = {name:'메뉴 이름', group:'통계집계명'};
+const ANALYSIS_MENU_MODES = {name:'메뉴 이름', group:'대표 메뉴명'};
 const ANALYSIS_MAX_MENUS = 5;
 const ANALYSIS_ING_MODES = {name:'재료 이름', group:'통계집계명(분석군)'};
 // 메뉴별/재료별 탭의 비교 선택 설정
@@ -2566,15 +2566,87 @@ function analysisPicker(a){
   if(a.tab==='ingredient') return {modeKey:'ingMode', itemsKey:'ingItems', modes:ANALYSIS_ING_MODES, noun:'재료', served:'들어간 날',
     placeholder:{name:'재료 이름 입력 후 Enter 또는 검색 (예: 두부)', group:'통계집계명(분석군) 입력 후 Enter 또는 검색 (예: 돼지고기)'}, searchUrl:(mode,q)=>`/api/analysis/ingredient-keys/search?mode=${mode}&q=${encodeURIComponent(q)}`};
   return {modeKey:'menuMode', itemsKey:'menuItems', modes:ANALYSIS_MENU_MODES, noun:'메뉴', served:'나온 날',
-    placeholder:{name:'정확한 메뉴 이름 입력 후 Enter 또는 검색 (예: LA갈비찜)', group:'통계집계명 입력 후 Enter 또는 검색 (예: 갈비찜)'}, searchUrl:(mode,q)=>`/api/analysis/menus/search?mode=${mode}&scope=${analysisState().menuScope}&q=${encodeURIComponent(q)}`};
+    placeholder:{name:'정확한 메뉴 이름 입력 후 Enter 또는 검색 (예: LA갈비찜)', group:'대표 메뉴명 입력 후 Enter 또는 검색 (예: 갈비찜)'}, searchUrl:(mode,q)=>`/api/analysis/menus/search?mode=${mode}&scope=${analysisState().menuScope}&q=${encodeURIComponent(q)}`};
 }
 const ANALYSIS_COLORS = ['#1d5f9a','#d9480f','#2b8a3e','#7048e8','#c2255c'];
 const ANALYSIS_WEATHER_FILTERS = {all:'전체', rain:'비 오는 날', hot:'더운 날(28℃ 이상)', cold:'추운 날(영하)'};
+
+const ANALYSIS_QUICK_BUTTONS = [
+  { key: '1m', label: '1개월', months: 1 },
+  { key: '3m', label: '3개월', months: 3 },
+  { key: '6m', label: '6개월', months: 6 },
+  { key: '12m', label: '12개월', months: 12 },
+];
+
+const ANALYSIS_PERIOD_OPTIONS = [
+  {
+    key: '18m',
+    label: '18개월',
+    getRange: async (end) => ({
+      start: isoDate(analysisMonthsBack(end, 18)),
+      end: isoDate(end),
+    }),
+  },
+  {
+    key: '24m',
+    label: '24개월',
+    getRange: async (end) => ({
+      start: isoDate(analysisMonthsBack(end, 24)),
+      end: isoDate(end),
+    }),
+  },
+  {
+    key: 'all',
+    label: '전체',
+    getRange: async (end, mealType) => {
+      const earliest = await getAnalysisEarliestDate(mealType);
+      return {
+        start: earliest || isoDate(analysisMonthsBack(end, 36)),
+        end: isoDate(end),
+      };
+    },
+  },
+];
+
+async function getAnalysisEarliestDate(mealType) {
+  state.analysisEarliestDates = state.analysisEarliestDates || {};
+  const cacheKey = mealType || 'ALL';
+  if (state.analysisEarliestDates[cacheKey]) {
+    return state.analysisEarliestDates[cacheKey];
+  }
+  try {
+    const url = mealType ? `/api/analysis/earliest-date?meal_type=${mealType}` : '/api/analysis/earliest-date';
+    const res = await api(url);
+    if (res && res.date) {
+      state.analysisEarliestDates[cacheKey] = res.date;
+      return res.date;
+    }
+  } catch (e) {
+    console.error('Failed to fetch earliest date', e);
+  }
+  return null;
+}
+
+function analysisMonthsBack(end, months) {
+  const d = new Date(end);
+  const targetYear = d.getFullYear();
+  const targetMonth = d.getMonth() - months;
+  const targetDay = d.getDate();
+  const check = new Date(targetYear, targetMonth, 1, 12, 0, 0);
+  const year = check.getFullYear();
+  const month = check.getMonth();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const clampedDay = Math.min(targetDay, daysInMonth);
+  const result = new Date(year, month, clampedDay, 12, 0, 0);
+  result.setDate(result.getDate() + 1);
+  return result;
+}
+
 function analysisDefaults(){
   const end=new Date();end.setHours(12,0,0,0);
-  return {tab:'daily', start:isoDate(analysisMonthsBack(end,3)), end:isoDate(end), mealType:'LUNCH', showWeather:false, menuMode:'group', menuItems:[], menuScope:'main_dish', popScope:'main_dish', popSel:{basis:null, items:[], version:0, carried:0}, ingMode:'name', ingItems:[], popBasis:'name', popOrder:'top', popLimit:10, popMinDays:ANALYSIS_MIN_DAYS.LUNCH, weatherFilter:'all', result:null, query:null, band:null};
+  return {tab:'daily', start:isoDate(analysisMonthsBack(end,3)), end:isoDate(end), quickKey:'3m', mealType:'LUNCH', showWeather:false, menuMode:'group', menuItems:[], menuScope:'main_dish', popScope:'main_dish', popSel:{basis:null, items:[], version:0, carried:0}, ingMode:'name', ingItems:[], popBasis:'name', popOrder:'top', popLimit:10, popMinDays:ANALYSIS_MIN_DAYS.LUNCH, weatherFilter:'all', result:null, query:null, band:null};
 }
-function analysisMonthsBack(end, months){ const d=new Date(end); d.setMonth(d.getMonth()-months); d.setDate(d.getDate()+1); return d; }
+
 function analysisState(){ if(!state.analysis) state.analysis=analysisDefaults(); return state.analysis; }
 
 function initAnalysis(){
@@ -2589,7 +2661,7 @@ function initAnalysis(){
 }
 
 // 탭마다 조회 조건과 결과를 따로 보관해서, 다른 탭에 다녀와도 다시 조회하지 않고 그대로 보여줍니다.
-const ANALYSIS_TAB_KEYS=['start','end','mealType','showWeather','weatherFilter','result','query','band','popMinDays'];
+const ANALYSIS_TAB_KEYS=['start','end','mealType','showWeather','weatherFilter','result','query','band','popMinDays','quickKey'];
 function switchAnalysisTab(tab){
   const a=analysisState();
   if(a.tab===tab) return;
@@ -2625,15 +2697,120 @@ function renderAnalysisConditions(){
     ? `<label class="an-field"><span>날씨</span><select id="an-weather-filter">${Object.entries(ANALYSIS_WEATHER_FILTERS).map(([k,v])=>`<option value="${k}" ${a.weatherFilter===k?'selected':''}>${v}</option>`).join('')}</select></label>` : '';
   const weatherToggle = a.tab!=='weather'&&a.tab!=='popular'
     ? `<label class="an-check"><input type="checkbox" id="an-show-weather" ${a.showWeather?'checked':''}> 날씨 함께 보기</label>` : '';
+
+  const activeOpt = ANALYSIS_PERIOD_OPTIONS.find(opt => opt.key === a.quickKey);
+  const dropdownLabel = activeOpt ? `${activeOpt.label} ▾` : '기간 선택 ▾';
+  const isDropdownActive = Boolean(activeOpt);
+  const quickHtml = `<div class="an-field"><span>빠른 선택</span><div class="an-quick" id="an-quick-container">
+    ${ANALYSIS_QUICK_BUTTONS.map(btn => `<button type="button" class="ghost-button an-quick-btn ${a.quickKey === btn.key ? 'active' : ''}" data-quick="${btn.key}" data-months="${btn.months}">${escapeHtml(btn.label)}</button>`).join('')}
+    <div class="an-dropdown-wrap">
+      <button type="button" class="ghost-button an-quick-dropdown-btn ${isDropdownActive ? 'active' : ''}" id="an-period-dropdown-btn" aria-haspopup="true" aria-expanded="false">
+        <span>${escapeHtml(dropdownLabel)}</span>
+      </button>
+      <div class="an-dropdown-menu hidden" id="an-period-dropdown-menu" role="menu">
+        ${ANALYSIS_PERIOD_OPTIONS.map(opt => `<button type="button" class="an-dropdown-item ${a.quickKey === opt.key ? 'selected' : ''}" data-period-opt="${opt.key}" role="menuitem">${escapeHtml(opt.label)}</button>`).join('')}
+      </div>
+    </div>
+  </div></div>`;
+
   root.innerHTML=`<div class="an-row">
       <div class="an-field"><span>기간</span><div class="an-period"><input type="date" id="an-start" value="${a.start}"><span>~</span><input type="date" id="an-end" value="${a.end}"></div></div>
-      <div class="an-field"><span>빠른 선택</span><div class="an-quick">${[1,3,6,12].map(m=>`<button type="button" class="ghost-button" data-months="${m}">${m}개월</button>`).join('')}</div></div>
+      ${quickHtml}
       <div class="an-field"><span>배식</span><div class="an-seg">${[['LUNCH','중식'],['DINNER','석식']].map(([k,v])=>`<button type="button" data-meal="${k}" class="${a.mealType===k?'active':''}">${v}</button>`).join('')}</div></div>
     </div>
     <div class="an-row">${selector}${weatherFilter}${weatherToggle}<button type="button" class="primary-button an-query" id="an-query">조회</button></div>`;
-  $('#an-start').addEventListener('change',e=>{a.start=e.target.value;});
-  $('#an-end').addEventListener('change',e=>{a.end=e.target.value;});
-  $$('[data-months]',root).forEach(b=>b.addEventListener('click',()=>{const end=new Date();end.setHours(12,0,0,0);a.end=isoDate(end);a.start=isoDate(analysisMonthsBack(end,Number(b.dataset.months)));$('#an-start').value=a.start;$('#an-end').value=a.end;}));
+
+  const clearQuickSelection = () => {
+    a.quickKey = null;
+    $$('#an-quick-container .an-quick-btn', root).forEach(btn => btn.classList.remove('active'));
+    const dropBtn = $('#an-period-dropdown-btn');
+    if (dropBtn) {
+      dropBtn.classList.remove('active');
+      const span = dropBtn.querySelector('span');
+      if (span) span.textContent = '기간 선택 ▾';
+    }
+    $$('#an-period-dropdown-menu .an-dropdown-item', root).forEach(it => it.classList.remove('selected'));
+  };
+
+  $('#an-start').addEventListener('change',e=>{a.start=e.target.value;clearQuickSelection();});
+  $('#an-start').addEventListener('input',e=>{a.start=e.target.value;clearQuickSelection();});
+  $('#an-end').addEventListener('change',e=>{a.end=e.target.value;clearQuickSelection();});
+  $('#an-end').addEventListener('input',e=>{a.end=e.target.value;clearQuickSelection();});
+
+  $$('#an-quick-container .an-quick-btn', root).forEach(b => {
+    b.addEventListener('click', () => {
+      const months = Number(b.dataset.months);
+      const key = b.dataset.quick;
+      const end = new Date(); end.setHours(12, 0, 0, 0);
+      a.end = isoDate(end);
+      a.start = isoDate(analysisMonthsBack(end, months));
+      a.quickKey = key;
+      $('#an-start').value = a.start;
+      $('#an-end').value = a.end;
+
+      $$('#an-quick-container .an-quick-btn', root).forEach(btn => btn.classList.toggle('active', btn === b));
+      const dropBtn = $('#an-period-dropdown-btn');
+      if (dropBtn) {
+        dropBtn.classList.remove('active');
+        const span = dropBtn.querySelector('span');
+        if (span) span.textContent = '기간 선택 ▾';
+      }
+      $('#an-period-dropdown-menu')?.classList.add('hidden');
+      $$('#an-period-dropdown-menu .an-dropdown-item', root).forEach(it => it.classList.remove('selected'));
+    });
+  });
+
+  const dropBtn = $('#an-period-dropdown-btn');
+  const dropMenu = $('#an-period-dropdown-menu');
+  if (dropBtn && dropMenu) {
+    dropBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isExpanded = !dropMenu.classList.contains('hidden');
+      dropMenu.classList.toggle('hidden', isExpanded);
+      dropBtn.setAttribute('aria-expanded', String(!isExpanded));
+    });
+
+    $$('.an-dropdown-item', dropMenu).forEach(item => {
+      item.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        dropMenu.classList.add('hidden');
+        dropBtn.setAttribute('aria-expanded', 'false');
+        const optKey = item.dataset.periodOpt;
+        const opt = ANALYSIS_PERIOD_OPTIONS.find(o => o.key === optKey);
+        if (!opt) return;
+
+        const end = new Date(); end.setHours(12, 0, 0, 0);
+        const range = await opt.getRange(end, a.mealType);
+        a.end = range.end;
+        a.start = range.start;
+        a.quickKey = opt.key;
+        $('#an-start').value = a.start;
+        $('#an-end').value = a.end;
+
+        $$('#an-quick-container .an-quick-btn', root).forEach(btn => btn.classList.remove('active'));
+        dropBtn.classList.add('active');
+        const span = dropBtn.querySelector('span');
+        if (span) span.textContent = `${opt.label} ▾`;
+        $$('.an-dropdown-item', dropMenu).forEach(it => it.classList.toggle('selected', it === item));
+      });
+    });
+  }
+
+  if (!window._anDropdownBound) {
+    window._anDropdownBound = true;
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.an-dropdown-wrap')) {
+        document.querySelectorAll('.an-dropdown-menu').forEach(m => m.classList.add('hidden'));
+        document.querySelectorAll('#an-period-dropdown-btn').forEach(b => b.setAttribute('aria-expanded', 'false'));
+      }
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        document.querySelectorAll('.an-dropdown-menu').forEach(m => m.classList.add('hidden'));
+        document.querySelectorAll('#an-period-dropdown-btn').forEach(b => b.setAttribute('aria-expanded', 'false'));
+      }
+    });
+  }
   $$('[data-meal]',root).forEach(b=>b.addEventListener('click',()=>{a.mealType=b.dataset.meal;a.popMinDays=analysisMinDefault(a.mealType,a.popScope);$$('[data-meal]',root).forEach(x=>x.classList.toggle('active',x===b));const md=$('#an-min-days');if(md)md.value=a.popMinDays;}));
   const segBind=(key,apply)=>$$(`[data-${key}]`,root).forEach(b=>b.addEventListener('click',()=>{apply(b.getAttribute(`data-${key}`));$$(`[data-${key}]`,root).forEach(x=>x.classList.toggle('active',x===b));}));
   segBind('pop-basis',v=>{a.popBasis=v;});segBind('pop-order',v=>{a.popOrder=v;});segBind('pop-limit',v=>{a.popLimit=Number(v);});
@@ -2818,7 +2995,7 @@ function renderAnalysisPopular(root, r){
   const title=[`${r.order==='top'?'상위':'하위'} 인기 메뉴 ${r.limit}개`, r.scope_name, r.basis_name+' 기준', r.meal_type_name, `${r.start} ~ ${r.end}`];
   const explain=`그 메뉴가 나온 날 실제 식수가 평소 식수보다 평균 몇 명 많았는지(+), 적었는지(−)로 순서를 매겼어요. ${r.min_days}번보다 적게 나온 메뉴${r.excluded_too_few?` ${numberText(r.excluded_too_few)}개`:''}는 뺐어요.`;
   if(!r.items.length){ root.innerHTML=`<div class="an-card"><h3>${escapeHtml(title.join(' · '))}</h3><p class="an-sub">${escapeHtml(explain)}</p><div class="an-empty">${r.max_days?`가장 많이 나온 메뉴도 ${numberText(r.max_days)}번이에요. 최소 등장 횟수를 ${numberText(r.max_days)} 이하로 낮추거나 기간을 늘려 보세요.`:'이 기간에는 실제 식수가 입력된 날 중에 이 범위의 메뉴가 없어요. 기간이나 메뉴 범위를 바꿔 보세요.'}</div></div>`; return; }
-  if(a.popSel.basis!==r.basis) a.popSel={basis:r.basis, items:[], version:(a.popSel.version||0)+1, carried:a.popSel.carried||0};  // 기준(메뉴 이름/통계집계명)이 바뀌면 이름이 달라서 선택을 비웁니다.
+  if(a.popSel.basis!==r.basis) a.popSel={basis:r.basis, items:[], version:(a.popSel.version||0)+1, carried:a.popSel.carried||0};  // 기준(메뉴 이름/대표 메뉴명)이 바뀌면 이름이 달라서 선택을 비웁니다.
   const sel=a.popSel.items;
   const maxAbs=Math.max(1,...r.items.map(i=>Math.abs(i.avg_diff||0)));
   const bars=r.items.map((item,i)=>{const v=item.avg_diff||0;const w=Math.abs(v)/maxAbs*50;
