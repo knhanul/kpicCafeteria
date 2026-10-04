@@ -2572,7 +2572,7 @@ const ANALYSIS_COLORS = ['#1d5f9a','#d9480f','#2b8a3e','#7048e8','#c2255c'];
 const ANALYSIS_WEATHER_FILTERS = {all:'전체', rain:'비 오는 날', hot:'더운 날(28℃ 이상)', cold:'추운 날(영하)'};
 function analysisDefaults(){
   const end=new Date();end.setHours(12,0,0,0);
-  return {tab:'daily', start:isoDate(analysisMonthsBack(end,3)), end:isoDate(end), mealType:'LUNCH', showWeather:false, menuMode:'group', menuItems:[], menuScope:'main_dish', popScope:'main_dish', popSel:{basis:null, items:[]}, ingMode:'name', ingItems:[], popBasis:'name', popOrder:'top', popLimit:10, popMinDays:ANALYSIS_MIN_DAYS.LUNCH, weatherFilter:'all', result:null, query:null, band:null};
+  return {tab:'daily', start:isoDate(analysisMonthsBack(end,3)), end:isoDate(end), mealType:'LUNCH', showWeather:false, menuMode:'group', menuItems:[], menuScope:'main_dish', popScope:'main_dish', popSel:{basis:null, items:[], version:0, carried:0}, ingMode:'name', ingItems:[], popBasis:'name', popOrder:'top', popLimit:10, popMinDays:ANALYSIS_MIN_DAYS.LUNCH, weatherFilter:'all', result:null, query:null, band:null};
 }
 function analysisMonthsBack(end, months){ const d=new Date(end); d.setMonth(d.getMonth()-months); d.setDate(d.getDate()+1); return d; }
 function analysisState(){ if(!state.analysis) state.analysis=analysisDefaults(); return state.analysis; }
@@ -2599,6 +2599,7 @@ function switchAnalysisTab(tab){
   if(saved) Object.assign(a,saved);
   else { a.result=null;a.query=null;a.band=null;a.weatherFilter='all'; }  // 처음 여는 탭은 지금 기간·배식을 이어받습니다.
   a.tab=tab;
+  if(tab==='menu') carryPopularSelection(a);
   $$('#analysis-tabs button[data-analysis-tab]').forEach(x=>x.classList.toggle('active',x.dataset.analysisTab===tab));
   renderAnalysisConditions();renderAnalysisResult();
 }
@@ -2695,7 +2696,7 @@ async function runAnalysisQuery(){
     try{
       const result=await api(`${ANALYSIS_ENDPOINTS[tab]}?${analysisSearchParams(params)}`);
       if(a.tab!==tab) return;
-      a.result=result;a.query={tab,params};a.band=null;
+      a.result=result;a.query={tab,params};a.band=null;a.carryNote=null;
       renderAnalysisResult();
     }catch(e){ toast(e.message,true); }
   });
@@ -2709,7 +2710,7 @@ function analysisNum(v){ return v===null||v===undefined?'—':numberText(v); }
 
 function renderAnalysisResult(){
   const a=analysisState();const root=$('#analysis-result');if(!root)return;
-  if(!a.result){ root.innerHTML=`<div class="an-empty">조건을 정한 뒤 <strong>조회</strong> 버튼을 눌러 주세요.</div>`; return; }
+  if(!a.result){ root.innerHTML=`${a.tab==='menu'&&a.carryNote?`<div class="an-note">${escapeHtml(a.carryNote)}</div>`:''}<div class="an-empty">조건을 정한 뒤 <strong>조회</strong> 버튼을 눌러 주세요.</div>`; return; }
   if(a.query.tab==='weather'){ renderAnalysisWeather(root,a.result); return; }
   if(a.query.tab==='popular'){ renderAnalysisPopular(root,a.result); return; }
   if(a.query.tab==='menu'||a.query.tab==='ingredient'){ renderAnalysisMenus(root,a.result); return; }
@@ -2817,7 +2818,7 @@ function renderAnalysisPopular(root, r){
   const title=[`${r.order==='top'?'상위':'하위'} 인기 메뉴 ${r.limit}개`, r.scope_name, r.basis_name+' 기준', r.meal_type_name, `${r.start} ~ ${r.end}`];
   const explain=`그 메뉴가 나온 날 실제 식수가 평소 식수보다 평균 몇 명 많았는지(+), 적었는지(−)로 순서를 매겼어요. ${r.min_days}번보다 적게 나온 메뉴${r.excluded_too_few?` ${numberText(r.excluded_too_few)}개`:''}는 뺐어요.`;
   if(!r.items.length){ root.innerHTML=`<div class="an-card"><h3>${escapeHtml(title.join(' · '))}</h3><p class="an-sub">${escapeHtml(explain)}</p><div class="an-empty">${r.max_days?`가장 많이 나온 메뉴도 ${numberText(r.max_days)}번이에요. 최소 등장 횟수를 ${numberText(r.max_days)} 이하로 낮추거나 기간을 늘려 보세요.`:'이 기간에는 실제 식수가 입력된 날 중에 이 범위의 메뉴가 없어요. 기간이나 메뉴 범위를 바꿔 보세요.'}</div></div>`; return; }
-  if(a.popSel.basis!==r.basis) a.popSel={basis:r.basis, items:[]};  // 기준(메뉴 이름/통계집계명)이 바뀌면 이름이 달라서 선택을 비웁니다.
+  if(a.popSel.basis!==r.basis) a.popSel={basis:r.basis, items:[], version:(a.popSel.version||0)+1, carried:a.popSel.carried||0};  // 기준(메뉴 이름/통계집계명)이 바뀌면 이름이 달라서 선택을 비웁니다.
   const sel=a.popSel.items;
   const maxAbs=Math.max(1,...r.items.map(i=>Math.abs(i.avg_diff||0)));
   const bars=r.items.map((item,i)=>{const v=item.avg_diff||0;const w=Math.abs(v)/maxAbs*50;
@@ -2845,12 +2846,28 @@ function renderAnalysisPopular(root, r){
         if(sel.length>=ANALYSIS_MAX_MENUS){box.checked=false;toast(`비교할 메뉴는 최대 ${ANALYSIS_MAX_MENUS}개까지 고를 수 있어요. 다른 메뉴의 체크를 먼저 풀어 주세요.`,true);return;}
         if(!sel.includes(name)) sel.push(name);
       } else { const k=sel.indexOf(name); if(k>=0) sel.splice(k,1); }
+      popularSelectionChanged();
       $$(`[data-pop-check="${box.dataset.popCheck}"]`,root).forEach(x=>{x.checked=box.checked;});
       renderPopularCompareBar(r);
     });
   });
   renderPopularCompareBar(r);
   $$('[data-an-download]',root).forEach(b=>b.addEventListener('click',downloadAnalysisExcel));
+}
+
+// 인기 메뉴에서 체크한 메뉴를 메뉴별 식수 비교 메뉴로 넘깁니다. 탭을 직접 눌러 와도 적용되며, 이때는 조회하지 않고 칩만 넣습니다.
+// 체크가 마지막으로 넘긴 뒤 바뀐 경우에만 넘겨서, 메뉴별 탭에서 직접 고친 칩을 덮어쓰지 않습니다.
+function popularSelectionChanged(){ const a=analysisState(); a.popSel.version=(a.popSel.version||0)+1; }
+function carryPopularSelection(a, source){
+  const sel=a.popSel;
+  if(!sel.items.length || sel.version===sel.carried) return false;
+  const r=source || a.saved?.popular?.result || null;
+  sel.carried=sel.version;
+  a.menuMode=sel.basis||a.menuMode;
+  a.menuItems=sel.items.slice(0,ANALYSIS_MAX_MENUS);
+  if(r){ a.menuScope=r.scope||'all'; a.start=r.start; a.end=r.end; a.mealType=r.meal_type; }
+  a.result=null;a.query=null;a.band=null;a.carryNote=`인기 메뉴에서 체크한 메뉴 ${a.menuItems.length}개를 비교 메뉴로 넣었어요. 조회를 누르면 비교해요.`;
+  return true;
 }
 
 function renderPopularCompareBar(r){
@@ -2860,13 +2877,14 @@ function renderPopularCompareBar(r){
     <div class="an-chips">${sel.length?sel.map((name,i)=>`<span class="an-chip" style="--chip:${ANALYSIS_COLORS[i%ANALYSIS_COLORS.length]}">${escapeHtml(name)}<button type="button" data-unsel="${i}" aria-label="${escapeHtml(name)} 빼기">×</button></span>`).join(''):`<span class="muted">비교할 메뉴를 체크하세요 (최대 ${ANALYSIS_MAX_MENUS}개).</span>`}</div>
     ${sel.length?'<button type="button" class="ghost-button" id="an-pop-clear">선택 해제</button>':''}`;
   $('#an-pop-compare-btn',box)?.addEventListener('click',()=>comparePopularSelection(r));
-  $('#an-pop-clear',box)?.addEventListener('click',()=>{sel.splice(0);$$('[data-pop-check]').forEach(x=>{x.checked=false;});renderPopularCompareBar(r);});
-  $$('[data-unsel]',box).forEach(b=>b.addEventListener('click',()=>{const name=sel[Number(b.dataset.unsel)];sel.splice(Number(b.dataset.unsel),1);r.items.forEach((item,i)=>{if(item.name===name)$$(`[data-pop-check="${i}"]`).forEach(x=>{x.checked=false;});});renderPopularCompareBar(r);}));
+  $('#an-pop-clear',box)?.addEventListener('click',()=>{sel.splice(0);popularSelectionChanged();$$('[data-pop-check]').forEach(x=>{x.checked=false;});renderPopularCompareBar(r);});
+  $$('[data-unsel]',box).forEach(b=>b.addEventListener('click',()=>{const name=sel[Number(b.dataset.unsel)];sel.splice(Number(b.dataset.unsel),1);popularSelectionChanged();r.items.forEach((item,i)=>{if(item.name===name)$$(`[data-pop-check="${i}"]`).forEach(x=>{x.checked=false;});});renderPopularCompareBar(r);}));
 }
 
 // 인기 메뉴에서 메뉴별 식수로 넘어갈 때는 인기 메뉴 조회의 기간·배식·범위·기준을 그대로 가져가서 조회합니다(버튼을 눌렀을 때만).
 function openMenuCompareFromPopular(r, names){
   const a=analysisState();
+  a.popSel.carried=a.popSel.version;  // 버튼으로 넘길 때는 아래에서 직접 넣고 바로 조회합니다.
   switchAnalysisTab('menu');
   a.start=r.start;a.end=r.end;a.mealType=r.meal_type;
   a.menuMode=r.basis;a.menuScope=r.scope||'all';a.menuItems=names.slice(0,ANALYSIS_MAX_MENUS);
