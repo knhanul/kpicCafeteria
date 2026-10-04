@@ -278,3 +278,113 @@ def test_analysis_api_and_excel_export(engine):
             response = client.get("/api/analysis/export.xlsx", params={**params, "tab": tab, **extra})
             assert response.status_code == 200
             assert response.content[:2] == b"PK"
+
+
+def _popular_fixture(db):
+    """Usual count is 400 for every ranked day (one prior meal of 400, then each day adds its own)."""
+    b = Builder(db)
+    day = MONDAY
+    b.meal(day - timedelta(days=1), 400)
+    plan = [
+        # (menu name, 통계집계명, actual)
+        ("갈비찜 - 매운맛", "갈비찜", 440), ("LA갈비찜", "갈비찜", 430), ("갈비찜 - 매운맛", "갈비찜", 450),
+        ("짜장면", "짜장면", 380), ("짜장면", "짜장면", 370),
+        ("카레", "카레", 410),
+    ]
+    services = []
+    for index, (name, group, actual) in enumerate(plan):
+        services.append(b.meal(day + timedelta(days=index), actual, menus=(("밥", None, ()), (name, group, ()))))
+    db.commit()
+    return b, services
+
+
+def test_popular_menus_rank_by_average_difference_with_min_count(engine):
+    with Session(engine) as db:
+        _popular_fixture(db)
+        start, end = MONDAY, MONDAY + timedelta(days=10)
+        top = analysis.popular_menus(db, "LUNCH", start, end, basis="group", order="top", limit=10, min_days=2)
+        bottom = analysis.popular_menus(db, "LUNCH", start, end, basis="group", order="bottom", limit=10, min_days=2)
+        by_name = analysis.popular_menus(db, "LUNCH", start, end, basis="name", order="top", limit=10, min_days=2)
+        one = analysis.popular_menus(db, "LUNCH", start, end, basis="group", order="top", limit=10, min_days=1)
+        default = analysis.popular_menus(db, "LUNCH", start, end, basis="group")
+    names = [row["name"] for row in top["items"]]
+    assert names[0] == "갈비찜" and "카레" not in names  # 카레 served once: below the minimum
+    assert top["excluded_too_few"] == 1
+    assert names.index("갈비찜") < names.index("짜장면")
+    assert bottom["items"][0]["name"] == "짜장면"
+    galbi = top["items"][0]
+    assert galbi["rank"] == 1 and galbi["days"] == 3
+    assert galbi["avg_diff"] == round(sum(p - u for p, u in zip([440, 430, 450], [400, 420, 423])) / 3)
+    # by exact menu name, "갈비찜 - 매운맛"(2 days) and "LA갈비찜"(1 day) are separate menus
+    assert [r["name"] for r in by_name["items"]][:1] == ["갈비찜 - 매운맛"]
+    assert "LA갈비찜" not in [r["name"] for r in by_name["items"]]
+    assert "카레" in [r["name"] for r in one["items"]]
+    assert default["min_days"] == 5 and [r["name"] for r in default["items"]] == ["밥"]  # only 밥 was served 5+ times
+    assert "밥" in [r["name"] for r in one["items"]]  # every menu counts unless main-only is chosen
+
+
+def test_popular_menus_main_only_and_validation(engine):
+    with Session(engine) as db:
+        _b, services = _popular_fixture(db)
+        for service in services:
+            for item in service.menus:
+                item.is_representative = item.menu_name_snapshot != "밥"
+        db.commit()
+        result = analysis.popular_menus(db, "LUNCH", MONDAY, MONDAY + timedelta(days=10), basis="group", min_days=1, main_only=True)
+        assert "밥" not in [r["name"] for r in result["items"]]
+        assert result["main_only"] is True
+        for kwargs in ({"order": "middle"}, {"limit": 15}, {"min_days": 0}, {"basis": "x"}):
+            with pytest.raises(analysis.AnalysisError):
+                analysis.popular_menus(db, "LUNCH", MONDAY, MONDAY + timedelta(days=10), **kwargs)
+
+
+def test_menu_compare_name_vs_group_and_multiple_series(engine):
+    with Session(engine) as db:
+        _popular_fixture(db)
+        start, end = MONDAY, MONDAY + timedelta(days=10)
+        group = analysis.menu_compare(db, "LUNCH", start, end, "group", ["갈비찜", "짜장면", "갈비찜"])
+        name = analysis.menu_compare(db, "LUNCH", start, end, "name", ["LA갈비찜", "갈비찜"])
+        found = analysis.search_menus(db, "name", "갈비")
+        with pytest.raises(analysis.AnalysisError):
+            analysis.menu_compare(db, "LUNCH", start, end, "group", [f"메뉴{i}" for i in range(6)])
+        with pytest.raises(analysis.AnalysisError):
+            analysis.menu_compare(db, "LUNCH", start, end, "group", [])
+    assert [i["name"] for i in group["items"]] == ["갈비찜", "짜장면"]  # duplicates removed, order kept
+    assert [i["days"] for i in group["items"]] == [3, 2]
+    assert group["items"][0]["points"][0]["actual"] == 440
+    assert len(group["usual_line"]) == 5 and group["dates"] == sorted(group["dates"])
+    # exact menu name: "갈비찜" is only a 통계집계명, not a menu name
+    assert [i["days"] for i in name["items"]] == [1, 0]
+    assert {f["name"] for f in found} == {"갈비찜 - 매운맛", "LA갈비찜"}
+
+
+def test_menu_compare_weather_filter_and_api(engine):
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    with sessions() as db:
+        b = Builder(db)
+        b.meal(MONDAY, 400, menus=(("냉면", None, ()),), weather=(30.0, 0.0))
+        b.meal(MONDAY + timedelta(days=1), 380, menus=(("냉면", None, ()),), weather=(20.0, 0.0))
+        b.meal(MONDAY + timedelta(days=2), 390, menus=(("국밥", None, ()),), weather=(31.0, 0.0))
+        db.commit()
+        hot = analysis.menu_compare(db, "LUNCH", MONDAY, MONDAY + timedelta(days=5), "name", ["냉면", "국밥"], "hot")
+    assert [i["days"] for i in hot["items"]] == [1, 1]
+    app = FastAPI()
+    app.include_router(analysis_router.router)
+
+    def override_db():
+        with sessions() as db:
+            yield db
+
+    app.dependency_overrides[analysis_router.get_db] = override_db
+    app.dependency_overrides[analysis_router.current_user] = lambda: SimpleNamespace(id=1)
+    params = {"start": MONDAY.isoformat(), "end": (MONDAY + timedelta(days=5)).isoformat(), "meal_type": "LUNCH"}
+    with TestClient(app) as client:
+        response = client.get("/api/analysis/menus", params=[*params.items(), ("mode", "name"), ("names", "냉면"), ("names", "국밥")])
+        assert [i["days"] for i in response.json()["items"]] == [2, 1]
+        popular = client.get("/api/analysis/popular-menus", params={**params, "basis": "name", "min_days": 1, "order": "bottom"})
+        assert popular.status_code == 200 and popular.json()["items"]
+        assert client.get("/api/analysis/menus/search", params={"mode": "name", "q": "냉"}).json()["items"][0]["name"] == "냉면"
+        assert client.get("/api/analysis/popular-menus", params={**params, "limit": 7}).status_code == 400
+        for tab, extra in (("menus", [("mode", "name"), ("names", "냉면"), ("names", "국밥")]), ("popular", [("basis", "name"), ("min_days", "1")])):
+            response = client.get("/api/analysis/export.xlsx", params=[*params.items(), ("tab", tab), *extra])
+            assert response.status_code == 200 and response.content[:2] == b"PK"

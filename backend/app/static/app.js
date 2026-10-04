@@ -2547,11 +2547,15 @@ document.addEventListener('keydown',e=>{if(isUILocked()){e.preventDefault();e.st
 window.addEventListener('beforeunload',e=>{if(isUILocked()){e.preventDefault();e.returnValue='';return '';}});
 
 /* ==================== 식수 분석 ==================== */
-const ANALYSIS_TABS = {daily:'날짜별 식수', menu:'메뉴별 식수', ingredient:'재료별 식수', weather:'날씨별 식수'};
+const ANALYSIS_TABS = {daily:'날짜별 식수', popular:'인기 메뉴', menu:'메뉴별 식수', ingredient:'재료별 식수', weather:'날씨별 식수'};
+const ANALYSIS_MIN_DAYS = {LUNCH:5, DINNER:4};
+const ANALYSIS_MENU_MODES = {name:'메뉴 이름', group:'통계집계명'};
+const ANALYSIS_MAX_MENUS = 5;
+const ANALYSIS_COLORS = ['#1d5f9a','#d9480f','#2b8a3e','#7048e8','#c2255c'];
 const ANALYSIS_WEATHER_FILTERS = {all:'전체', rain:'비 오는 날', hot:'더운 날(28℃ 이상)', cold:'추운 날(영하)'};
 function analysisDefaults(){
   const end=new Date();end.setHours(12,0,0,0);
-  return {tab:'daily', start:isoDate(analysisMonthsBack(end,3)), end:isoDate(end), mealType:'LUNCH', showWeather:false, menuName:'', ingredient:null, weatherFilter:'all', result:null, query:null, band:null};
+  return {tab:'daily', start:isoDate(analysisMonthsBack(end,3)), end:isoDate(end), mealType:'LUNCH', showWeather:false, menuMode:'group', menuItems:[], popBasis:'name', popOrder:'top', popLimit:10, popMinDays:ANALYSIS_MIN_DAYS.LUNCH, popMainOnly:false, ingredient:null, weatherFilter:'all', result:null, query:null, band:null};
 }
 function analysisMonthsBack(end, months){ const d=new Date(end); d.setMonth(d.getMonth()-months); d.setDate(d.getDate()+1); return d; }
 function analysisState(){ if(!state.analysis) state.analysis=analysisDefaults(); return state.analysis; }
@@ -2561,26 +2565,37 @@ function initAnalysis(){
   const tabs=$('#analysis-tabs');
   if(tabs && !tabs.dataset.bound){
     tabs.dataset.bound='1';
-    $$('button[data-analysis-tab]',tabs).forEach(button=>button.addEventListener('click',()=>{
-      a.tab=button.dataset.analysisTab;a.result=null;a.query=null;a.band=null;a.weatherFilter='all';
-      $$('button[data-analysis-tab]',tabs).forEach(x=>x.classList.toggle('active',x===button));
-      renderAnalysisConditions();renderAnalysisResult();
-    }));
+    $$('button[data-analysis-tab]',tabs).forEach(button=>button.addEventListener('click',()=>switchAnalysisTab(button.dataset.analysisTab)));
   }
   renderAnalysisConditions();
   renderAnalysisResult();
 }
 
+function switchAnalysisTab(tab){
+  const a=analysisState();a.tab=tab;a.result=null;a.query=null;a.band=null;a.weatherFilter='all';
+  $$('#analysis-tabs button[data-analysis-tab]').forEach(x=>x.classList.toggle('active',x.dataset.analysisTab===tab));
+  renderAnalysisConditions();renderAnalysisResult();
+}
+
 function renderAnalysisConditions(){
   const a=analysisState();const root=$('#analysis-conditions');if(!root)return;
+  const seg=(key,options,current)=>`<div class="an-seg">${options.map(([k,v])=>`<button type="button" data-${key}="${k}" class="${String(current)===String(k)?'active':''}">${v}</button>`).join('')}</div>`;
   const selector = a.tab==='menu'
-    ? `<div class="an-field an-search-field"><span>메뉴(통계 집계명)</span><div class="an-search"><input id="an-search-input" autocomplete="off" placeholder="메뉴 이름으로 찾기 (예: 갈비찜)" value="${escapeHtml(a.menuName)}"><div class="an-search-list hidden" id="an-search-list"></div></div></div>`
+    ? `<div class="an-field"><span>조회 기준</span>${seg('menu-mode',Object.entries(ANALYSIS_MENU_MODES),a.menuMode)}</div>
+       <div class="an-field an-search-field"><span>${a.menuMode==='name'?'메뉴 이름':'통계집계명'} (최대 ${ANALYSIS_MAX_MENUS}개 비교)</span><div class="an-search"><input id="an-search-input" autocomplete="off" placeholder="${a.menuMode==='name'?'정확한 메뉴 이름 찾기 (예: LA갈비찜)':'통계집계명 찾기 (예: 갈비찜)'}"><div class="an-search-list hidden" id="an-search-list"></div></div>
+       <div class="an-chips" id="an-chips">${a.menuItems.map((name,i)=>`<span class="an-chip" style="--chip:${ANALYSIS_COLORS[i%ANALYSIS_COLORS.length]}">${escapeHtml(name)}<button type="button" data-remove-chip="${i}" aria-label="${escapeHtml(name)} 빼기">×</button></span>`).join('')||'<span class="muted">메뉴를 찾아서 고르세요.</span>'}</div></div>`
+    : a.tab==='popular'
+    ? `<div class="an-field"><span>기준</span>${seg('pop-basis',Object.entries(ANALYSIS_MENU_MODES),a.popBasis)}</div>
+       <div class="an-field"><span>순서</span>${seg('pop-order',[['top','상위'],['bottom','하위']],a.popOrder)}</div>
+       <div class="an-field"><span>개수</span>${seg('pop-limit',[[10,'10개'],[20,'20개']],a.popLimit)}</div>
+       <label class="an-field"><span>최소 등장 횟수</span><input type="number" id="an-min-days" min="1" max="365" value="${a.popMinDays}" style="width:90px"></label>
+       <label class="an-check"><input type="checkbox" id="an-main-only" ${a.popMainOnly?'checked':''}> 메인 메뉴로 나온 날만</label>`
     : a.tab==='ingredient'
     ? `<div class="an-field an-search-field"><span>재료</span><div class="an-search"><input id="an-search-input" autocomplete="off" placeholder="재료 이름으로 찾기 (예: 두부)" value="${escapeHtml(a.ingredient?.name||'')}"><div class="an-search-list hidden" id="an-search-list"></div></div></div>`
     : '';
   const weatherFilter = (a.tab==='menu'||a.tab==='ingredient')
     ? `<label class="an-field"><span>날씨</span><select id="an-weather-filter">${Object.entries(ANALYSIS_WEATHER_FILTERS).map(([k,v])=>`<option value="${k}" ${a.weatherFilter===k?'selected':''}>${v}</option>`).join('')}</select></label>` : '';
-  const weatherToggle = a.tab!=='weather'
+  const weatherToggle = a.tab!=='weather'&&a.tab!=='popular'
     ? `<label class="an-check"><input type="checkbox" id="an-show-weather" ${a.showWeather?'checked':''}> 날씨 함께 보기</label>` : '';
   root.innerHTML=`<div class="an-row">
       <div class="an-field"><span>기간</span><div class="an-period"><input type="date" id="an-start" value="${a.start}"><span>~</span><input type="date" id="an-end" value="${a.end}"></div></div>
@@ -2591,7 +2606,13 @@ function renderAnalysisConditions(){
   $('#an-start').addEventListener('change',e=>{a.start=e.target.value;});
   $('#an-end').addEventListener('change',e=>{a.end=e.target.value;});
   $$('[data-months]',root).forEach(b=>b.addEventListener('click',()=>{const end=new Date();end.setHours(12,0,0,0);a.end=isoDate(end);a.start=isoDate(analysisMonthsBack(end,Number(b.dataset.months)));$('#an-start').value=a.start;$('#an-end').value=a.end;}));
-  $$('[data-meal]',root).forEach(b=>b.addEventListener('click',()=>{a.mealType=b.dataset.meal;$$('[data-meal]',root).forEach(x=>x.classList.toggle('active',x===b));}));
+  $$('[data-meal]',root).forEach(b=>b.addEventListener('click',()=>{a.mealType=b.dataset.meal;a.popMinDays=ANALYSIS_MIN_DAYS[a.mealType];$$('[data-meal]',root).forEach(x=>x.classList.toggle('active',x===b));const md=$('#an-min-days');if(md)md.value=a.popMinDays;}));
+  const segBind=(key,apply)=>$$(`[data-${key}]`,root).forEach(b=>b.addEventListener('click',()=>{apply(b.getAttribute(`data-${key}`));$$(`[data-${key}]`,root).forEach(x=>x.classList.toggle('active',x===b));}));
+  segBind('pop-basis',v=>{a.popBasis=v;});segBind('pop-order',v=>{a.popOrder=v;});segBind('pop-limit',v=>{a.popLimit=Number(v);});
+  segBind('menu-mode',v=>{if(a.menuMode!==v){a.menuMode=v;a.menuItems=[];renderAnalysisConditions();}});
+  $('#an-min-days')?.addEventListener('change',e=>{a.popMinDays=Number(e.target.value)||ANALYSIS_MIN_DAYS[a.mealType];});
+  $('#an-main-only')?.addEventListener('change',e=>{a.popMainOnly=e.target.checked;});
+  $$('[data-remove-chip]',root).forEach(b=>b.addEventListener('click',()=>{a.menuItems.splice(Number(b.dataset.removeChip),1);renderAnalysisConditions();}));
   $('#an-weather-filter')?.addEventListener('change',e=>{a.weatherFilter=e.target.value;});
   $('#an-show-weather')?.addEventListener('change',e=>{a.showWeather=e.target.checked;if(a.result)renderAnalysisResult();});
   $('#an-query').addEventListener('click',runAnalysisQuery);
@@ -2603,7 +2624,7 @@ function bindAnalysisSearch(){
   const a=analysisState();const input=$('#an-search-input');const list=$('#an-search-list');if(!input||!list)return;
   const search=async()=>{
     const q=input.value.trim();
-    const url=a.tab==='menu'?`/api/analysis/menu-groups/search?q=${encodeURIComponent(q)}`:`/api/analysis/ingredients/search?q=${encodeURIComponent(q)}`;
+    const url=a.tab==='menu'?`/api/analysis/menus/search?mode=${a.menuMode}&q=${encodeURIComponent(q)}`:`/api/analysis/ingredients/search?q=${encodeURIComponent(q)}`;
     try{
       const data=await api(url);
       list.innerHTML=data.items.length?data.items.map((item,i)=>`<button type="button" data-index="${i}"><span>${escapeHtml(item.name)}</span><small>${numberText(item.served)}회 제공</small></button>`).join(''):'<div class="an-search-empty">찾는 이름이 없습니다.</div>';
@@ -2614,10 +2635,15 @@ function bindAnalysisSearch(){
   };
   const pick=item=>{
     if(!item)return;
-    if(a.tab==='menu') a.menuName=item.name; else a.ingredient={id:item.id,name:item.name};
+    if(a.tab==='menu'){
+      if(a.menuItems.includes(item.name)){toast('이미 고른 메뉴입니다.');return;}
+      if(a.menuItems.length>=ANALYSIS_MAX_MENUS){toast(`메뉴는 최대 ${ANALYSIS_MAX_MENUS}개까지 비교할 수 있습니다.`,true);return;}
+      a.menuItems.push(item.name);renderAnalysisConditions();$('#an-search-input')?.focus();return;
+    }
+    a.ingredient={id:item.id,name:item.name};
     input.value=item.name;list.classList.add('hidden');
   };
-  input.addEventListener('input',()=>{ if(a.tab==='menu') a.menuName=''; else a.ingredient=null; clearTimeout(analysisSearchTimer); analysisSearchTimer=setTimeout(search,250); });
+  input.addEventListener('input',()=>{ if(a.tab!=='menu') a.ingredient=null; clearTimeout(analysisSearchTimer); analysisSearchTimer=setTimeout(search,250); });
   input.addEventListener('focus',search);
   input.addEventListener('blur',()=>setTimeout(()=>list.classList.add('hidden'),150));
   input.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); const first=(list._items||[])[0]; if(first) pick(first); } if(e.key==='Escape') list.classList.add('hidden'); });
@@ -2628,11 +2654,13 @@ function analysisQueryParams(){
   if(!a.start||!a.end) throw new Error('조회 기간을 선택해 주세요.');
   if(a.start>a.end) throw new Error('시작일이 종료일보다 늦습니다.');
   const params={start:a.start,end:a.end,meal_type:a.mealType};
-  if(a.tab==='menu'){ if(!a.menuName) throw new Error('목록에서 메뉴를 골라 주세요.'); params.name=a.menuName; params.weather=a.weatherFilter; }
+  if(a.tab==='menu'){ if(!a.menuItems.length) throw new Error('목록에서 메뉴를 하나 이상 골라 주세요.'); params.mode=a.menuMode; params.names=[...a.menuItems]; params.weather=a.weatherFilter; }
+  if(a.tab==='popular'){ const md=Number(a.popMinDays); if(!Number.isInteger(md)||md<1||md>365) throw new Error('최소 등장 횟수는 1~365 사이로 입력해 주세요.'); Object.assign(params,{basis:a.popBasis,order:a.popOrder,limit:a.popLimit,min_days:md,main_only:a.popMainOnly}); }
   if(a.tab==='ingredient'){ if(!a.ingredient) throw new Error('목록에서 재료를 골라 주세요.'); params.ingredient_id=a.ingredient.id; params.weather=a.weatherFilter; }
   return params;
 }
-const ANALYSIS_ENDPOINTS={daily:'/api/analysis/daily',menu:'/api/analysis/menu-group',ingredient:'/api/analysis/ingredient',weather:'/api/analysis/weather'};
+function analysisSearchParams(params){ const sp=new URLSearchParams(); Object.entries(params).forEach(([k,v])=>{ if(Array.isArray(v)) v.forEach(x=>sp.append(k,x)); else sp.append(k,v); }); return sp; }
+const ANALYSIS_ENDPOINTS={daily:'/api/analysis/daily',popular:'/api/analysis/popular-menus',menu:'/api/analysis/menus',ingredient:'/api/analysis/ingredient',weather:'/api/analysis/weather'};
 
 async function runAnalysisQuery(){
   const a=analysisState();
@@ -2641,7 +2669,7 @@ async function runAnalysisQuery(){
   const tab=a.tab;
   await withUILock(`${ANALYSIS_TABS[tab]}를 조회하고 있습니다.`, async()=>{
     try{
-      const result=await api(`${ANALYSIS_ENDPOINTS[tab]}?${new URLSearchParams(params)}`);
+      const result=await api(`${ANALYSIS_ENDPOINTS[tab]}?${analysisSearchParams(params)}`);
       if(a.tab!==tab) return;
       a.result=result;a.query={tab,params};a.band=null;
       renderAnalysisResult();
@@ -2659,6 +2687,8 @@ function renderAnalysisResult(){
   const a=analysisState();const root=$('#analysis-result');if(!root)return;
   if(!a.result){ root.innerHTML=`<div class="an-empty">조건을 정한 뒤 <strong>조회</strong> 버튼을 눌러 주세요.</div>`; return; }
   if(a.query.tab==='weather'){ renderAnalysisWeather(root,a.result); return; }
+  if(a.query.tab==='popular'){ renderAnalysisPopular(root,a.result); return; }
+  if(a.query.tab==='menu'){ renderAnalysisMenus(root,a.result); return; }
   const r=a.result;
   const titleBits=[r.meal_type_name, `${r.start} ~ ${r.end}`];
   if(r.menu_group) titleBits.unshift(`메뉴: ${r.menu_group}`);
@@ -2692,10 +2722,10 @@ function bindAnalysisTable(root){
 
 async function downloadAnalysisExcel(){
   const a=analysisState();if(!a.query)return;
-  const tabKey={daily:'daily',menu:'menu',ingredient:'ingredient',weather:'weather'}[a.query.tab];
+  const tabKey={daily:'daily',popular:'popular',menu:'menus',ingredient:'ingredient',weather:'weather'}[a.query.tab];
   await withUILock('Excel 파일을 만들고 있습니다.', async()=>{
     try{
-      const response=await requestBinary(`/api/analysis/export.xlsx?${new URLSearchParams({...a.query.params,tab:tabKey})}`);
+      const response=await requestBinary(`/api/analysis/export.xlsx?${analysisSearchParams({...a.query.params,tab:tabKey})}`);
       const blob=await response.blob();
       triggerDownload(blob,parseContentDispositionFilename(response.headers.get('content-disposition'),'식수분석.xlsx'));
     }catch(e){toast(e.message,true);}
@@ -2754,6 +2784,124 @@ function drawAnalysisLineChart(container, points, {showWeather=false, onClick}={
     rect.addEventListener('mouseenter',e=>show(i,e));
     rect.addEventListener('mouseleave',()=>{tip.classList.add('hidden');cursor.classList.add('hidden');});
     rect.addEventListener('click',()=>onClick&&onClick(points[i]));});
+}
+
+function analysisSignedText(v){ if(v===null||v===undefined) return '—'; if(v>0) return `+${numberText(v)}명`; if(v<0) return `-${numberText(-v)}명`; return '0명'; }
+
+function renderAnalysisPopular(root, r){
+  const a=analysisState();
+  const title=[`${r.order==='top'?'상위':'하위'} 인기 메뉴 ${r.limit}개`, r.basis_name+' 기준', r.meal_type_name, `${r.start} ~ ${r.end}`];
+  if(r.main_only) title.push('메인 메뉴로 나온 날만');
+  const explain=`그 메뉴가 나온 날 실제 식수가 평소 식수보다 평균 몇 명 많았는지(+), 적었는지(−)로 순서를 매겼어요. ${r.min_days}번보다 적게 나온 메뉴${r.excluded_too_few?` ${numberText(r.excluded_too_few)}개`:''}는 뺐어요.`;
+  if(!r.items.length){ root.innerHTML=`<div class="an-card"><h3>${escapeHtml(title.join(' · '))}</h3><p class="an-sub">${escapeHtml(explain)}</p><div class="an-empty">조건에 맞는 메뉴가 없습니다. 최소 등장 횟수를 줄이거나 기간을 늘려 보세요.</div></div>`; return; }
+  const maxAbs=Math.max(1,...r.items.map(i=>Math.abs(i.avg_diff||0)));
+  const bars=r.items.map((item,i)=>{const v=item.avg_diff||0;const w=Math.abs(v)/maxAbs*50;
+    return `<button type="button" class="an-pop-row" data-pop="${i}" title="${escapeHtml(item.name)} — 눌러서 메뉴별 식수 보기">
+      <span class="an-pop-rank">${item.rank}</span><span class="an-pop-name">${escapeHtml(item.name)}</span>
+      <span class="an-pop-track"><span class="an-pop-zero"></span><span class="an-pop-bar ${v>=0?'an-pop-pos':'an-pop-neg'}" style="${v>=0?`left:50%;width:${w}%`:`right:50%;width:${w}%`}"></span></span>
+      <span class="an-pop-val ${analysisDiffClass(v)}">${analysisSignedText(item.avg_diff)}</span></button>`;}).join('');
+  root.innerHTML=`<div class="an-card">
+      <div class="an-card-head"><h3>${escapeHtml(title.join(' · '))}</h3><span class="an-days">후보 ${numberText(r.candidates)}개</span></div>
+      <p class="an-explain">${escapeHtml(explain)}</p>
+      <div class="an-pop-chart">${bars}</div>
+      <p class="an-sub">막대나 표의 메뉴를 누르면 메뉴별 식수에서 그 메뉴를 날짜별로 볼 수 있어요.</p>
+    </div>
+    <div class="an-card"><div class="an-table-head"><h4>인기 메뉴 표</h4><button type="button" class="secondary-button" data-an-download>Excel 내려받기</button></div>
+      <div class="table-wrap an-table-wrap"><table class="data-table an-table"><thead><tr><th class="num">순위</th><th>메뉴</th><th class="num">나온 날 수</th><th class="num">평균 실제</th><th class="num">평균 평소</th><th class="num">평균 차이(명)</th></tr></thead><tbody>
+      ${r.items.map((item,i)=>`<tr data-pop="${i}" tabindex="0"><td class="num">${item.rank}</td><td>${escapeHtml(item.name)}</td><td class="num">${numberText(item.days)}일</td><td class="num">${analysisNum(item.avg_actual)}명</td><td class="num">${analysisNum(item.avg_usual)}명</td><td class="num ${analysisDiffClass(item.avg_diff)}">${analysisSignedText(item.avg_diff)}</td></tr>`).join('')}
+      </tbody></table></div></div>`;
+  $$('[data-pop]',root).forEach(el=>{const go=()=>openPopularMenu(r.basis,r.items[Number(el.dataset.pop)].name);el.addEventListener('click',go);el.addEventListener('keydown',e=>{if(e.key==='Enter')go();});});
+  $$('[data-an-download]',root).forEach(b=>b.addEventListener('click',downloadAnalysisExcel));
+}
+
+function openPopularMenu(basis, name){
+  const a=analysisState();
+  switchAnalysisTab('menu');
+  a.menuMode=basis;a.menuItems=[name];
+  renderAnalysisConditions();
+  runAnalysisQuery();
+}
+
+function renderAnalysisMenus(root, r){
+  const a=analysisState();
+  const color=i=>ANALYSIS_COLORS[i%ANALYSIS_COLORS.length];
+  const title=[`${r.mode_name} 기준`, r.meal_type_name, `${r.start} ~ ${r.end}`];
+  if(r.weather_filter&&r.weather_filter!=='all') title.push(r.weather_filter_name);
+  const notes=r.items.filter(i=>i.low_sample_note).map(i=>`<div class="an-note">${escapeHtml(i.name)}: ${escapeHtml(i.low_sample_note)}</div>`).join('');
+  if(!r.dates.length){ root.innerHTML=`<div class="an-card"><h3>${escapeHtml(title.join(' · '))}</h3><div class="an-empty">조건에 맞는 식단(실제 식수 입력된 날)이 없습니다.</div></div>`; return; }
+  const weatherNote=a.showWeather?`<p class="an-sub">날씨는 ${escapeHtml(r.meal_type_name)} 배식시간(${escapeHtml(r.weather_window)}) 관측값입니다. 기온은 평균, 비는 합계예요.</p>`:'';
+  const legend=r.items.map((item,i)=>`<span class="an-lg-item"><span class="an-lg-swatch" style="background:${color(i)}"></span>${escapeHtml(item.name)}</span>`).join('')+`<span class="an-lg-item"><span class="an-lg-usual"></span>평소 식수 (지난 1년 ${escapeHtml(r.meal_type_name)} 평균)</span>`;
+  const summary=`<table class="data-table an-table"><thead><tr><th>메뉴</th><th class="num">나온 날 수</th><th class="num">평균 실제</th><th class="num">평균 평소</th><th class="num">평균 차이(명)</th></tr></thead><tbody>
+    ${r.items.map((item,i)=>`<tr><td><span class="an-lg-swatch" style="background:${color(i)}"></span>${escapeHtml(item.name)}</td><td class="num">${numberText(item.days)}일</td><td class="num">${analysisNum(item.avg_actual)}${item.avg_actual===null?'':'명'}</td><td class="num">${analysisNum(item.avg_usual)}${item.avg_usual===null?'':'명'}</td><td class="num ${analysisDiffClass(item.avg_diff)}">${analysisSignedText(item.avg_diff)}</td></tr>`).join('')}</tbody></table>`;
+  const rows=r.items.flatMap((item,i)=>item.points.map(p=>({item,i,p}))).sort((x,y)=>x.p.date.localeCompare(y.p.date)||x.i-y.i);
+  const table=`<div class="table-wrap an-table-wrap"><table class="data-table an-table"><thead><tr><th>날짜</th><th>메뉴</th><th class="num">실제</th><th class="num">평소</th><th class="num">차이(명)</th>${a.showWeather?'<th>배식시간 날씨</th>':''}</tr></thead><tbody>
+    ${rows.map(({item,i,p})=>`<tr data-an-date="${p.date}" tabindex="0"><td>${p.date} (${p.weekday})</td><td><span class="an-lg-swatch" style="background:${color(i)}"></span>${escapeHtml(item.name)}</td><td class="num">${numberText(p.actual)}명</td><td class="num">${p.usual===null?'—':numberText(p.usual)+'명'}</td><td class="num ${analysisDiffClass(p.diff)}">${analysisDiffText(p.diff)}</td>${a.showWeather?`<td>${p.weather?escapeHtml(p.weather.text):'<span class="muted">날씨 자료 없음</span>'}</td>`:''}</tr>`).join('')}
+    </tbody></table></div>`;
+  root.innerHTML=`<div class="an-card">
+      <div class="an-card-head"><h3>${escapeHtml(title.join(' · '))}</h3><span class="an-days">${numberText(r.dates.length)}일</span></div>
+      ${notes}${weatherNote}
+      <div class="an-legend an-legend-multi">${legend}</div>
+      <div class="an-chart" id="an-chart"></div>
+      <p class="an-sub">메뉴가 나온 날에만 점이 찍혀요. 점이나 표의 날짜를 누르면 그날 식단을 볼 수 있어요.</p>
+    </div>
+    <div class="an-card"><div class="an-table-head"><h4>메뉴별 요약</h4><button type="button" class="secondary-button" data-an-download>Excel 내려받기</button></div>${summary}</div>
+    <div class="an-card"><div class="an-table-head"><h4>날짜별 표</h4></div>${table}</div>`;
+  drawAnalysisMultiChart($('#an-chart'),r,{showWeather:a.showWeather,onClick:d=>openAnalysisDetail(d)});
+  bindAnalysisTable(root);
+}
+
+function drawAnalysisMultiChart(container, r, {showWeather=false, onClick}={}){
+  if(!container)return;
+  const days=r.usual_line;const n=days.length;
+  const idx=new Map(days.map((d,i)=>[d.date,i]));
+  const series=r.items.map((item,si)=>({name:item.name,color:ANALYSIS_COLORS[si%ANALYSIS_COLORS.length],byDate:new Map(item.points.map(p=>[p.date,p]))}));
+  const weatherByDate=new Map();r.items.forEach(item=>item.points.forEach(p=>{if(p.weather&&!weatherByDate.has(p.date))weatherByDate.set(p.date,p.weather);}));
+  const width=Math.max(560,container.clientWidth||960), dense=n>1&&(width-76)/(n-1)<22;
+  const top=showWeather?(dense?34:52):18, bottom=46, left=56, right=20, height=340+top;
+  const values=[...days.map(d=>d.usual),...r.items.flatMap(i=>i.points.map(p=>p.actual))].filter(v=>v!==null&&v!==undefined);
+  const pad=Math.max(5,(Math.max(...values)-Math.min(...values))*0.12);
+  const {lo,hi,ticks}=analysisNiceTicks(Math.max(0,Math.min(...values)-pad),Math.max(...values)+pad);
+  const plotW=width-left-right, plotH=height-top-bottom;
+  const step=n>1?plotW/(n-1):0;
+  const x=i=>n>1?left+i*step:left+plotW/2;
+  const y=v=>top+plotH-(v-lo)/(hi-lo||1)*plotH;
+  let usualPath='',open=false;days.forEach((d,i)=>{if(d.usual===null||d.usual===undefined){open=false;return;}usualPath+=`${open?'L':'M'}${x(i).toFixed(1)},${y(d.usual).toFixed(1)}`;open=true;});
+  const r0=n>120?2.2:3.8;
+  const lines=series.map(s=>{const pts=[...s.byDate.values()].sort((a,b)=>a.date.localeCompare(b.date));
+    const d=pts.map((p,k)=>`${k?'L':'M'}${x(idx.get(p.date)).toFixed(1)},${y(p.actual).toFixed(1)}`).join('');
+    return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2.2"/>${pts.map(p=>`<circle cx="${x(idx.get(p.date))}" cy="${y(p.actual)}" r="${r0}" fill="${s.color}" stroke="#fff" stroke-width="1"/>`).join('')}`;}).join('');
+  const labelEvery=Math.max(1,Math.ceil(n/Math.max(4,Math.floor(plotW/80))));
+  const grid=ticks.map(t=>`<line x1="${left}" x2="${width-right}" y1="${y(t)}" y2="${y(t)}" class="an-grid"/><text x="${left-8}" y="${y(t)+4}" class="an-axis" text-anchor="end">${numberText(t)}</text>`).join('');
+  let lastYear=null;
+  const xLabels=days.map((d,i)=>{if(!(i%labelEvery===0||(i===n-1&&n<=12)))return '';const year=d.date.slice(0,4);const showYear=year!==lastYear;lastYear=year;
+    return `<text x="${x(i)}" y="${height-bottom+18}" class="an-axis" text-anchor="middle">${escapeHtml(d.label.replace(/\(.\)$/,''))}</text>${showYear?`<text x="${x(i)}" y="${height-bottom+32}" class="an-axis an-axis-year" text-anchor="middle">${year}년</text>`:''}`;}).join('');
+  let weatherMarks='';
+  if(showWeather){
+    weatherMarks=days.map((d,i)=>{const w=weatherByDate.get(d.date);if(!w)return '';const icon=analysisWeatherIcon(w);
+      if(dense){return icon?`<text x="${x(i)}" y="${top-12}" text-anchor="middle" class="an-wicon-sm">${icon}</text>`:`<circle cx="${x(i)}" cy="${top-16}" r="2.2" class="an-tempdot ${analysisTempClass(w.temp)}"/>`;}
+      return `<text x="${x(i)}" y="${top-30}" text-anchor="middle" class="an-wicon">${icon||'·'}</text><text x="${x(i)}" y="${top-12}" text-anchor="middle" class="an-wtemp ${analysisTempClass(w.temp)}">${w.temp===null?'':Math.round(w.temp)+'°'}</text>`;}).join('');
+  }
+  const hits=days.map((d,i)=>`<rect x="${x(i)-Math.max(step,8)/2}" y="${top}" width="${Math.max(step,8)}" height="${plotH}" class="an-hit" data-i="${i}"/>`).join('');
+  container.innerHTML=`<svg class="an-svg" viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="메뉴별 실제 식수와 평소 식수 비교 선그래프">
+      ${grid}<line x1="${left}" x2="${width-right}" y1="${top+plotH}" y2="${top+plotH}" class="an-baseline"/>
+      <text x="${left-44}" y="${top-4}" class="an-axis">(명)</text>
+      <path d="${usualPath}" class="an-line-usual"/>${lines}
+      ${weatherMarks}<line class="an-cursor hidden" y1="${top}" y2="${top+plotH}"/>${xLabels}${hits}
+    </svg><div class="an-tip hidden"></div>`;
+  const tip=$('.an-tip',container), cursor=$('.an-cursor',container), svg=$('svg',container);
+  const show=i=>{const d=days[i];if(!d)return;
+    const served=series.filter(s=>s.byDate.has(d.date)).map(s=>{const p=s.byDate.get(d.date);return `<span><b style="color:${s.color}">●</b> ${escapeHtml(s.name)}: 실제 ${numberText(p.actual)}명 (${analysisDiffText(p.diff)})</span>`;}).join('');
+    const w=weatherByDate.get(d.date);
+    tip.innerHTML=`<strong>${escapeHtml(d.date)} ${escapeHtml(r.meal_type_name)} · 평소 ${d.usual===null?'—':numberText(d.usual)+'명'}</strong>${served}${showWeather?`<span>${w?escapeHtml(w.text):'날씨 자료 없음'}</span>`:''}<em>눌러서 식단 보기</em>`;
+    tip.classList.remove('hidden');
+    const box=container.getBoundingClientRect();const scale=box.width/width;const px=x(i)*scale;
+    const ys=series.filter(s=>s.byDate.has(d.date)).map(s=>y(s.byDate.get(d.date).actual));
+    tip.style.left=`${Math.min(Math.max(px,140),box.width-140)}px`;tip.style.top=`${Math.max(0,Math.min(...ys,y(d.usual??lo))*scale-12)}px`;
+    cursor.setAttribute('x1',x(i));cursor.setAttribute('x2',x(i));cursor.classList.remove('hidden');};
+  $$('.an-hit',svg).forEach(rect=>{const i=Number(rect.dataset.i);
+    rect.addEventListener('mouseenter',()=>show(i));
+    rect.addEventListener('mouseleave',()=>{tip.classList.add('hidden');cursor.classList.add('hidden');});
+    rect.addEventListener('click',()=>onClick&&onClick(days[i].date));});
 }
 
 function renderAnalysisWeather(root, r){

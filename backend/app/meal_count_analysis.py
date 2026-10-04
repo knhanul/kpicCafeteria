@@ -13,6 +13,7 @@ temperature = mean of the meal's hourly observations, rain = sum of their precip
 from __future__ import annotations
 
 from bisect import bisect_left
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Iterable
@@ -442,3 +443,172 @@ def date_detail(db: Session, meal_type: str, service_date: date, ingredient_id: 
         "weather_window": weather_window_label(meal_type),
         "menus": menus,
     }
+
+
+# ---------------------------------------------------------------------------
+# 인기 메뉴 / 메뉴 이름·통계집계명 조회 / 여러 메뉴 비교
+# ---------------------------------------------------------------------------
+MENU_MODES = {"name": "메뉴 이름", "group": "통계집계명"}
+DEFAULT_MIN_DAYS = {"LUNCH": 5, "DINNER": 4}
+MAX_COMPARE_ITEMS = 5
+
+
+def check_menu_mode(mode: str) -> str:
+    if mode not in MENU_MODES:
+        raise AnalysisError("조회 기준은 메뉴 이름 또는 통계집계명만 선택할 수 있습니다.")
+    return mode
+
+
+def _menu_key_column(mode: str):
+    return Menu.name if mode == "name" else Menu.canonical_name
+
+
+def _service_menu_keys(
+    db: Session, meal_type: str, start: date, end: date, mode: str,
+    keys: list[str] | None = None, main_only: bool = False,
+) -> dict[str, set[int]]:
+    """{menu key: set of meal_service ids} for meals in the period (one key counted once per meal)."""
+    column = _menu_key_column(mode)
+    stmt = (
+        select(column, MealService.id)
+        .join(MealServiceMenu, MealServiceMenu.menu_id == Menu.id)
+        .join(MealService, MealService.id == MealServiceMenu.meal_service_id)
+        .where(MealService.meal_type == meal_type, MealService.service_date >= start, MealService.service_date <= end, column != "")
+        .distinct()
+    )
+    if keys is not None:
+        stmt = stmt.where(column.in_(keys))
+    if main_only:
+        stmt = stmt.where(MealServiceMenu.is_representative.is_(True))
+    result: dict[str, set[int]] = defaultdict(set)
+    for key, service_id in db.execute(stmt).all():
+        result[key].add(service_id)
+    return result
+
+
+def popular_menus(
+    db: Session, meal_type: str, start: date, end: date, basis: str = "name", order: str = "top",
+    limit: int = 10, min_days: int | None = None, main_only: bool = False,
+) -> dict[str, Any]:
+    """Menus ranked by the average difference (actual - 평소 식수, people) on the days they were served."""
+    check_meal_type(meal_type)
+    check_period(start, end)
+    check_menu_mode(basis)
+    if order not in {"top", "bottom"}:
+        raise AnalysisError("상위 또는 하위만 선택할 수 있습니다.")
+    if limit not in {10, 20}:
+        raise AnalysisError("10개 또는 20개만 볼 수 있습니다.")
+    if min_days is None:
+        min_days = DEFAULT_MIN_DAYS[meal_type]
+    if min_days < 1 or min_days > 365:
+        raise AnalysisError("최소 등장 횟수는 1~365 사이로 입력해 주세요.")
+    points = {p["service_id"]: p for p in _build_points(db, meal_type, start, end) if p["usual"] is not None}
+    rows = []
+    too_few = 0
+    for key, service_ids in _service_menu_keys(db, meal_type, start, end, basis, main_only=main_only).items():
+        members = [points[sid] for sid in service_ids if sid in points]
+        if not members:
+            continue
+        if len(members) < min_days:
+            too_few += 1
+            continue
+        rows.append({
+            "name": key,
+            "days": len(members),
+            "avg_actual": _avg([p["actual"] for p in members]),
+            "avg_usual": _avg([p["usual"] for p in members]),
+            "avg_diff": _avg([p["diff"] for p in members]),
+            "avg_diff_exact": sum(p["diff"] for p in members) / len(members),
+        })
+    sign = -1 if order == "top" else 1
+    rows.sort(key=lambda r: (sign * r["avg_diff_exact"], -r["days"], r["name"]))
+    ranked = rows[:limit]
+    for index, row in enumerate(ranked, start=1):
+        row["rank"] = index
+        row["diff_text"] = diff_text(row["avg_diff"])
+        row.pop("avg_diff_exact")
+    return {
+        "meal_type": meal_type,
+        "meal_type_name": MEAL_TYPES[meal_type],
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "basis": basis,
+        "basis_name": MENU_MODES[basis],
+        "order": order,
+        "limit": limit,
+        "min_days": min_days,
+        "main_only": main_only,
+        "candidates": len(rows),
+        "excluded_too_few": too_few,
+        "items": ranked,
+    }
+
+
+def menu_compare(
+    db: Session, meal_type: str, start: date, end: date, mode: str, names: list[str], weather_filter: str = "all",
+) -> dict[str, Any]:
+    """One series per selected menu (by exact name or 통계집계명) plus the shared 평소 식수 line."""
+    check_meal_type(meal_type)
+    check_period(start, end)
+    check_menu_mode(mode)
+    clean = []
+    for name in names:
+        name = (name or "").strip()
+        if name and name not in clean:
+            clean.append(name)
+    if not clean:
+        raise AnalysisError("메뉴를 하나 이상 선택해 주세요.")
+    if len(clean) > MAX_COMPARE_ITEMS:
+        raise AnalysisError(f"메뉴는 최대 {MAX_COMPARE_ITEMS}개까지 비교할 수 있습니다.")
+    if weather_filter not in WEATHER_FILTERS:
+        raise AnalysisError("날씨 조건이 올바르지 않습니다.")
+    by_key = _service_menu_keys(db, meal_type, start, end, mode, keys=clean)
+    wanted = set().union(*by_key.values()) if by_key else set()
+    all_points = _apply_weather_filter(_build_points(db, meal_type, start, end, wanted), weather_filter) if wanted else []
+    by_id = {p["service_id"]: p for p in all_points}
+    items = []
+    for name in clean:
+        members = sorted((by_id[sid] for sid in by_key.get(name, set()) if sid in by_id), key=lambda p: p["date"])
+        with_usual = [p for p in members if p["usual"] is not None]
+        items.append({
+            "name": name,
+            "points": members,
+            "days": len(members),
+            "avg_actual": _avg([p["actual"] for p in members]),
+            "avg_usual": _avg([p["usual"] for p in with_usual]),
+            "avg_diff": _avg([p["diff"] for p in with_usual]),
+            "low_sample_note": low_sample_note(len(members)),
+        })
+    used = sorted({p["date"] for item in items for p in item["points"]})
+    usual_line = [{"date": by_date["date"], "label": by_date["label"], "usual": by_date["usual"]} for by_date in sorted(
+        {p["date"]: p for item in items for p in item["points"]}.values(), key=lambda p: p["date"])]
+    return {
+        "meal_type": meal_type,
+        "meal_type_name": MEAL_TYPES[meal_type],
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "weather_window": weather_window_label(meal_type),
+        "mode": mode,
+        "mode_name": MENU_MODES[mode],
+        "weather_filter": weather_filter,
+        "weather_filter_name": WEATHER_FILTERS[weather_filter],
+        "items": items,
+        "dates": used,
+        "usual_line": usual_line,
+    }
+
+
+def search_menus(db: Session, mode: str = "group", query: str = "", limit: int = 30) -> list[dict[str, Any]]:
+    check_menu_mode(mode)
+    if mode == "group":
+        return search_menu_groups(db, query, limit)
+    stmt = (
+        select(Menu.name, func.count(func.distinct(MealServiceMenu.meal_service_id)))
+        .join(MealServiceMenu, MealServiceMenu.menu_id == Menu.id)
+        .group_by(Menu.name)
+    )
+    query = (query or "").strip()
+    if query:
+        stmt = stmt.where(Menu.name.ilike(f"%{query}%"))
+    rows = db.execute(stmt.order_by(func.count(func.distinct(MealServiceMenu.meal_service_id)).desc(), Menu.name).limit(limit)).all()
+    return [{"name": name, "served": int(count)} for name, count in rows]
