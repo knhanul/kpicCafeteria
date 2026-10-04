@@ -2670,7 +2670,7 @@ function renderAnalysisResult(){
   root.innerHTML=`<div class="an-card">
       <div class="an-card-head"><h3>${escapeHtml(titleBits.join(' · '))}</h3><span class="an-days">${numberText(r.points.length)}일</span></div>
       ${note}${weatherNote}
-      <div class="an-legend"><span class="an-lg-actual"></span>실제 식수<span class="an-lg-usual"></span>평소 식수 (지난 1년 같은 요일 평균)</div>
+      <div class="an-legend"><span class="an-lg-actual"></span>실제 식수<span class="an-lg-usual"></span>평소 식수 (지난 1년 ${escapeHtml(r.meal_type_name)} 평균)</div>
       <div class="an-chart" id="an-chart"></div>
       <p class="an-sub">점이나 표의 날짜를 누르면 그날 식단을 볼 수 있어요.</p>
     </div>
@@ -2801,7 +2801,7 @@ async function openAnalysisDetail(dateIso){
         <div><span>평소</span><strong>${d.usual===null?'—':numberText(d.usual)+'명'}</strong></div>
         <div><span>차이</span><strong class="${analysisDiffClass(d.diff)}">${escapeHtml(d.diff_text)}</strong></div>
       </div>
-      <p class="an-sub">평소 식수는 지난 1년 같은 요일 ${escapeHtml(d.meal_type_name)} ${numberText(d.usual_days)}일의 평균이에요.</p>
+      <p class="an-sub">평소 식수는 지난 1년 ${escapeHtml(d.meal_type_name)} ${numberText(d.usual_days)}일의 평균이에요.</p>
       <div class="an-detail-weather">${d.weather?`${analysisWeatherIcon(d.weather)} 배식시간 날씨: ${escapeHtml(d.weather.text)}`:`배식시간(${escapeHtml(d.weather_window)}) 날씨 자료가 없습니다.`}</div>
       ${ingredientName?`<div class="an-note">‘${escapeHtml(ingredientName)}’이(가) 들어간 메뉴를 표시했어요.</div>`:''}
       <ol class="an-menu-list">${d.menus.map(m=>`<li class="${m.has_ingredient?'an-hl':''}">

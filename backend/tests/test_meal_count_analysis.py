@@ -81,26 +81,35 @@ class Builder:
         return service
 
 
-def test_usual_count_uses_same_weekday_previous_52_weeks_and_excludes_self(engine):
+def test_usual_count_uses_all_weekdays_in_previous_364_days_and_excludes_self(engine):
     target = MONDAY + timedelta(weeks=60)
     with Session(engine) as db:
         b = Builder(db)
-        b.meal(target - timedelta(weeks=53), 900)  # older than 52 weeks: ignored
-        b.meal(target - timedelta(weeks=52), 300)  # exactly 52 weeks before: included
+        b.meal(target - timedelta(days=365), 900)  # one day older than the 364-day window: ignored
+        b.meal(target - timedelta(days=364), 300)  # first day of the window: included
+        b.meal(target - timedelta(days=100), 350)  # another weekday: included (weekday is not used)
         b.meal(target - timedelta(weeks=1), 400)
-        b.meal(target - timedelta(days=1), 999)  # Sunday: other weekday, ignored
+        b.meal(target - timedelta(days=1), 450)  # Sunday right before: included
         b.meal(target, 500)  # the day itself: never part of its own usual count
-        b.meal(target - timedelta(weeks=2), 800, meal_type="DINNER")  # other meal type: ignored
+        b.meal(target - timedelta(weeks=2), 80, meal_type="DINNER")  # other meal type: ignored
         db.commit()
         result = analysis.daily(db, "LUNCH", target, target)
+        dinner_usual = analysis.usual_counts(analysis._counted_meals(db, "DINNER", target - timedelta(days=400), target), [target])[target]
     point = result["points"][0]
     assert point["actual"] == 500
-    assert point["usual"] == 350
-    assert point["usual_days"] == 2
-    assert point["diff"] == 150
-    assert point["diff_text"] == "150명 많음"
+    assert point["usual"] == 375  # (300 + 350 + 400 + 450) / 4
+    assert point["usual_days"] == 4
+    assert point["diff"] == 125
+    assert point["diff_text"] == "125명 많음"
     assert point["sentence"].startswith(f"{target.month}/{target.day}(월) 중식")
-    assert "실제 500명 · 평소 350명 · 150명 많음" in point["sentence"]
+    assert "실제 500명 · 평소 375명 · 125명 많음" in point["sentence"]
+    assert dinner_usual == (80, 1)
+
+
+def test_usual_count_rounds_half_up():
+    history = [analysis.MealPoint(1, MONDAY, 100), analysis.MealPoint(2, MONDAY + timedelta(days=1), 101)]
+    assert analysis.usual_counts(history, [MONDAY + timedelta(days=2)])[MONDAY + timedelta(days=2)] == (101, 2)
+    assert analysis.usual_counts(history, [MONDAY])[MONDAY] == (None, 0)
 
 
 def test_closed_days_without_menu_or_actual_are_left_out(engine):

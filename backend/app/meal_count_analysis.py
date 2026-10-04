@@ -3,8 +3,8 @@
 Everything is expressed in people only: the actual count (실제), the usual count (평소 식수) and the
 difference between them (명). No index, score or statistical model.
 
-평소 식수 of a meal = the average actual count of the same meal type on the same weekday during the
-52 weeks (1 year) before that date. Only meals that have menu data and an actual count are used, so
+평소 식수 of a meal = the average actual count of the same meal type (any weekday) during the
+364 days (1 year) before that date. Only meals that have menu data and an actual count are used, so
 closed days (no menu or no actual count) drop out by themselves. The date itself is never included.
 
 Weather is the serving-time weather already stored by the weather upload (weather_meal_period):
@@ -12,7 +12,7 @@ temperature = mean of the meal's hourly observations, rain = sum of their precip
 """
 from __future__ import annotations
 
-from collections import defaultdict
+from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Iterable
@@ -33,7 +33,7 @@ from .weather_import import MEAL_WEATHER_HOURS
 
 MEAL_TYPES = {"LUNCH": "중식", "DINNER": "석식"}
 WEEKDAYS = "월화수목금토일"
-BASELINE_WEEKS = 52
+BASELINE_WEEKS = 52  # 364 days before the date
 LOW_SAMPLE_DAYS = 5
 HOT_TEMP = 28.0
 
@@ -113,16 +113,20 @@ def _counted_meals(db: Session, meal_type: str, start: date, end: date) -> list[
 def usual_counts(history: Iterable[MealPoint], targets: Iterable[date]) -> dict[date, tuple[int | None, int]]:
     """평소 식수 per target date: (rounded average, number of days used).
 
-    Uses the same weekday within the previous 52 weeks, never the date itself.
+    Average of all counted meals (same meal type, any weekday) in the 364 days before the date,
+    never the date itself.
     """
-    by_weekday: dict[int, list[MealPoint]] = defaultdict(list)
-    for point in history:
-        by_weekday[point.service_date.weekday()].append(point)
+    points = sorted(history, key=lambda p: p.service_date)
+    dates = [p.service_date for p in points]
+    prefix = [0]
+    for point in points:
+        prefix.append(prefix[-1] + point.actual)
     result: dict[date, tuple[int | None, int]] = {}
     for target in targets:
-        window_start = target - timedelta(weeks=BASELINE_WEEKS)
-        values = [p.actual for p in by_weekday.get(target.weekday(), []) if window_start <= p.service_date < target]
-        result[target] = (int(sum(values) / len(values) + 0.5) if values else None, len(values))
+        lo = bisect_left(dates, target - timedelta(weeks=BASELINE_WEEKS))
+        hi = bisect_left(dates, target)
+        count = hi - lo
+        result[target] = (int((prefix[hi] - prefix[lo]) / count + 0.5) if count else None, count)
     return result
 
 
@@ -195,7 +199,7 @@ def _build_points(db: Session, meal_type: str, start: date, end: date, only_ids:
         diff = p.actual - usual_value if usual_value is not None else None
         w = weather.get(p.service_date)
         sentence = f"{date_label(p.service_date)} {meal_name} · 실제 {p.actual}명 · " + (
-            f"평소 {usual_value}명 · {diff_text(diff)}" if usual_value is not None else "평소 식수 없음(지난 1년 같은 요일 기록 없음)"
+            f"평소 {usual_value}명 · {diff_text(diff)}" if usual_value is not None else "평소 식수 없음(지난 1년 기록 없음)"
         )
         points.append({
             "date": p.service_date.isoformat(),
