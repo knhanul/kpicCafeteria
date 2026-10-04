@@ -111,6 +111,26 @@ def _counted_meals(db: Session, meal_type: str, start: date, end: date) -> list[
     return [MealPoint(row[0], row[1], int(row[2])) for row in rows]
 
 
+def earliest_counted_date(db: Session, meal_type: str | None = None) -> date | None:
+    """The earliest service_date with actual meal count recorded in the system."""
+    stmt = (
+        select(func.min(MealService.service_date))
+        .join(MealActual, MealActual.meal_service_id == MealService.id)
+        .where(
+            MealActual.actual_count.is_not(None),
+            MealActual.actual_count > 0,
+        )
+    )
+    if meal_type:
+        val = db.scalar(stmt.where(MealService.meal_type == meal_type))
+        if val is not None:
+            return val
+    val = db.scalar(stmt)
+    if val is not None:
+        return val
+    return db.scalar(select(func.min(MealService.service_date)))
+
+
 def usual_counts(history: Iterable[MealPoint], targets: Iterable[date]) -> dict[date, tuple[int | None, int]]:
     """평소 식수 per target date: (rounded average, number of days used).
 
@@ -297,7 +317,7 @@ def menu_group(db: Session, meal_type: str, start: date, end: date, name: str, w
     check_period(start, end)
     name = (name or "").strip()
     if not name:
-        raise AnalysisError("메뉴(통계 집계명)를 선택해 주세요.")
+        raise AnalysisError("메뉴(대표 메뉴명)를 선택해 주세요.")
     ids = _service_ids_for_menu_group(db, meal_type, start, end, name)
     points = _apply_weather_filter(_build_points(db, meal_type, start, end, ids), weather_filter)
     return _envelope(meal_type, start, end, points, menu_group=name, weather_filter=weather_filter, weather_filter_name=WEATHER_FILTERS[weather_filter])
@@ -451,14 +471,14 @@ def date_detail(
 
 
 # ---------------------------------------------------------------------------
-# 인기 메뉴 / 메뉴 이름·통계집계명 조회 / 여러 메뉴 비교
+# 인기 메뉴 / 메뉴 이름·대표 메뉴명 조회 / 여러 메뉴 비교
 # ---------------------------------------------------------------------------
-MENU_MODES = {"name": "메뉴 이름", "group": "통계집계명"}
-DEFAULT_MIN_DAYS = {"LUNCH": 5, "DINNER": 4}
+MENU_MODES = {"name": "메뉴 이름", "group": "대표 메뉴명"}
+DEFAULT_MIN_DAYS = {"LUNCH": 1, "DINNER": 1}
 # 메뉴 범위. 역할(role)은 식단 줄에 따로 저장되지 않아 메뉴 기준정보(Menu.role)를 씁니다.
 MENU_SCOPES = {"main_dish": "주찬만", "main_menu": "메인 메뉴만", "with_side": "부찬 포함", "all": "전체"}
 SCOPE_ROLES = {"main_dish": ("주찬",), "with_side": ("주찬", "부찬")}
-MAIN_MENU_MIN_DAYS = {"LUNCH": 3, "DINNER": 2}
+MAIN_MENU_MIN_DAYS = {"LUNCH": 1, "DINNER": 1}
 
 
 def check_menu_scope(scope: str) -> str:
@@ -483,7 +503,7 @@ MAX_COMPARE_ITEMS = 5
 
 def check_menu_mode(mode: str) -> str:
     if mode not in MENU_MODES:
-        raise AnalysisError("조회 기준은 메뉴 이름 또는 통계집계명만 선택할 수 있습니다.")
+        raise AnalysisError("조회 기준은 메뉴 이름 또는 대표 메뉴명만 선택할 수 있습니다.")
     return mode
 
 
@@ -588,7 +608,7 @@ def menu_compare(
     db: Session, meal_type: str, start: date, end: date, mode: str, names: list[str], weather_filter: str = "all",
     scope: str = "all", scopes: list[str] | None = None,
 ) -> dict[str, Any]:
-    """One series per selected menu (by exact name or 통계집계명) plus the shared 평소 식수 line."""
+    """One series per selected menu (by exact name or 대표 메뉴명) plus the shared 평소 식수 line."""
     check_meal_type(meal_type)
     check_period(start, end)
     check_menu_mode(mode)

@@ -31,6 +31,12 @@ def daily(start: date, end: date, meal_type: str = "LUNCH", db: Session = Depend
     return _run(analysis.daily, db, meal_type, start, end)
 
 
+@router.get("/earliest-date")
+def earliest_date(meal_type: str | None = None, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    dt = analysis.earliest_counted_date(db, meal_type)
+    return {"date": dt.isoformat() if dt else None}
+
+
 @router.get("/menu-groups/search")
 def menu_groups_search(q: str = "", db: Session = Depends(get_db), user: User = Depends(current_user)):
     return {"items": analysis.search_menu_groups(db, q)}

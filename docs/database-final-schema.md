@@ -26,7 +26,7 @@ Ingredient                MealServiceMenuIngredient.*_snapshot
 
 ### 기준정보
 
-- `menus`: 메뉴명, 통계 집계명, 역할, 활성 상태
+- `menus`: 메뉴명, 대표 메뉴명, 역할, 활성 상태
 - `recipes`: 메뉴별 Recipe 이름, version, composition_key, 기본/활성 상태
 - `recipe_ingredients`: 현재 Recipe의 재료, 100인 수량, 단위, 주재료, 순서
 - `ingredients`: 표준재료명, 통계분석군, 기본단위, kg 환산계수, 활성 상태
