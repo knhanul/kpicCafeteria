@@ -4,6 +4,7 @@ import secrets
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -71,13 +72,29 @@ def preview_import(
 CLAIMABLE_IMPORT_STATUSES = ("PREVIEWED", "FAILED")
 
 
+# In-process progress of running base-data imports (single uvicorn worker). Best effort: when it is
+# missing (e.g. another worker), the UI simply shows an indeterminate progress bar.
+IMPORT_PROGRESS: dict[str, dict[str, Any]] = {}
+
+
 def _run_migration_import(token: str, mode: str, user_id: int) -> None:
+    def progress(percent: int, message: str) -> None:
+        IMPORT_PROGRESS[token] = {"percent": int(percent), "message": message}
+
+    IMPORT_PROGRESS[token] = {"percent": 0, "message": "작업을 시작했습니다."}
+    try:
+        _run_migration_import_inner(token, mode, user_id, progress)
+    finally:
+        IMPORT_PROGRESS.pop(token, None)
+
+
+def _run_migration_import_inner(token: str, mode: str, user_id: int, progress) -> None:
     with SessionLocal() as db:
         job = db.scalar(select(ImportJob).where(ImportJob.token == token))
         if not job or job.status != "PROCESSING":
             return
         try:
-            result = MigrationImporter(Path(job.storage_path)).apply(db, mode=mode, user_id=user_id)
+            result = MigrationImporter(Path(job.storage_path)).apply(db, mode=mode, user_id=user_id, progress=progress)
             job = db.scalar(select(ImportJob).where(ImportJob.token == token))
             if job:
                 job.status = "COMPLETED"
@@ -139,6 +156,7 @@ def get_import_job(token: str, db: Session = Depends(get_db), user: User = Depen
     return {
         "token": job.token,
         "status": job.status,
+        "progress": IMPORT_PROGRESS.get(job.token) if job.status == "PROCESSING" else None,
         "result": (job.summary or {}).get("result"),
         "errors": job.errors or [],
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,

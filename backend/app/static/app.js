@@ -2,7 +2,7 @@ const state = {
   view: 'workspace', mode: 'meal', focus: false, weeks: 2,
   weekStart: mondayOf(new Date()), workspace: null,
   selectedServiceId: null, selectedService: null, selectedMenuItemId: null,
-  stats: null, dashboard: null, importToken: null, actualMealUpload: null, weatherUpload: null, weatherOffset: 0, weatherMealOffset: 0, weatherHistoryOffset: 0, masterTab: 'menus', masterSelectionId: null, masterMenuDetailTab: 'recipe',
+  analysis: null, importToken: null, actualMealUpload: null, weatherUpload: null, weatherOffset: 0, weatherMealOffset: 0, weatherHistoryOffset: 0, masterTab: 'menus', masterSelectionId: null, masterMenuDetailTab: 'recipe',
   masterDataTab: 'hwpx-templates', masterDataSelectionId: null, mealDefaults: null,
   masterIngredientDetailTab: 'info', masterIngredientUsage: {ingredientId:null,items:[],offset:0,total:0,hasMore:false,loading:false,error:''}, masterIngredientUsageQuery:'',
   masterMenuHistory: {menuId:null,items:[],offset:0,total:0,hasMore:false,loading:false,error:'',snapshotCache:{},expandedSnapshotId:null}, masterHistoryFilter:'',
@@ -202,6 +202,7 @@ async function downloadDocumentPreviewHwpx() {
   if (!preview) return;
   const config = DOCUMENT_PREVIEW_CONFIG[preview.type];
   if (!config) return;
+  const lock = lockUI('HWPX 파일을 만들고 있습니다.');
   try {
     const response = await requestBinary(config.hwpxUrl, json('POST', { start_date: preview.startDate, end_date: preview.endDate }));
     const blob = await response.blob();
@@ -210,6 +211,8 @@ async function downloadDocumentPreviewHwpx() {
     toast('HWPX 파일을 다운로드했습니다.');
   } catch (error) {
     toast(error.message, true);
+  } finally {
+    lock.release();
   }
 }
 
@@ -250,6 +253,15 @@ function addMinutes(time, delta) {
   const [hour, minute] = normalized.split(':').map(Number);
   const total = (hour * 60 + minute + delta + 1440) % 1440;
   return `${String(Math.floor(total/60)).padStart(2,'0')}:${String(total%60).padStart(2,'0')}`;
+}
+
+// 검색창은 입력할 때마다 조회하지 않고, Enter 키나 조회/검색 버튼을 눌렀을 때만 조회합니다.
+// keyup 기준이라 한글 조합 중 Enter를 눌러도 조합이 끝난 글자로 한 번만 조회됩니다.
+function bindSearchSubmit(input, button, run){
+  if(!input) return;
+  input.addEventListener('keydown',e=>{ if(e.key==='Enter') e.preventDefault(); });
+  input.addEventListener('keyup',e=>{ if(e.key==='Enter') run(input.value); });
+  button?.addEventListener('click',()=>run(input.value));
 }
 
 function createTimeInput24({value, onChange, stepMinutes=5, disabled=false, required=false, label='', showQuickButtons=true}) {
@@ -321,7 +333,7 @@ function bindGlobal() {
   $$('#orders-view-tabs button').forEach(button=>button.addEventListener('click',()=>{state.ordersView=button.dataset.orderView;$$('#orders-view-tabs button').forEach(x=>x.classList.toggle('active',x===button));renderOrders();}));
   $('#orders-status-filter')?.addEventListener('change',renderOrders);
   const ordersSearch=$('#orders-search');
-  if(ordersSearch){let composing=false;ordersSearch.addEventListener('compositionstart',()=>{composing=true;});ordersSearch.addEventListener('compositionend',e=>{composing=false;renderOrders();});ordersSearch.addEventListener('input',()=>{if(!composing)renderOrders();});}
+  bindSearchSubmit(ordersSearch,$('#orders-search-btn'),value=>{state.ordersSearchQuery=value;renderOrders();});
   $$('.side-nav-toggle').forEach(btn=>btn.addEventListener('click',toggleNavGroup));
   document.addEventListener('keydown',event=>{
     if(event.key==='Escape' && state.focus) toggleFocus(false);
@@ -333,25 +345,16 @@ function bindGlobal() {
 function switchView(view) {
   state.view=view; $$('.view').forEach(x=>x.classList.toggle('active',x.id===`view-${view}`));
   $$('.side-nav button').forEach(x=>x.classList.toggle('active',x.dataset.view===view));
-  const titles={workspace:'',orders:'발주 관리',master:'메뉴·재료 기준정보',dashboard:'운영현황','master-data':'기본 데이터 관리','stats-forecast':'예상식수','stats-meals':'연간 평균 대비 실제','stats-menus':'메뉴별 식수','stats-weather':'날씨 연관분석','stats-menu-weather':'메뉴 × 날씨','stats-ingredients':'재료 통계','stats-quality':'데이터 품질','stats-operations':'운영 기록 통계','users':'사용자 관리','backup':'시스템 데이터 백업','archive':'Excel 데이터 아카이브'};
+  const titles={workspace:'',orders:'발주 관리',master:'메뉴·재료 기준정보',analysis:'식수 분석','master-data':'기본 데이터 관리','users':'사용자 관리','backup':'시스템 데이터 백업','archive':'Excel 데이터 아카이브'};
   $('#page-title').textContent=titles[view]||'';
   $('#top-header').classList.toggle('hidden', view==='workspace');
   if(view==='orders') initOrders();
   if(view==='master') loadMaster();
   if(view==='master-data') loadMasterData();
-  if(view==='dashboard') initAdvancedStatistics('overview');
-  if(view==='stats-forecast') initForecastStatistics();
-  if(view==='stats-meals') initAdvancedStatistics('plan');
-  if(view==='stats-menus') initAdvancedStatistics('menus');
-  if(view==='stats-weather') initAdvancedStatistics('weather');
-  if(view==='stats-menu-weather') initAdvancedStatistics('menu-weather');
-  if(view==='stats-ingredients') initStatsPage('ingredients');
-  if(view==='stats-quality') initAdvancedStatistics('quality');
-  if(view==='stats-operations') initStatsPage('operations');
+  if(view==='analysis') initAnalysis();
   if(view==='users') initUsers();
   if(view==='backup') initBackup();
   if(view==='archive') initArchive();
-  if(view==='dashboard'||view.startsWith('stats-')) expandStatsGroup();
   if(['master-data','users','backup','archive'].includes(view)) expandSettingsGroup();
 }
 function toggleNavGroup(e){
@@ -360,7 +363,6 @@ function toggleNavGroup(e){
   const collapsed=group.classList.toggle('collapsed');
   e.currentTarget.setAttribute('aria-expanded',String(!collapsed));
 }
-function expandStatsGroup(){ const group=$('.side-nav-group[data-group="stats"]'); if(group) group.classList.remove('collapsed'); }
 function expandSettingsGroup(){ const group=$('.side-nav-group[data-group="settings"]'); if(group){ group.classList.remove('collapsed'); $('.side-nav-toggle',group)?.setAttribute('aria-expanded','true'); } }
 
 function setMode(mode) {
@@ -403,7 +405,7 @@ function renderWeekBoard() {
         <div class="service-top"><span>${service.meal_type_name}${service.actual_recorded?` <span class="actual-count-inline">${numberText(service.actual_count)}명</span>`:''}</span><span>${service.service_time?service.service_time.slice(0,5):''}</span></div>
         ${service.concept_title?`<div class="service-concept">${escapeHtml(service.concept_title)}</div>`:''}
         <div class="service-meta">${statusMarkup(service)}${service.note?.trim()?'<span class="service-note-badge">특이사항</span>':''}</div>
-        <div class="menu-lines">${service.menus.map(m=>`<div class="${m.is_representative?'representative-menu':''}">${m.is_representative?'<span class="representative-mark" title="대표 메뉴">★</span>':''}${escapeHtml(m.name)}</div>`).join('')||'<span class="muted">메뉴 없음</span>'}</div>
+        <div class="menu-lines">${service.menus.map(m=>`<div class="${m.is_representative?'representative-menu':''}">${m.is_representative?'<span class="representative-mark" title="메인 메뉴">★</span>':''}${escapeHtml(m.name)}</div>`).join('')||'<span class="muted">메뉴 없음</span>'}</div>
       </div>`).join('')}
       </div>
     </article>`).join('')}</div></section>`).join('');
@@ -672,7 +674,7 @@ function renderMealEditor(panel,service) {
       </div>
     </section>
     <div class="panel-section meal-menu-section"><div class="panel-section-head"><h4>메뉴 ${service.menus.length}개</h4><button class="secondary-button" id="add-menu">＋ 메뉴 추가</button></div>
-      <div class="menu-tabs" role="tablist">${service.menus.map(m=>`<button class="menu-tab ${m.id===selected?.id?'active':''}" data-menu-tab="${m.id}" role="tab" aria-selected="${m.id===selected?.id}">${escapeHtml(m.name)}</button>`).join('')}</div>
+      <div class="menu-tabs" role="tablist">${service.menus.map(m=>`<button class="menu-tab ${m.id===selected?.id?'active':''}" data-menu-tab="${m.id}" role="tab" aria-selected="${m.id===selected?.id}">${mainMenuMark(isDraftMainMenu(m))}${escapeHtml(m.name)}</button>`).join('')}</div>
       ${selected?menuDetailHtml(selected):'<div class="empty-editor">메뉴를 추가해 주세요.</div>'}
     </div>
   </div>
@@ -685,6 +687,27 @@ function renderMealEditor(panel,service) {
   $$('[data-menu-tab]').forEach(button=>button.addEventListener('click',()=>switchMealMenu(Number(button.dataset.menuTab))));
   $('#save-service').addEventListener('click',saveMealEditorTransaction);
   if(selected) bindMenuDetail(selected);
+}
+function mainMenuMark(isMain){return isMain?'<span class="representative-mark" title="메인 메뉴">★</span>':'';}
+function isDraftMainMenu(menu){
+  const draftMenu=state.mealEditorDraft?.menus[menu.id];
+  return Boolean(draftMenu?draftMenu.isRepresentative:menu.is_representative);
+}
+// 메인 메뉴(is_representative)는 한 식단(일자×배식)에 최대 하나: 하나를 지정하면 나머지는 해제하고, 해제만 하면 메인 없이 둔다.
+function setDraftMainMenu(menuId,isMain){
+  const boardService=state.workspace?.weeks.flatMap(week=>week.days).flatMap(day=>day.services).find(service=>service.id===state.selectedServiceId);
+  const apply=item=>{item.is_representative=item.id===menuId?isMain:(isMain?false:Boolean(item.is_representative));};
+  (state.selectedService?.menus||[]).forEach(apply);
+  (boardService?.menus||[]).forEach(apply);
+  const draftMenus=state.mealEditorDraft?.menus||{};
+  for(const [id,draftMenu] of Object.entries(draftMenus)){
+    if(Number(id)===menuId){draftMenu.isRepresentative=isMain;draftMenu.is_representative=isMain;}
+    else if(isMain){draftMenu.isRepresentative=false;draftMenu.is_representative=false;}
+  }
+  $$('[data-menu-tab]').forEach(button=>{
+    const item=(state.selectedService?.menus||[]).find(m=>m.id===Number(button.dataset.menuTab));
+    if(item)button.innerHTML=`${mainMenuMark(isDraftMainMenu(item))}${escapeHtml(item.name)}`;
+  });
 }
 function menuDetailHtml(menu) {
   const draft=state.mealEditorDraft?.menus[menu.id];
@@ -708,7 +731,7 @@ function menuDetailHtml(menu) {
         <button type="button" class="ghost-button" id="change-recipe">레시피 변경</button>
       </div>
       <div class="menu-info-grid">
-        <label class="representative-toggle"><input id="representative" type="checkbox" ${representative?'checked':''}><span>대표 메뉴</span></label>
+        <label class="representative-toggle" title="한 식단에 메인 메뉴는 하나만 지정됩니다. 체크를 해제하면 메인 메뉴 없이 저장할 수 있습니다."><input id="representative" type="checkbox" ${representative?'checked':''}><span>메인 메뉴</span></label>
         <div class="menu-editor-actions">
           <button type="button" class="icon-button" id="move-up" aria-label="메뉴 위로 이동">↑</button>
           <button type="button" class="icon-button" id="move-down" aria-label="메뉴 아래로 이동">↓</button>
@@ -735,13 +758,7 @@ function bindMenuDetail(menu) {
   $('#move-down').addEventListener('click',()=>moveSelectedMenu(1));
   $('#representative').addEventListener('change',event=>{
     markMealEditorDirty();
-    const current=state.selectedService?.menus.find(item=>item.id===menu.id);
-    if(current)current.is_representative=event.target.checked;
-    const boardService=state.workspace?.weeks.flatMap(week=>week.days).flatMap(day=>day.services).find(service=>service.id===state.selectedServiceId);
-    const boardMenu=boardService?.menus.find(item=>item.id===menu.id);
-    if(boardMenu)boardMenu.is_representative=event.target.checked;
-    const draftMenu=state.mealEditorDraft?.menus[menu.id];
-    if(draftMenu)draftMenu.isRepresentative=event.target.checked;
+    setDraftMainMenu(menu.id,event.target.checked);
     renderWeekBoard();
   });
   $('#menu-note').addEventListener('input',markMealEditorDirty);
@@ -769,7 +786,7 @@ function updateGridStatus(menu=null){
   const statusEl=$('.grid-status');
   if(statusEl){
     if(unresolved.length>0){
-      statusEl.textContent=`미등록 재료 ${unresolved.length}개 — 기준정보에 등록 후 통계에 반영됩니다.`;
+      statusEl.textContent=`미등록 재료 ${unresolved.length}개 — 기준정보에 등록해 주세요.`;
       statusEl.className='grid-status grid-status-warn';
     }else if(rows.length>0){
       statusEl.textContent=`재료 ${rows.length}개`;
@@ -779,7 +796,6 @@ function updateGridStatus(menu=null){
       statusEl.className='grid-status grid-status-hint';
     }
   }
-  if(menu)updateRecipeDiffStatus(menu);
 }
 
 async function moveSelectedMenu(delta){const ids=state.selectedService.menus.map(m=>m.id),idx=ids.indexOf(state.selectedMenuItemId),next=idx+delta;if(next<0||next>=ids.length)return;[ids[idx],ids[next]]=[ids[next],ids[idx]];try{state.selectedService=await api(`/api/workspace/services/${state.selectedServiceId}/reorder`,json('POST',{menu_ids:ids}));renderEditor();renderWeekBoard();}catch(e){toast(e.message,true);}}
@@ -865,7 +881,7 @@ function renderMenuPickerModal(){
     <div class="menu-picker-header-info"><h3 id="menu-picker-title">메뉴 선택</h3><small>${dateStr} ${escapeHtml(mealName)} · 계획 ${numberText(svc?.planned_count)}명 · 식단 ${existingCount}개</small></div>
     <button class="icon-button" id="menu-picker-close" aria-label="닫기">×</button>
   </header>
-  <div class="menu-picker-search"><label class="field">메뉴 검색<input id="picker-search" type="search" placeholder="메뉴명을 입력하세요" value="${escapeHtml(draft.query)}"></label><label class="field picker-role-filter">메뉴 역할<select id="picker-role"><option value="ALL">전체</option>${roles.map(r=>`<option value="${escapeHtml(r)}" ${r===draft.role?'selected':''}>${escapeHtml(r)}</option>`).join('')}</select></label><span id="picker-result-count" class="picker-result-count"></span></div>
+  <div class="menu-picker-search"><label class="field">메뉴 검색<span class="search-submit-row"><input id="picker-search" type="search" placeholder="메뉴명 입력 후 Enter 또는 조회" value="${escapeHtml(draft.query)}"><button type="button" class="secondary-button" id="picker-search-btn">조회</button></span></label><label class="field picker-role-filter">메뉴 역할<select id="picker-role"><option value="ALL">전체</option>${roles.map(r=>`<option value="${escapeHtml(r)}" ${r===draft.role?'selected':''}>${escapeHtml(r)}</option>`).join('')}</select></label><span id="picker-result-count" class="picker-result-count"></span></div>
   <div class="menu-picker-body">
     <main class="menu-picker-results" id="picker-results"></main>
     <aside class="menu-picker-detail" id="picker-detail"><div class="picker-detail-empty">메뉴를 선택하면<br>레시피, 재료, 사용 이력을 확인할 수 있습니다.</div></aside>
@@ -876,8 +892,7 @@ function renderMenuPickerModal(){
   $('#picker-submit').addEventListener('click',submitMenuPickerBatch);
   const searchInput=$('#picker-search');
   searchInput.addEventListener('keydown',e=>{if(e.key==='Escape'){e.stopPropagation();closeMenuPicker();}});
-  let debounceTimer;
-  searchInput.addEventListener('input',()=>{draft.query=searchInput.value;clearTimeout(debounceTimer);debounceTimer=setTimeout(loadMenuPickerResults,250);});
+  bindSearchSubmit(searchInput,$('#picker-search-btn'),value=>{draft.query=value;loadMenuPickerResults();});
   $('#picker-role').addEventListener('change',e=>{draft.role=e.target.value;loadMenuPickerResults();});
   const resultsEl=$('#picker-results');
   resultsEl.addEventListener('scroll',()=>{if(!draft.hasMore||draft.loading)return;if(resultsEl.scrollTop+resultsEl.clientHeight>=resultsEl.scrollHeight-80)fetchMenuPickerPage();});
@@ -1289,945 +1304,6 @@ async function savePreservation(){try{await api(`/api/workspace/services/${state
 async function renderActualEditor(panel,service){panel.innerHTML=editorHeader(service,'실제 식수 결과')+'<div class="empty-editor">결과를 불러오는 중입니다.</div>';try{const r=await api(`/api/workspace/services/${service.id}/actual`);panel.innerHTML=editorHeader(service,'실제 식수 결과')+`<div class="result-card"><strong>계획 식수 ${numberText(r.planned_count)}명</strong><p>보존식 기록과 분리된 배식 실적입니다.</p></div><div class="field-grid"><label class="field">실제 식수<input id="actual-count" type="number" min="0" value="${r.actual_count??''}"></label><label class="field">특이 사항<input id="actual-note" value="${escapeHtml(r.note||'')}"></label></div><div class="save-bar"><span class="save-state">${r.recorded_at?`입력일 ${new Date(r.recorded_at).toLocaleString('ko-KR')}`:'아직 입력하지 않았습니다.'}</span><button class="primary-button" id="save-actual">실제 식수 저장</button></div>`;$('#save-actual').addEventListener('click',saveActual);$('#delete-service').addEventListener('click',deleteCurrentService);}catch(e){toast(e.message,true);}}
 async function saveActual(){try{await api(`/api/workspace/services/${state.selectedServiceId}/actual`,json('PUT',{actual_count:$('#actual-count').value===''?null:Number($('#actual-count').value),note:$('#actual-note').value||null}));await selectService(state.selectedServiceId);await loadWorkspace(true);toast('실제 식수를 저장했습니다.');}catch(e){toast(e.message,true);}}
 
-function setStatsRange(days){
-  const end=new Date();end.setHours(12,0,0,0);
-  const start=addDays(end,-(days-1));
-  $('#stats-start').value=isoDate(start);$('#stats-end').value=isoDate(end);
-  loadDashboardStats();
-}
-function initStatsDashboard(){
-  if(!$('#stats-start').value||!$('#stats-end').value){setStatsRange(28);return;}
-  loadDashboardStats();
-}
-async function loadDashboardStats(){
-  const start=$('#stats-start').value,end=$('#stats-end').value;
-  if(!start||!end){toast('통계 조회 기간을 입력해 주세요.',true);return;}
-  const root=$('#statistics-content');root.innerHTML='<div class="empty-editor">통계를 계산하고 있습니다.</div>';
-  try{state.dashboard=await api(`/api/stats/dashboard?start_date=${start}&end_date=${end}`);renderFullStatistics();}catch(e){root.innerHTML=`<div class="form-error">${escapeHtml(e.message)}</div>`;}
-}
-function renderFullStatistics(){
-  const root=$('#statistics-content'),data=state.dashboard;if(!root||!data)return;
-  const proteinMax=Math.max(1,...data.protein_balance.map(x=>x.services));
-  const roleMax=Math.max(1,...data.menu_roles.map(x=>x.count));
-  const actualCard=(title,row)=>`<div class="dashboard-kpi"><span>${title}</span><strong>${row.actual_average??'-'}명</strong><small>계획 평균 ${row.planned_average??'-'}명 · 입력 ${row.records}건${row.achievement_rate!==null?` · 계획 대비 ${row.achievement_rate}%`:''}</small></div>`;
-  root.innerHTML=`
-    <div class="dashboard-kpis">
-      <div class="dashboard-kpi"><span>배식</span><strong>${data.service_count}건</strong><small>${data.start_date} ~ ${data.end_date}</small></div>
-      <div class="dashboard-kpi"><span>사용 메뉴</span><strong>${data.unique_menu_count}종</strong><small>기간 내 고유 메뉴</small></div>
-      ${actualCard('중식 실제 식수',data.actual_meals.lunch)}
-      ${actualCard('석식 실제 식수',data.actual_meals.dinner)}
-    </div>
-    <div class="dashboard-grid">
-      <section class="stat-card"><h3>단백질원 구성</h3><p class="muted">해당 재료군이 포함된 배식 횟수입니다.</p><div class="stat-list">${data.protein_balance.map(x=>`<div><div class="stat-line"><span>${x.group}</span><strong>${x.services}회</strong></div><div class="bar"><span style="width:${x.services/proteinMax*100}%"></span></div></div>`).join('')}</div></section>
-      <section class="stat-card"><h3>메뉴 역할 구성</h3><p class="muted">밥·국·주찬·부찬 등 식단 역할별 사용 횟수입니다.</p><div class="stat-list">${data.menu_roles.map(x=>`<div><div class="stat-line"><span>${x.role}</span><strong>${x.count}회</strong></div><div class="bar"><span style="width:${x.count/roleMax*100}%"></span></div></div>`).join('')}</div></section>
-      <section class="stat-card"><h3>최근 반복 메뉴</h3><p class="muted">현재 조회기간과 직전 4주 사용 이력을 함께 봅니다.</p><div class="stat-list">${data.repeated_menus.map(x=>`<div class="stat-line"><span>${escapeHtml(x.menu_name)}</span><strong>기간 ${x.period_count}회 · 이전 ${x.previous_4_weeks}회</strong></div>`).join('')||'<p>반복 메뉴가 없습니다.</p>'}</div></section>
-      <section class="stat-card"><h3>재료 분석군</h3><p class="muted">사용 행수와 환산 가능한 예상 중량입니다.</p><div class="stat-list">${data.ingredient_groups.map(x=>`<div class="stat-line"><span>${x.group}</span><strong>${x.usage_rows}건 · ${x.estimated_kg}kg</strong></div>`).join('')}</div></section>
-      <section class="stat-card"><h3>자주 사용한 메뉴</h3><div class="stat-list">${data.menu_usage.map(x=>`<div class="stat-line"><span>${escapeHtml(x.menu_name)}</span><strong>${x.count}회</strong></div>`).join('')}</div></section>
-      <section class="stat-card"><h3>업무 기록 현황</h3><div class="stat-list"><div class="stat-line"><span>조리지시서 출력</span><strong>${data.workflow.cooking_output}건</strong></div><div class="stat-line"><span>보존식 기록 완료</span><strong>${data.workflow.preservation_completed}건</strong></div><div class="stat-line"><span>실제 식수 입력</span><strong>${data.workflow.actual_recorded}건</strong></div></div></section>
-    </div>`;
-}
-
-/* ---------- 통계 공통 컴포넌트 (Phase 1) ---------- */
-const PERIOD_PRESETS = {
-  'this-month': { label: '이번 달' },
-  '1m': { label: '최근 1개월' },
-  '3m': { label: '최근 3개월' },
-  '6m': { label: '최근 6개월' },
-  '12m': { label: '최근 1년' },
-  'year': { label: '올해' },
-  'all': { label: '전체 기간' },
-  'custom': { label: '직접 선택' },
-};
-function periodRange(preset, ref=new Date()) {
-  const end = new Date(ref); end.setHours(12,0,0,0);
-  let start;
-  if (preset === 'this-month') start = new Date(end.getFullYear(), end.getMonth(), 1);
-  else if (preset === 'year') start = new Date(end.getFullYear(), 0, 1);
-  else if (preset === 'all') start = new Date(2000, 0, 1);
-  else if (preset === 'custom') return null;
-  else { const months = { '1m':1, '3m':3, '6m':6, '12m':12 }[preset] || 3; start = new Date(end.getFullYear(), end.getMonth()-months+1, 1); }
-  return { start: isoDate(start), end: isoDate(end) };
-}
-function renderPeriodSelector(container, { preset='6m', onApply }) {
-  container.innerHTML = `<div class="period-selector">
-    <div class="period-presets">${Object.entries(PERIOD_PRESETS).map(([key,p])=>`<button type="button" class="period-preset${key===preset?' active':''}" data-preset="${key}">${p.label}</button>`).join('')}</div>
-    <div class="period-custom${preset==='custom'?'':' hidden'}"><label>시작일 <input type="date" id="period-start"></label><label>종료일 <input type="date" id="period-end"></label><button type="button" class="primary-button" id="period-apply">조회</button></div>
-  </div>`;
-  const apply = (key) => {
-    if (key === 'custom') { container.querySelector('.period-custom').classList.remove('hidden'); return; }
-    container.querySelector('.period-custom').classList.add('hidden');
-    $$('.period-preset', container).forEach(b=>b.classList.toggle('active', b.dataset.preset===key));
-    const range = periodRange(key);
-    if (range) onApply(range.start, range.end, key);
-  };
-  $$('.period-preset', container).forEach(b=>b.addEventListener('click', ()=>apply(b.dataset.preset)));
-  $('#period-apply', container)?.addEventListener('click', ()=>{
-    const start = $('#period-start', container).value, end = $('#period-end', container).value;
-    if (!start || !end) { toast('기간을 입력해 주세요.', true); return; }
-    onApply(start, end, 'custom');
-  });
-}
-function kpiCard({label, value, sub='', hint='', tone=''}) {
-  return `<div class="kpi-card${tone?` tone-${tone}`:''}"><span class="kpi-label">${label}</span><strong class="kpi-value">${value}</strong>${sub?`<span class="kpi-sub">${sub}</span>`:''}${hint?`<small class="kpi-hint">${hint}</small>`:''}</div>`;
-}
-function chartContainer({title, subtitle='', id='', actions='', body='', empty='데이터가 없습니다.'}) {
-  return `<section class="chart-container"${id?` id="${id}"`:''}><header class="chart-head"><div><h3>${title}</h3>${subtitle?`<p>${subtitle}</p>`:''}</div>${actions?`<div class="chart-actions">${actions}</div>`:''}</header><div class="chart-body">${body||`<div class="stats-empty">${empty}</div>`}</div></section>`;
-}
-function openDetailDrawer({title, subtitle='', body='', footer=''}) {
-  closeDetailDrawer();
-  const backdrop = document.createElement('div');
-  backdrop.className = 'detail-drawer-backdrop';
-  backdrop.innerHTML = `<aside class="detail-drawer" role="dialog" aria-label="${escapeHtml(title)}">
-    <header class="drawer-head"><div><h3>${escapeHtml(title)}</h3>${subtitle?`<small>${escapeHtml(subtitle)}</small>`:''}</div><button type="button" class="icon-button" id="drawer-close" aria-label="닫기">×</button></header>
-    <div class="drawer-body">${body}</div>
-    ${footer?`<footer class="drawer-foot">${footer}</footer>`:''}
-  </aside>`;
-  document.body.append(backdrop);
-  backdrop.addEventListener('click', e=>{ if (e.target === backdrop) closeDetailDrawer(); });
-  $('#drawer-close', backdrop).addEventListener('click', closeDetailDrawer);
-  requestAnimationFrame(()=>backdrop.classList.add('open'));
-}
-function closeDetailDrawer() { $$('.detail-drawer-backdrop').forEach(x=>x.remove()); }
-function downloadCsv(rows, cols, filename) {
-  const header = cols.map(c=>`"${String(c.label).replace(/"/g,'""')}"`).join(',');
-  const lines = rows.map(r=>cols.map(c=>{ const v = c.render ? c.render(r[c.key], r) : r[c.key]; return `"${String(v ?? '').replace(/"/g,'""')}"`; }).join(','));
-  const csv = '\uFEFF' + [header, ...lines].join('\r\n');
-  triggerDownload(new Blob([csv], {type:'text/csv;charset=utf-8;'}), `${filename}.csv`);
-}
-function renderStatisticsDataTable(container, {columns, rows, pageSize=10, filename='statistics'}) {
-  const st = { q:'', sortKey:null, sortDir:1, page:0, pageSize, hidden:new Set() };
-  const filtered = () => {
-    let list = rows.slice();
-    if (st.q) { const t = st.q.toLowerCase(); list = list.filter(r=>columns.some(c=>!st.hidden.has(c.key) && String(r[c.key] ?? '').toLowerCase().includes(t))); }
-    if (st.sortKey) { const k = st.sortKey; list.sort((a,b)=>{ const av=a[k] ?? '', bv=b[k] ?? ''; const cmp = (typeof av==='number' && typeof bv==='number') ? av-bv : String(av).localeCompare(String(bv), 'ko'); return cmp * st.sortDir; }); }
-    return list;
-  };
-  const updateTable = () => {
-    const list = filtered();
-    const pages = Math.max(1, Math.ceil(list.length / st.pageSize));
-    st.page = Math.min(st.page, pages - 1);
-    const slice = list.slice(st.page * st.pageSize, (st.page + 1) * st.pageSize);
-    const visibleCols = columns.filter(c=>!st.hidden.has(c.key));
-    const tableWrap = $('.stats-table-wrap', container);
-    const footWrap = $('.stats-table-foot', container);
-    if (tableWrap) tableWrap.innerHTML = `<table class="data-table stats-table"><thead><tr>${visibleCols.map(c=>`<th data-sort="${c.key}" class="${c.sortable===false?'':'sortable'}">${c.label}${st.sortKey===c.key?(st.sortDir>0?' ▲':' ▼'):''}</th>`).join('')}</tr></thead><tbody>${slice.length ? slice.map(r=>`<tr>${visibleCols.map(c=>`<td>${c.render ? c.render(r[c.key], r) : (r[c.key] ?? '-')}</td>`).join('')}</tr>`).join('') : `<tr><td colspan="${visibleCols.length}" class="stats-empty">데이터가 없습니다.</td></tr>`}</tbody></table>`;
-    if (footWrap) footWrap.innerHTML = `<span>총 ${list.length}건</span><div class="stats-pager"><button type="button" class="ghost-button" id="stats-page-prev" ${st.page===0?'disabled':''}>‹</button><span>${st.page+1} / ${pages}</span><button type="button" class="ghost-button" id="stats-page-next" ${st.page>=pages-1?'disabled':''}>›</button></div>`;
-    $('#stats-page-prev', container)?.addEventListener('click', ()=>{ st.page--; updateTable(); });
-    $('#stats-page-next', container)?.addEventListener('click', ()=>{ st.page++; updateTable(); });
-    $$('.stats-table th.sortable', container).forEach(th=>th.addEventListener('click', ()=>{
-      const key = th.dataset.sort;
-      if (st.sortKey === key) st.sortDir *= -1; else { st.sortKey = key; st.sortDir = 1; }
-      st.page = 0; updateTable();
-    }));
-    st._lastList = list;
-    st._lastVisibleCols = visibleCols;
-  };
-  const initRender = () => {
-    const visibleCols = columns.filter(c=>!st.hidden.has(c.key));
-    container.innerHTML = `<div class="stats-table-toolbar">
-      <input type="search" id="stats-table-search" placeholder="검색" value="${escapeHtml(st.q)}">
-      <div class="stats-table-actions">
-        <div class="stats-columns-wrap"><button type="button" class="ghost-button" id="stats-table-cols-btn">열 선택</button><div class="stats-columns-pop hidden" id="stats-table-cols-pop">${columns.map(c=>`<label><input type="checkbox" data-col="${c.key}" ${st.hidden.has(c.key)?'':'checked'}> ${c.label}</label>`).join('')}</div></div>
-        <select id="stats-table-size"><option value="10" ${st.pageSize===10?'selected':''}>10개</option><option value="25" ${st.pageSize===25?'selected':''}>25개</option><option value="50" ${st.pageSize===50?'selected':''}>50개</option></select>
-        <button type="button" class="ghost-button" id="stats-table-csv">CSV 다운로드</button>
-      </div>
-    </div>
-    <div class="stats-table-wrap"></div>
-    <div class="stats-table-foot"></div>`;
-    const si = $('#stats-table-search', container);
-    let composing = false;
-    si.addEventListener('compositionstart', () => { composing = true; });
-    si.addEventListener('compositionend', e => { composing = false; st.q = e.target.value; st.page = 0; updateTable(); });
-    si.addEventListener('input', e => { if (composing) return; st.q = e.target.value; st.page = 0; updateTable(); });
-    $('#stats-table-csv', container).addEventListener('click', ()=>downloadCsv(st._lastList || filtered(), st._lastVisibleCols || columns.filter(c=>!st.hidden.has(c.key)), filename));
-    $('#stats-table-size', container).addEventListener('change', e=>{ st.pageSize = Number(e.target.value); st.page = 0; updateTable(); });
-    const colsBtn = $('#stats-table-cols-btn', container), colsPop = $('#stats-table-cols-pop', container);
-    colsBtn.addEventListener('click', e=>{ e.stopPropagation(); colsPop.classList.toggle('hidden'); });
-    $$('#stats-table-cols-pop input[type="checkbox"]', container).forEach(cb=>cb.addEventListener('change', ()=>{
-      const key = cb.dataset.col;
-      if (cb.checked) st.hidden.delete(key); else st.hidden.add(key);
-      st.page = 0; updateTable();
-    }));
-    updateTable();
-  };
-  initRender();
-}
-
-const ADVANCED_STATS = {
-  overview: { root: '#dashboard-root', endpoint: 'overview', unit: true },
-  plan: { root: '#stats-meals-root', endpoint: 'plan-vs-actual', unit: true },
-  menus: { root: '#stats-menus-root', endpoint: 'menus' },
-  weather: { root: '#stats-weather-root', endpoint: 'weather', station: true },
-  'menu-weather': { root: '#stats-menu-weather-root', endpoint: 'menu-weather', station: true },
-  quality: { root: '#stats-quality-root', endpoint: 'data-quality', station: true },
-};
-const advValue = (value, suffix='') => value === null || value === undefined ? '정보 없음' : `${numberText(value)}${suffix}`;
-const advSigned = (value, suffix='') => value === null || value === undefined ? '정보 없음' : `${value > 0 ? '+' : ''}${numberText(value)}${suffix}`;
-const sampleBadge = n => `<span class="sample-badge${n < 5 ? ' sample-low' : ''}" title="표본 수 N=${n}">N=${n}${n < 5 ? ' · 표본 적음' : ''}</span>`;
-function advancedQuery(current, extra={}) {
-  const params = new URLSearchParams({ start_date: current.start, end_date: current.end, meal_type: current.mealType, ...extra });
-  if (current.station) params.set('station_id', current.station);
-  return params.toString();
-}
-function advancedInsights(items=[]) {
-  return `<ul class="insight-list">${items.length ? items.map(item=>`<li><span>${escapeHtml(item.message)}</span>${sampleBadge(item.n || 0)}${item.comparison_n !== undefined ? `<span class="sample-badge">비교 N=${item.comparison_n}</span>` : ''}</li>`).join('') : '<li>표시할 분석 요약이 없습니다.</li>'}</ul>`;
-}
-function advancedSeries(items=[], labelKey='key', clickable=false) {
-  const max = Math.max(1, ...items.map(x=>Math.max(x.planned_sum || 0, x.actual_sum || 0)));
-  return items.length ? `<div class="advanced-bars">${items.map(x=>`<div class="advanced-bar-row ${clickable?'clickable':''}" ${clickable?`data-period-key="${escapeHtml(String(x[labelKey]||''))}" role="button"`:''} tabindex="${clickable?'0':'-1'}"><span>${escapeHtml(String(x[labelKey] ?? '정보 없음'))}</span><div class="advanced-bar-track" title="연간 평균 ${advValue(x.planned_sum)} · 실제 ${advValue(x.actual_sum)}"><i class="series-plan" style="width:${(x.planned_sum || 0) / max * 100}%"></i><i class="series-actual" style="width:${(x.actual_sum || 0) / max * 100}%"></i></div><strong>${advValue(x.actual_sum, '명')}</strong>${sampleBadge(x.analyzed_count || x.n || 0)}</div>`).join('')}</div><div class="trend-legend"><span><i class="planned"></i>연간 평균</span><span><i class="actual"></i>실제</span></div>` : '<div class="stats-empty">데이터가 없습니다.</div>';
-}
-function advancedAverageSeries(items=[],labelKey='weekday'){
-  const max=Math.max(1,...items.map(x=>Math.max(x.planned_average||0,x.actual_average||0)));
-  return `<div class="advanced-bars">${items.map(x=>`<div class="advanced-bar-row"><span>${escapeHtml(String(x[labelKey]||x.key||'정보 없음'))}</span><div class="advanced-bar-track" title="연간 평균 ${advValue(x.planned_average)} · 실제 평균 ${advValue(x.actual_average)}"><i class="series-plan" style="width:${(x.planned_average||0)/max*100}%"></i><i class="series-actual" style="width:${(x.actual_average||0)/max*100}%"></i></div><strong>${advValue(x.actual_average,'명')}</strong>${sampleBadge(x.analyzed_count||0)}</div>`).join('')}</div>`;
-}
-function sampleList(items=[], labels={}) {
-  return items.length ? `<div class="stat-list">${items.map(x=>`<div class="stat-line sample-line"><span>${escapeHtml(labels[x.bucket] || x.bucket || '정보 없음')}</span><strong>실제 ${advValue(x.average,'명')} · 연간 평균 ${advValue(x.average_planned,'명')} · 차이 ${advSigned(x.average_plan_error,'명')}</strong>${sampleBadge(x.n || 0)}</div>`).join('')}</div>` : '<div class="stats-empty">데이터가 없습니다.</div>';
-}
-function advancedStatsTabs(activeView){
-  const tabs=[['dashboard','운영현황'],['stats-forecast','예상식수'],['stats-meals','연간 평균 대비 실제'],['stats-menus','메뉴별 식수'],['stats-weather','날씨 연관분석'],['stats-menu-weather','메뉴 × 날씨'],['stats-ingredients','재료 통계'],['stats-quality','데이터 품질']];
-  return `<div class="advanced-stats-tabs">${tabs.map(([view,label])=>`<button type="button" data-advanced-view="${view}" class="${view===activeView?'active':''}">${label}</button>`).join('')}</div>`;
-}
-function bindAdvancedStatsTabs(root){$$('[data-advanced-view]',root).forEach(button=>button.addEventListener('click',()=>switchView(button.dataset.advancedView)));}
-async function initAdvancedStatistics(key) {
-  const config = ADVANCED_STATS[key], root = config && $(config.root); if (!root) return;
-  root.innerHTML = `${advancedStatsTabs(state.view)}<div id="advanced-period"></div><div class="advanced-filterbar"><div class="stats-meal-type"><button type="button" data-meal="lunch" class="active">중식</button><button type="button" data-meal="dinner">석식</button></div>${config.unit?'<label>집계 단위<select id="advanced-unit"><option value="day">일</option><option value="week">주</option><option value="month">월</option></select></label>':''}${config.station ? '<label>날씨 지점<select id="advanced-station"><option value="">불러오는 중</option></select></label>' : ''}<button type="button" class="ghost-button" id="advanced-detail">상세자료</button></div><div id="advanced-content"><div class="empty-editor">불러오는 중입니다.</div></div>`;
-  bindAdvancedStatsTabs(root);
-  const current = { key, start:null, end:null, mealType:'lunch', unit:'day', station:'', stations:[] };
-  const stationData = await api('/api/statistics/advanced/stations').catch(()=>({stations:[], auto_selected_station_id:null}));
-  current.stations = stationData.stations || [];
-  current.station = stationData.auto_selected_station_id || '';
-  const stationSelect = $('#advanced-station', root);
-  if (stationSelect) {
-    const prompt=current.stations.length>1?'<option value="">지점을 선택해 주세요</option>':'';
-    stationSelect.innerHTML = current.stations.length ? prompt+current.stations.map(s=>`<option value="${escapeHtml(s.station_id)}" ${s.station_id===current.station?'selected':''}>${escapeHtml(s.station_name || s.station_id)} (${s.date_from}~${s.date_to})</option>`).join('') : '<option value="">지점 정보 없음</option>';
-    stationSelect.addEventListener('change', e=>{ current.station=e.target.value; load(); });
-  }
-  const content = $('#advanced-content', root);
-  let loadVersion=0;
-  const load = async () => {
-    const version=++loadVersion;
-    if (!current.start || !current.end) return;
-    if(config.station&&current.stations.length>1&&!current.station){content.innerHTML='<div class="empty-editor">분석할 날씨 관측지점을 선택해 주세요.</div>';return;}
-    content.innerHTML = '<div class="empty-editor">통계를 계산하고 있습니다.</div>';
-    try {
-      const data = await api(`/api/statistics/advanced/${config.endpoint}?${advancedQuery(current)}`);
-      if(version!==loadVersion||!content.isConnected)return;
-      renderAdvancedStatistics(content, key, data, current);
-    } catch (e) { if(version===loadVersion&&content.isConnected)content.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`; }
-  };
-  renderPeriodSelector($('#advanced-period', root), { preset:'6m', onApply:(start,end)=>{ current.start=start; current.end=end; load(); } });
-  $$('.stats-meal-type button', root).forEach(btn=>btn.addEventListener('click',()=>{ current.mealType=btn.dataset.meal; $$('.stats-meal-type button', root).forEach(x=>x.classList.toggle('active',x===btn)); load(); }));
-  $('#advanced-unit', root)?.addEventListener('change', e=>{ current.unit=e.target.value; load(); });
-  $('#advanced-detail', root).addEventListener('click', ()=>openAdvancedDrilldown(current));
-  const range=periodRange('6m'); if(range){ current.start=range.start; current.end=range.end; load(); }
-}
-function renderAdvancedStatistics(root, key, data, current) {
-  if (key === 'overview') renderAdvancedOverview(root, data, current);
-  else if (key === 'plan') renderAdvancedPlan(root, data, current);
-  else if (key === 'menus') renderAdvancedMenus(root, data, current);
-  else if (key === 'weather') renderAdvancedWeather(root, data, current);
-  else if (key === 'menu-weather') renderAdvancedMenuWeather(root, data, current);
-  else if (key === 'quality') renderAdvancedQuality(root, data, current);
-}
-function renderAdvancedOverview(root, data, current) {
-  const selected = current.unit === 'month' ? '월별' : current.unit === 'week' ? '주별' : '일별';
-  const periodSeries=current.unit==='month'?data.monthly:current.unit==='week'?data.weekly:data.daily;
-  root.innerHTML = `<div class="kpi-grid">${kpiCard({label:'운영 서비스',value:advValue(data.service_count,'건'),sub:`분석 N=${data.analyzed_count}`})}${kpiCard({label:'실제 식수',value:advValue(data.actual_sum,'명'),sub:`같은 날 연간 평균 합 ${advValue(data.comparison_planned_sum,'명')}`})}${kpiCard({label:'실제 − 연간 평균',value:advSigned(data.difference,'명'),sub:'운영일(실제 있음)만 비교'})}${kpiCard({label:'실제 입력률',value:advValue(data.actual_input_rate,'%'),sub:`휴무로 본 날(미입력·0명) ${data.missing_actual_count}건`})}</div><div class="aggregation-note">선택 집계 단위: <strong>${selected}</strong></div><div class="chart-grid">${chartContainer({title:`${selected} 연간 평균 vs 실제 식수`,subtitle:'연간 평균 = 직전 365일 같은 요일·배식 평균. 휴무일은 제외합니다.',body:advancedSeries(periodSeries,'key',true)})}${chartContainer({title:'요일별 평균 식수',subtitle:'월~일 연간 평균·실제 평균',body:advancedAverageSeries(data.weekday,'weekday')})}${chartContainer({title:'분석 요약',subtitle:'집계값 기반 자동 요약',body:advancedInsights(data.insights)})}</div>${usageIndexSection(data.usage_index)}`;
-  const openPeriod=element=>{const key=element.dataset.periodKey;let start=key,end=key;if(current.unit==='week')end=isoDate(addDays(key,6));if(current.unit==='month'){start=`${key}-01`;const [year,month]=key.split('-').map(Number);end=isoDate(new Date(year,month,0));}openAdvancedDrilldown({...current,start,end});};
-  $$('[data-period-key]',root).forEach(element=>{element.addEventListener('click',()=>openPeriod(element));element.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openPeriod(element);}});});
-}
-const MEAL_LABEL={LUNCH:'중식',DINNER:'석식'};
-function usageLevel(index){if(index===null||index===undefined)return 'none';if(index<=85)return 'drop2';if(index<95)return 'drop1';if(index<=105)return 'mid';if(index<=115)return 'up1';return 'up2';}
-function usageCalendar(daily=[]){
-  if(!daily.length)return '<div class="stats-empty">이용지수를 계산할 운영일이 없습니다.</div>';
-  const byDate=new Map(daily.map(d=>[d.date,d]));
-  const months=[...new Set(daily.map(d=>d.date.slice(0,7)))].sort().slice(-12);
-  return `<div class="usage-calendar">${months.map(month=>{
-    const [year,mon]=month.split('-').map(Number), first=new Date(year,mon-1,1), days=new Date(year,mon,0).getDate(), lead=(first.getDay()+6)%7;
-    const cells=[];for(let i=0;i<lead;i++)cells.push('<i class="usage-cell blank"></i>');
-    for(let day=1;day<=days;day++){const key=`${month}-${String(day).padStart(2,'0')}`,d=byDate.get(key);cells.push(d?`<i class="usage-cell lv-${usageLevel(d.index)}" title="${key}(${d.weekday}) 실제 ${d.actual}명 · 연간 평균 ${advValue(d.baseline)}명 · 지수 ${d.index}${(d.menus||[]).length?` · ${escapeHtml(d.menus.join(', '))}`:''}"><b>${day}</b></i>`:`<i class="usage-cell lv-none" title="${key} 휴무·자료 없음"><b>${day}</b></i>`);}
-    return `<div class="usage-month"><strong>${month}</strong><div class="usage-grid">${['월','화','수','목','금','토','일'].map(w=>`<span>${w}</span>`).join('')}${cells.join('')}</div></div>`;
-  }).join('')}</div><div class="usage-legend"><span><i class="usage-cell lv-drop2"></i>≤85</span><span><i class="usage-cell lv-drop1"></i>85~95</span><span><i class="usage-cell lv-mid"></i>95~105</span><span><i class="usage-cell lv-up1"></i>105~115</span><span><i class="usage-cell lv-up2"></i>&gt;115</span><span><i class="usage-cell lv-none"></i>휴무·자료 없음</span></div>`;
-}
-function usageMealBlock(meal,block){
-  if(!block)return '';
-  const months=(block.months||[]).filter(m=>m.n||m.last_year_n);
-  const yoy=months.length?`<div class="yoy-cards">${months.slice(-12).map(m=>`<div class="yoy-card"><span>${m.month}</span><strong>${advValue(m.average,'명')}</strong><small>작년 ${m.last_year_n?advValue(m.last_year_average,'명'):'자료 없음'}${m.change_rate!==null&&m.change_rate!==undefined?` · <b class="${m.change_rate<0?'neg':'pos'}">${advSigned(m.change_rate,'%')}</b>`:''}</small></div>`).join('')}</div>`:'<div class="stats-empty">월별 자료가 없습니다.</div>';
-  const drops=(block.sharp_drops||[]).slice(0,15);
-  const dropHtml=drops.length?`<div class="anomaly-list">${drops.map(d=>`<div class="anomaly-item static"><div class="anomaly-top"><span class="anomaly-date">${d.date} (${d.weekday})</span><span class="anomaly-badge level-important">지수 ${d.index}</span></div><div class="anomaly-meta">실제 ${d.actual}명 · 연간 평균 ${advValue(d.baseline)}명${d.baseline_fallback?' (전체 평균 대체)':''}${d.after_closure?' · 휴무 다음날':''}${d.before_closure?' · 휴무 전날':''}${(d.menus||[]).length?` · ${escapeHtml(d.menus.join(', '))}`:''}</div></div>`).join('')}</div>`:'<div class="stats-empty">이용지수 85 이하인 날이 없습니다.</div>';
-  const effect=`<div class="stat-list">${(block.closure_effect||[]).map(e=>`<div class="stat-line sample-line"><span>${e.label}</span><strong>평균 지수 ${advValue(e.average_index)}</strong>${sampleBadge(e.n)}</div>`).join('')}</div>`;
-  return `<section class="usage-meal"><h3>${MEAL_LABEL[meal]} <small>평균 이용지수 ${advValue(block.average_index)} · ${block.n}일</small></h3>${chartContainer({title:'이용지수 달력',subtitle:'100 = 평소(연간 평균) 수준',body:usageCalendar(block.daily)})}${chartContainer({title:'작년 같은 달과 비교',subtitle:'월 평균 실제 식수(운영일 기준)',body:yoy})}${chartContainer({title:'급감한 날 (지수 ≤ 85)',subtitle:'평소보다 15% 이상 적었던 날',body:dropHtml})}${chartContainer({title:'휴무 전후 효과',subtitle:'휴무 = 평일인데 실제 식수가 하나도 없는 날',body:effect})}</section>`;
-}
-function usageIndexSection(usage){
-  if(!usage||!usage.meals)return '';
-  return `<div class="usage-section"><div class="section-heading compact"><div><h2>이용지수</h2><p>${escapeHtml(usage.definition||'')} · ${escapeHtml(usage.closure_definition||'')}</p></div></div><div class="usage-meals">${['LUNCH','DINNER'].map(meal=>usageMealBlock(meal,usage.meals[meal])).join('')}</div></div>`;
-}
-function groupTable(items=[],showConfound=false){
-  if(!items.length)return '<div class="stats-empty">분류할 자료가 없습니다.</div>';
-  const max=Math.max(1,...items.map(x=>Math.abs(x.shrunk_lift_percent||0)));
-  return `<div class="group-list">${items.map(x=>{const v=x.shrunk_lift_percent,w=v===null||v===undefined?0:Math.abs(v)/max*50,left=v<0?50-w:50;return `<div class="group-row ${x.bucket==='더 관찰 필요'?'observe':''}"><span class="group-name">${escapeHtml(x.key)}${showConfound&&x.confounded?' <em class="confound">교란 주의</em>':''}</span><span class="menu-difference-track signed"><i class="${v<0?'negative':'positive'}" style="left:${left}%;width:${w}%"></i></span><strong>${x.bucket==='더 관찰 필요'?'더 관찰 필요':advSigned(v,'%')}</strong><small>N=${x.n}/${x.minimum_sample}${showConfound&&(x.co_occurring||[]).length?` · 함께: ${x.co_occurring.map(c=>`${escapeHtml(c.key)} ${c.share_percent}%`).join(', ')}`:''}</small></div>`;}).join('')}</div>`;
-}
-function bucketChips(buckets={}){return `<div class="bucket-chips">${['선호','보통','비선호','더 관찰 필요'].map(b=>`<div class="bucket-chip b-${b==='더 관찰 필요'?'observe':b}"><span>${b}</span><p>${(buckets[b]||[]).map(escapeHtml).join(', ')||'-'}</p></div>`).join('')}</div>`;}
-function menuGroupsSection(data,current){
-  const groups=data.groups||{}, meal=current.mealType==='dinner'?'DINNER':'LUNCH', g=groups[meal];
-  if(!g)return '';
-  const items=data.items||[], menuBuckets={'선호':[],'보통':[],'비선호':[],'더 관찰 필요':[]};
-  items.forEach(x=>{(menuBuckets[x.preference_bucket||'더 관찰 필요']||menuBuckets['더 관찰 필요']).push(x.canonical_name);});
-  return `<section class="menu-groups"><div class="section-heading compact"><div><h2>${MEAL_LABEL[meal]} 선호도 그룹</h2><p>보정 lift(k=8) 기준 · 조리법·단백질은 메뉴명/재료군으로 자동 분류 · 그룹 최소 10회, 재료군 최소 15회</p></div></div>
-    ${chartContainer({title:'메뉴 구분',subtitle:`선호 ≥ +5% · 비선호 ≤ −5% · 제공 ${data.minimum_sample}회 미만은 더 관찰 필요`,body:bucketChips(menuBuckets)})}
-    <div class="chart-grid">${chartContainer({title:'조리법별',body:groupTable(g.cooking)})}${chartContainer({title:'단백질 공급원별',body:groupTable(g.protein)})}</div>
-    ${chartContainer({title:'재료군별 (참고)',subtitle:g.ingredient_warning,body:`<div class="confound-warning">⚠ 재료군은 여러 메뉴에 동시에 쓰여 서로 얽혀 있습니다(교란). 원인으로 해석하지 마세요.</div>${groupTable(g.ingredient,true)}`})}</section>`;
-}
-async function initForecastStatistics(){
-  const root=$('#stats-forecast-root'); if(!root)return;
-  root.innerHTML=`${advancedStatsTabs('stats-forecast')}<div class="advanced-filterbar"><label>예측 기간<select id="forecast-days"><option value="7">7일</option><option value="14" selected>14일</option><option value="28">28일</option></select></label><label>기준일<input type="date" id="forecast-asof"></label></div><div id="forecast-content"><div class="empty-editor">불러오는 중입니다.</div></div>`;
-  bindAdvancedStatsTabs(root);
-  const content=$('#forecast-content',root); let version=0;
-  const load=async()=>{
-    const v=++version, params=new URLSearchParams({days:$('#forecast-days',root).value}); const asOf=$('#forecast-asof',root).value; if(asOf)params.set('as_of',asOf);
-    content.innerHTML='<div class="empty-editor">예상식수를 계산하고 있습니다.</div>';
-    try{const data=await api(`/api/statistics/advanced/forecast?${params}`); if(v!==version||!content.isConnected)return; renderForecast(content,data);}catch(e){if(v===version)content.innerHTML=`<div class="form-error">${escapeHtml(e.message)}</div>`;}
-  };
-  $('#forecast-days',root).addEventListener('change',load); $('#forecast-asof',root).addEventListener('change',load);
-  load();
-}
-function forecastCell(cell){
-  if(!cell)return '<td class="muted">-</td><td class="muted">-</td>';
-  const range=cell.range_weekday?`<small>${numberText(Math.round(cell.range_weekday[0]))}~${numberText(Math.round(cell.range_weekday[1]))}</small>`:'';
-  return `<td><strong>${advValue(cell.yearly_weekday!==null?Math.round(cell.yearly_weekday):null,'명')}</strong>${range}${cell.fallback?'<small class="muted">전체평균 대체</small>':''}${cell.actual!==null&&cell.actual!==undefined?`<small>실제 ${cell.actual}명</small>`:''}</td><td>${advValue(cell.blend!==null?Math.round(cell.blend):null,'명')}${cell.recent4_n!==undefined?`<small class="muted">최근 ${cell.recent4_n}회</small>`:''}</td>`;
-}
-function forecastChart(series=[]){
-  const points=series.slice(-180).filter(p=>p.yearly_weekday!==null);
-  if(points.length<2)return '<div class="stats-empty">비교할 기록이 부족합니다.</div>';
-  const values=points.flatMap(p=>[p.actual,p.yearly_weekday*1.1,p.yearly_weekday*0.9]), max=Math.max(...values), min=Math.min(...values);
-  const W=640,H=230,L=44,R=10,T=14,B=30, x=i=>L+i/(points.length-1)*(W-L-R), y=v=>T+(max-v)/(max-min||1)*(H-T-B);
-  const band=points.map((p,i)=>`${x(i).toFixed(1)},${y(p.yearly_weekday*1.1).toFixed(1)}`).concat(points.map((p,i)=>[i,p]).reverse().map(([i,p])=>`${x(i).toFixed(1)},${y(p.yearly_weekday*0.9).toFixed(1)}`)).join(' ');
-  const line=key=>points.map((p,i)=>`${x(i).toFixed(1)},${y(p[key]).toFixed(1)}`).join(' ');
-  const tick=Math.max(1,Math.ceil(points.length/6));
-  return `<svg class="forecast-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="실제 식수와 연간 평균, ±10% 범위"><polygon class="fc-band" points="${band}"/><polyline class="fc-base" points="${line('yearly_weekday')}"/><polyline class="fc-actual" points="${line('actual')}"/>${points.map((p,i)=>Math.abs(p.actual-p.yearly_weekday)>p.yearly_weekday*0.1?`<circle class="fc-out" cx="${x(i).toFixed(1)}" cy="${y(p.actual).toFixed(1)}" r="3"><title>${p.date} 실제 ${p.actual} · 연간 평균 ${p.yearly_weekday}</title></circle>`:'').join('')}<text x="2" y="${T+8}">${numberText(Math.round(max))}</text><text x="2" y="${H-B}">${numberText(Math.round(min))}</text>${points.map((p,i)=>i%tick===0?`<text x="${x(i).toFixed(1)}" y="${H-8}" text-anchor="middle">${p.date.slice(5)}</text>`:'').join('')}</svg><div class="menu-chart-legend"><span><i class="lg-actual"></i>실제</span><span><i class="lg-base"></i>연간 평균</span><span><i class="lg-band"></i>±10% 범위</span><span><i class="lg-out"></i>범위 밖</span></div>`;
-}
-function renderForecast(root,data){
-  const meals=['LUNCH','DINNER'], methods=data.methods||{};
-  if(!data.history_actual_count){root.innerHTML=`<div class="stats-empty"><strong>실제 식수 기록이 없어 예상식수를 계산할 수 없습니다.</strong><p>실제 식수를 입력하거나 업로드하면 자동으로 표시됩니다.</p></div>`;return;}
-  const rows=(data.forecast||[]).map(r=>`<tr><th scope="row">${r.date.slice(5)} (${r.weekday})</th>${meals.map(m=>forecastCell(r.meals[m])).join('')}</tr>`).join('');
-  const table=`<div class="stats-table-wrap"><table class="data-table forecast-table"><thead><tr><th rowspan="2">날짜</th><th colspan="2">중식</th><th colspan="2">석식</th></tr><tr><th>연간 평균 (범위)</th><th>혼합</th><th>연간 평균 (범위)</th><th>혼합</th></tr></thead><tbody>${rows||'<tr><td colspan="5">예측할 배식이 없습니다.</td></tr>'}</tbody></table></div>`;
-  const metricTable=meal=>{const m=data.metrics?.[meal]||{},best=data.best_method?.[meal];return `<div class="stats-table-wrap"><table class="data-table"><thead><tr><th>방법</th><th>N</th><th>MAE</th><th>WAPE</th><th>Bias율</th><th>±10% 이내</th></tr></thead><tbody>${Object.keys(methods).map(k=>{const x=m[k]||{};return `<tr class="${k===best?'best-row':''}"><td>${escapeHtml(methods[k])}${k===best?' <em class="best-tag">가장 정확</em>':''}</td><td>${x.n??0}</td><td>${advValue(x.mae,'명')}</td><td>${advValue(x.wape,'%')}</td><td>${advSigned(x.bias_rate,'%')}</td><td>${advValue(x.within_10_rate,'%')}</td></tr>`;}).join('')}</tbody></table></div>`;};
-  const misses=meal=>{const list=(data.big_misses?.[meal]||[]).slice(0,10);return list.length?`<div class="anomaly-list">${list.map(d=>`<div class="anomaly-item static"><div class="anomaly-top"><span class="anomaly-date">${d.date} (${d.weekday})</span><span class="anomaly-badge ${d.difference_rate<0?'level-important':'level-check'}">${advSigned(d.difference_rate,'%')}</span></div><div class="anomaly-meta">실제 ${d.actual}명 · 연간 평균 ${advValue(d.yearly_weekday)}명${d.after_closure?' · 휴무 다음날':''}${d.before_closure?' · 휴무 전날':''}</div></div>`).join('')}</div>`:'<div class="stats-empty">±20% 넘게 빗나간 날이 없습니다.</div>';};
-  const defs=data.definitions||{};
-  root.innerHTML=`<div class="formula-note"><strong>기준</strong> ${escapeHtml(defs.yearly_weekday||'')} ${escapeHtml(defs.closed_day||'')} ${escapeHtml(defs.leak_free||'')} ${escapeHtml(defs.range||'')}</div>
-    ${chartContainer({title:`앞으로 ${data.forecast_from} ~ ${data.forecast_to}`,subtitle:'범위 = 연간 평균 ± 최근 1년 평균오차. 혼합 = 연간 평균 50% + 최근 4주 같은 요일 50%',body:table})}
-    <div class="usage-meals">${meals.map(meal=>`<section class="usage-meal"><h3>${MEAL_LABEL[meal]}</h3>${chartContainer({title:'예측 방법 비교',subtitle:`평가 기간 ${data.evaluation_from} ~ ${data.evaluation_to} · ${escapeHtml(defs.error||'')}`,body:metricTable(meal)})}${chartContainer({title:'실제 vs 연간 평균',subtitle:'최근 180개 운영일 · 음영은 ±10%',body:forecastChart(data.series?.[meal])})}${chartContainer({title:'크게 빗나간 날 (±20% 이상)',body:misses(meal)})}</section>`).join('')}</div>`;
-}
-function renderAdvancedPlan(root, data, current) {
-  const dist = data.error_distribution || [], max=Math.max(1,...dist.map(x=>x.count));
-  const distHtml=`<div class="stat-list">${dist.map(x=>`<div class="stat-line"><span>${escapeHtml(x.bucket)}</span><strong>${x.count}건</strong></div><div class="bar"><span style="width:${x.count/max*100}%"></span></div>`).join('')}</div>`;
-  const source=current.unit==='month'?data.monthly:current.unit==='week'?data.weekly:data.daily;
-  const periodRows=(source||[]).map(x=>({label:x.period,n:x.n,mae:x.mae,wape:x.wape,bias:x.bias,bias_rate:x.bias_rate}));
-  const weekday=`<div class="stat-list">${(data.weekday||[]).map(x=>`<div class="stat-line sample-line"><span>${x.weekday}요일</span><strong>평균 오차 ${advSigned(x.average_error,'명')}</strong>${sampleBadge(x.n)}</div>`).join('')}</div>`;
-  const outliers=(data.outliers||[]).map(x=>`<button type="button" class="anomaly-item static"><div class="anomaly-top"><span class="anomaly-date">${x.service_date} ${x.meal_type==='LUNCH'?'중식':'석식'}</span><span class="anomaly-badge level-check">IQR 특이값</span></div><div class="anomaly-meta">연간 평균 ${advValue(x.planned_count)} · 실제 ${advValue(x.actual_count)} · 메뉴 ${escapeHtml((x.representative_menus||[]).join(', ') || '정보 없음')} · 비고 ${escapeHtml(x.note || '정보 없음')}</div></button>`).join('');
-  root.innerHTML=`<div class="formula-note"><strong>계산식</strong> 오차 = 연간 평균 − 실제 (연간 평균 = 직전 365일 같은 요일·배식 실제 평균, 휴무일 제외) · MAE = |오차| 평균 · WAPE = Σ|오차| / Σ실제 × 100 · Bias율 = Σ오차 / Σ실제 × 100</div><div class="kpi-grid">${kpiCard({label:'비교 표본',value:`N=${data.n}`,sub:`실제 0 제외 비율 표본 N=${data.threshold_n}`})}${kpiCard({label:'MAE',value:advValue(data.mae,'명'),sub:'절대 오차 평균'})}${kpiCard({label:'WAPE',value:advValue(data.wape,'%'),sub:'실제 합계 기준'})}${kpiCard({label:'Bias',value:advSigned(data.bias,'명'),sub:`Bias율 ${advSigned(data.bias_rate,'%')}`})}${kpiCard({label:'±5% 이내',value:advValue(data.within_5_rate,'%'),sub:`${data.within_5_count}/${data.threshold_n}건`})}${kpiCard({label:'±10% 이내',value:advValue(data.within_10_rate,'%'),sub:`${data.within_10_count}/${data.threshold_n}건`})}${kpiCard({label:'평소보다 많음/적음',value:`${data.actual_over_plan_count}/${data.actual_under_plan_count}건`,sub:'실제 > 연간 평균 / 실제 < 연간 평균'})}</div><div class="chart-grid">${chartContainer({title:'오차율 분포',subtitle:'분모는 0이 아닌 실제 식수',body:distHtml})}${chartContainer({title:'요일별 평균 오차',subtitle:'양수는 연간 평균이 실제보다 많음',body:weekday})}${chartContainer({title:`${current.unit==='month'?'월별':current.unit==='week'?'주별':'일별'} 지표`,subtitle:'선택 집계 단위 비교',body:'<div id="advanced-plan-monthly"></div>'})}${chartContainer({title:'특이값',subtitle:data.outlier_method,body:outliers||'<div class="stats-empty">특이값이 없습니다.</div>'})}${chartContainer({title:'분석 요약',body:advancedInsights(data.insights)})}</div>`;
-  renderStatisticsDataTable($('#advanced-plan-monthly',root),{columns:[{key:'label',label:'월'},{key:'n',label:'N'},{key:'mae',label:'MAE',render:v=>advValue(v)},{key:'wape',label:'WAPE',render:v=>advValue(v,'%')},{key:'bias',label:'Bias',render:v=>advSigned(v)},{key:'bias_rate',label:'Bias율',render:v=>advSigned(v,'%')}],rows:periodRows,pageSize:10,filename:`plan_${current.unit}`});
-}
-function rankingList(items=[], field='average', suffix='명') { return `<ol class="ranking-list">${items.length?items.map(x=>`<li><span>${escapeHtml(x.canonical_name)}</span><strong>${field==='average'?advValue(x[field],suffix):advSigned(x[field],suffix)}</strong>${sampleBadge(x.n)}</li>`).join(''):'<li>데이터가 없습니다.</li>'}</ol>`; }
-function menuEvidenceStatus(item, minimum=5) {
-  const comparable=item.matched_occurrence_n ?? item.comparator_n ?? 0;
-  if (!item.lift_eligible) return {label:'더 관찰 필요',tone:'limited',text:`연간 평균과 비교할 수 있는 제공 기록이 ${comparable}회입니다(최소 ${minimum}회). 기록이 더 모이면 선호도를 계산합니다.`};
-  const bucket=item.preference_bucket||'보통';
-  return {label:bucket,tone:bucket==='보통'?'neutral':'ready',text:`보정 lift ${advSigned(item.lift_percent,'%')} (원래 차이 ${advSigned(item.raw_lift_percent,'%')}, 제공 ${comparable}회 · k=8 보정). ±5% 이상이면 선호/비선호로 표시합니다. 인과관계를 뜻하지는 않습니다.`};
-}
-function menuExplorerRows(items, mode, query='') {
-  const rows=items.filter(item=>item.canonical_name.toLocaleLowerCase('ko').includes(query.trim().toLocaleLowerCase('ko')));
-  const nameOrder=(a,b)=>a.canonical_name.localeCompare(b.canonical_name,'ko');
-  if(mode==='compare') return rows.filter(x=>x.lift_eligible).sort((a,b)=>(b.lift_percent ?? -Infinity)-(a.lift_percent ?? -Infinity)||nameOrder(a,b));
-  if(mode==='plan') return rows.filter(x=>x.sample_ok).sort((a,b)=>Math.abs(b.average_plan_error)-Math.abs(a.average_plan_error)||nameOrder(a,b));
-  return rows.filter(x=>mode!=='observe'||!x.lift_eligible).sort((a,b)=>b.n-a.n||nameOrder(a,b));
-}
-function menuMonthlyGraphic(rows=[]) {
-  if(!rows.length) return '<div class="stats-empty">월별 제공 기록이 없습니다.</div>';
-  const max=Math.max(1,...rows.map(x=>Math.max(x.maximum ?? 0,x.average_planned ?? 0))), y=value=>180-value/max*145;
-  const x=index=>rows.length===1?300:55+index/(rows.length-1)*510, tick=Math.max(1,Math.ceil(rows.length/6));
-  return `<svg class="menu-trend" viewBox="0 0 610 225" role="img" aria-label="월별 실제 평균과 연간 평균, 실제 최소·최대 범위. 아래 월별 수치 표에서 동일 정보를 확인할 수 있습니다."><line x1="45" y1="35" x2="575" y2="35" class="grid-line"/><line x1="45" y1="180" x2="575" y2="180"/><text x="40" y="28">${numberText(max)}명</text><text x="20" y="184">0</text>${rows.map((row,index)=>`<g><title>${escapeHtml(row.key)} · 실제 평균 ${advValue(row.average,'명')} · 연간 평균 ${advValue(row.average_planned,'명')} · 최소 ${row.minimum} / 최대 ${row.maximum} · ${row.n}회</title><line class="range-line" x1="${x(index)}" y1="${y(row.minimum)}" x2="${x(index)}" y2="${y(row.maximum)}"/><rect class="plan-dot" x="${x(index)-4}" y="${y(row.average_planned)-4}" width="8" height="8"/><circle class="actual-dot" cx="${x(index)}" cy="${y(row.average)}" r="5"/>${index%tick===0||index===rows.length-1?`<text x="${x(index)}" y="205" text-anchor="middle">${escapeHtml(row.key)}</text>`:''}</g>`).join('')}</svg><div class="menu-chart-legend"><span><i class="actual-dot"></i>실제 평균</span><span><i class="plan-dot"></i>연간 평균</span><span>세로선: 실제 최소~최대 (신뢰구간 아님)</span></div>`;
-}
-function renderAdvancedMenus(root, data, current) {
-  const items=data.items||[], minimum=data.minimum_sample||5;
-  const eligible=items.filter(x=>x.lift_eligible), limited=items.length-eligible.length;
-  const highest=menuExplorerRows(items,'compare').find(x=>x.lift_percent>0), planning=menuExplorerRows(items,'plan')[0];
-  const explorer=current.menuExplorer||(current.menuExplorer={mode:eligible.length?'compare':'all',query:'',selected:null,limit:12});
-  const questions=[
-    {mode:'compare',title:'평소(연간 평균)보다 더 많이 왔을까?',value:highest?advSigned(highest.lift_percent,'%'):`${eligible.length}종`,text:highest?`${highest.canonical_name} · 보정 lift`:'비교 조건을 갖춘 메뉴 살펴보기'},
-    {mode:'plan',title:'평소와 차이가 큰 메뉴는?',value:planning?`${numberText(Math.abs(planning.average_plan_error))}명`:'자료 부족',text:planning?`${planning.canonical_name} · 연간 평균과 실제 평균 차이`:`제공 ${minimum}회 이상 기록이 필요합니다.`},
-    {mode:'observe',title:'어떤 메뉴를 더 관찰해볼까?',value:`${limited}종`,text:'자료가 적거나 비교 대상이 부족한 메뉴'},
-  ];
-  root.innerHTML=`<div class="menu-lab-hero"><div><span class="menu-lab-eyebrow">메뉴별 식수 탐색</span><h3>감으로 궁금했던 메뉴, 기록으로 살펴보세요.</h3><p>메뉴를 제공한 배식의 식수입니다. 그 메뉴를 먹은 사람 수나 만족도 점수는 아닙니다.</p></div><div class="menu-lab-coverage"><strong>${numberText(data.linked_service_count ?? 0)}건</strong><span>메뉴와 실제 식수가 연결된 배식</span><small>실제 입력 ${data.service_count}건 중 · 미입력 ${data.missing_actual_count ?? 0}건 제외</small></div></div>
-    <div class="menu-questions">${questions.map(q=>`<button type="button" class="menu-question" data-menu-mode="${q.mode}"><span>${q.title}</span><strong>${q.value}</strong><small>${escapeHtml(q.text)}</small><b>살펴보기 →</b></button>`).join('')}</div>
-    <div class="menu-lab-note"><strong>${current.mealType==='dinner'?'석식':'중식'}</strong> 기준입니다(최소 제공 ${minimum}회). ${data.representative_source==='주찬_fallback'?'선택 범위에 대표메뉴가 없어 주찬 역할 메뉴로 분석했습니다.':'대표메뉴로 지정된 메뉴를 통계집계명으로 묶었습니다.'} 메뉴 미연결 배식은 ${Math.max(0,data.service_count-(data.linked_service_count ?? 0))}건입니다.${(data.insights||[]).map(i=>`<span class="menu-note-insight">${escapeHtml(i.message)}</span>`).join('')}</div>
-    <div class="menu-explorer-toolbar"><label for="menu-explorer-search">궁금한 메뉴 찾기<input type="search" id="menu-explorer-search" placeholder="통계집계메뉴명 검색" value="${escapeHtml(explorer.query)}"></label><button type="button" class="ghost-button" data-menu-mode="all">전체 메뉴 ${items.length}종</button><span id="menu-explorer-count" role="status"></span></div>
-    <div class="menu-explorer-grid"><section class="chart-container menu-explorer-list"><header class="chart-head"><div><h3 id="menu-explorer-title"></h3><p id="menu-explorer-description"></p></div></header><div id="menu-explorer-rows"></div><button type="button" class="ghost-button menu-more hidden" id="menu-explorer-more">12개 더 보기</button></section><section class="chart-container menu-evidence-panel" id="menu-evidence" aria-label="선택한 메뉴의 분석 근거"></section></div>
-    ${menuGroupsSection(data, current)}<details class="menu-method"><summary>어떤 기준으로 비교하나요?</summary><p>각 제공일의 실제 식수를 그날의 연간 평균(직전 365일 같은 요일·같은 배식 실제 평균, 같은 요일 기록이 8건 미만이면 배식 전체 평균)과 비교합니다. 그날 이전 자료만 씁니다. 실제 식수가 없는 날(미입력·0명)은 휴무로 보고 제외합니다.</p><p>보정 lift = 평균(실제 ÷ 연간 평균 − 1) × n ÷ (n + 8). 제공 횟수가 적을수록 0 쪽으로 줄여 우연한 차이를 과장하지 않습니다. 최소 제공 횟수: 중식 5회, 석식 4회, 조리법·단백질 그룹 10회, 재료군 15회. 미만이면 '더 관찰 필요'로 둡니다. +5% 이상 선호, −5% 이하 비선호.</p><p>계절·날씨·행사·함께 제공된 메뉴는 통제하지 않았습니다. 메뉴 자체의 선호도나 효과로 단정하지 말고 실제 제공일의 기록을 함께 확인하세요. 한 배식에 대표메뉴가 여럿이면 각 메뉴에 그 배식이 포함되므로 메뉴별 식수를 합산하지 않습니다.</p></details>
-    <details class="menu-method"><summary>전체 메뉴 지표 · 검색 · CSV 내보내기</summary><div id="advanced-menu-table"></div></details>
-    <details class="menu-method"><summary>메뉴 역할과 함께 제공된 대표메뉴</summary><div class="chart-grid">${chartContainer({title:'역할별 제공 배식',body:`<div class="stat-list">${(data.roles||[]).map(x=>`<div class="stat-line"><span>${escapeHtml(x.role)}</span><strong>평균 ${advValue(x.average,'명')} · ${x.n}회</strong></div>`).join('')}`})}${chartContainer({title:'대표메뉴 조합 빈도',body:`<div class="stat-list">${(data.combinations||[]).map(x=>`<div class="stat-line"><span>${escapeHtml(x.menus.join(' + '))}</span><strong>${x.count}회</strong></div>`).join('')}`})}</div></details>`;
-  const list=$('#menu-explorer-rows',root), panel=$('#menu-evidence',root);
-  const showEvidence=item=>{
-    if(!item){panel.innerHTML='<div class="stats-empty">왼쪽에서 메뉴를 선택하면 비교 근거와 월별 흐름이 표시됩니다.</div>';return;}
-    const status=menuEvidenceStatus(item,minimum), comparable=item.lift_eligible;
-    const direction=item.lift>0?'많았습니다':item.lift<0?'적었습니다':'같았습니다';
-    const story=!comparable?'현재 자료로는 선호도를 판단하지 않습니다(더 관찰 필요).':item.lift===0?'연간 평균과 비슷했습니다.':`연간 평균보다 보정 후 평균 ${numberText(Math.abs(item.lift))}명이 ${direction}${item.lift_percent!==null&&item.lift_percent!==undefined?` (${advSigned(item.lift_percent,'%')})`:''}.`;
-    const bars=[{label:'제공일 실제 평균',value:item.average,kind:'actual'},{label:'제공일 연간 평균',value:item.average_planned,kind:'planned'}];
-    const max=Math.max(1,...bars.map(x=>x.value??0));
-    const recent=item.recent_services||[], monthly=item.monthly||[];
-    panel.innerHTML=`<header class="menu-evidence-head"><div><small>선택한 통계집계메뉴</small><h3>${escapeHtml(item.canonical_name)}</h3></div><span class="menu-evidence-badge ${status.tone}">${status.label}</span></header><p class="menu-evidence-story">${story}</p><p class="menu-evidence-caption">${status.text}</p>
-      <div class="menu-evidence-samples"><span>실제 입력된 제공 <strong>${item.n}회</strong></span><span>연간 평균 비교 <strong>${item.comparator_n}회</strong></span><span>${escapeHtml(item.cooking_method||'')} · ${escapeHtml(item.protein_source||'')}</span>${(item.meal_types||[]).map(x=>`<span>${x.meal_type==='LUNCH'?'중식':'석식'} ${x.n}회</span>`).join('')}</div>
-      <div class="menu-comparison-bars">${bars.map(b=>`<div><span>${b.label}</span><div class="menu-comparison-track"><i class="${b.kind}" style="width:${(b.value??0)/max*100}%"></i></div><strong>${advValue(b.value,'명')}</strong></div>`).join('')}</div>
-      <div class="menu-range-facts"><span>실제 중앙값 <strong>${advValue(item.median,'명')}</strong></span><span>최소~최대 <strong>${advValue(item.minimum)}~${advValue(item.maximum)}명</strong></span></div>
-      <div class="menu-next-question"><strong>다음 편성 전에 확인해볼 점</strong><p>${!item.sample_ok?'제공 기록이 적습니다. 비슷한 요일·배식에 다시 제공한 뒤 흐름이 반복되는지 살펴보세요.':item.average_plan_error>0?`실제가 연간 평균보다 평균 ${advValue(item.average_plan_error,'명')} 적었습니다. 이 메뉴 날 준비 인원을 줄일 근거가 되는지 날짜별 기록을 확인해 보세요.`:item.average_plan_error<0?`실제가 연간 평균보다 평균 ${advValue(-item.average_plan_error,'명')} 많았습니다. 추가 배식 여부와 당시 특이사항을 확인해 보세요.`:'연간 평균과 실제의 평균이 같습니다. 날짜별 변동도 살펴보세요.'}</p></div>
-      <h4>언제 제공해도 비슷했을까요?</h4><p class="menu-evidence-caption">제공 기록이 있는 월만 표시합니다. 월별 표본이 적거나 중식·석식 구성 비중이 바뀌면 평균도 달라질 수 있습니다.</p>${menuMonthlyGraphic(monthly)}
-      <details class="menu-month-values"><summary>월별 수치와 제공 횟수</summary><div class="stats-table-wrap"><table class="data-table"><caption class="sr-only">${escapeHtml(item.canonical_name)} 월별 식수</caption><thead><tr><th scope="col">월</th><th scope="col">제공</th><th scope="col">연간 평균</th><th scope="col">실제 평균</th><th scope="col">최소~최대</th></tr></thead><tbody>${monthly.map(x=>`<tr><td>${escapeHtml(x.key)}</td><td>${x.n}회${x.n<minimum?' · 표본 적음':''}</td><td>${advValue(x.average_planned)}</td><td>${advValue(x.average)}</td><td>${x.minimum}~${x.maximum}</td></tr>`).join('')}</tbody></table></div></details>
-      <h4>실제 제공일의 기록을 확인하세요</h4><p class="menu-evidence-caption">${escapeHtml(item.first_date||'')} ~ ${escapeHtml(item.last_date||'')} · 최근 ${recent.length}건. 날짜를 누르면 당시 연간 평균·식수·특이사항을 볼 수 있습니다.</p><div class="menu-evidence-dates">${recent.map((x,index)=>`<button type="button" class="ghost-button" data-menu-evidence="${index}">${escapeHtml(x.service_date)} ${x.meal_type==='LUNCH'?'중식':'석식'}<span>연간 평균 ${advValue(x.planned_count)} / 실제 ${x.actual_count}명</span></button>`).join('')||'<span class="muted">제공일 정보가 없습니다.</span>'}</div>`;
-    $$('[data-menu-evidence]',panel).forEach(button=>button.addEventListener('click',()=>{const row=recent[Number(button.dataset.menuEvidence)];openAdvancedDrilldown({...current,start:row.service_date,end:row.service_date,mealType:row.meal_type==='LUNCH'?'lunch':'dinner',station:''});}));
-  };
-  const selectItem=item=>{
-    explorer.selected=item.canonical_name;
-    $$('[data-menu-index]',list).forEach(button=>{const selected=items[Number(button.dataset.menuIndex)].canonical_name===explorer.selected;button.classList.toggle('selected',selected);button.setAttribute('aria-pressed',String(selected));});
-    showEvidence(item);
-  };
-  const draw=()=>{
-    const rows=menuExplorerRows(items,explorer.mode,explorer.query), shown=rows.slice(0,explorer.limit);
-    const signed=explorer.mode==='compare'||explorer.mode==='plan', field=explorer.mode==='compare'?'lift_percent':explorer.mode==='plan'?'average_plan_error':'average', suffix=explorer.mode==='compare'?'%':'명';
-    const max=Math.max(1,...rows.map(x=>Math.abs(x[field]??0)));
-    const descriptions={compare:['연간 평균 대비 선호도(보정 lift)','높은 순 · 0을 기준으로 왼쪽은 평소보다 적음, 오른쪽은 많음'],plan:['연간 평균과 실제의 차이가 큰 메뉴','차이의 절댓값 순 · 왼쪽은 실제가 많음, 오른쪽은 연간 평균이 많음'],observe:['비교 전에 기록을 더 모을 메뉴','제공 횟수 순 · 막대는 실제 평균이며 비교 순위가 아닙니다.'],all:['전체 메뉴 둘러보기','제공 횟수 순 · 막대는 실제 평균이며 선호도 순위가 아닙니다.']};
-    $('#menu-explorer-title',root).textContent=descriptions[explorer.mode][0];$('#menu-explorer-description',root).textContent=descriptions[explorer.mode][1];
-    $('#menu-explorer-count',root).textContent=`${rows.length}종 중 ${shown.length}종 표시`;
-    $$('[data-menu-mode]',root).forEach(button=>{const active=button.dataset.menuMode===explorer.mode;button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active));});
-    list.innerHTML=shown.map(item=>{
-      const value=item[field], valid=Number.isFinite(value), status=menuEvidenceStatus(item,minimum), width=valid?Math.abs(value)/max*(signed?50:100):0;
-      const left=signed?(value<0?50-width:50):0;
-      return `<button type="button" class="menu-explorer-row" data-menu-index="${items.indexOf(item)}" aria-pressed="false"><span class="menu-row-title"><strong>${escapeHtml(item.canonical_name)}</strong><b>${valid?(signed?advSigned(value,suffix):advValue(value,suffix)):'비율 계산 불가'}</b></span><span class="menu-difference-track ${signed?'signed':''}" aria-hidden="true"><i class="${value<0?'negative':'positive'}" style="left:${left}%;width:${width}%"></i></span><span class="menu-row-caption"><span>제공 ${item.n}회 · 비교 ${item.comparator_n}회</span><span class="menu-evidence-badge ${status.tone}">${status.label}</span></span></button>`;
-    }).join('')||`<div class="stats-empty"><strong>${items.length?'이 조건에 맞는 메뉴가 없습니다.':'이 기간에 분석할 메뉴가 없습니다.'}</strong><p>${!items.length?(data.service_count?'실제 식수는 있지만 연결된 대표메뉴·주찬이 없습니다. 식단의 대표메뉴와 메뉴역할을 확인하세요.':'조회 기간과 실제 식수 입력 여부를 확인하세요.'):'전체 메뉴를 보거나 검색어·기간을 바꾸어 살펴보세요.'}</p></div>`;
-    $('#menu-explorer-more',root).classList.toggle('hidden',rows.length<=shown.length);
-    const selected=shown.find(x=>x.canonical_name===explorer.selected)||shown[0];
-    if(selected)selectItem(selected);else showEvidence(null);
-  };
-  list.addEventListener('click',event=>{const button=event.target.closest('[data-menu-index]');if(button&&list.contains(button))selectItem(items[Number(button.dataset.menuIndex)]);});
-  $$('[data-menu-mode]',root).forEach(button=>button.addEventListener('click',()=>{explorer.mode=button.dataset.menuMode;explorer.limit=12;draw();}));
-  $('#menu-explorer-search',root).addEventListener('input',event=>{explorer.query=event.target.value;explorer.limit=12;draw();});
-  $('#menu-explorer-more',root).addEventListener('click',()=>{explorer.limit+=12;draw();});
-  renderStatisticsDataTable($('#advanced-menu-table',root),{columns:[{key:'canonical_name',label:'통계집계메뉴명',render:v=>escapeHtml(v)},{key:'n',label:'제공 횟수'},{key:'average',label:'실제 평균',render:v=>advValue(v,'명')},{key:'median',label:'중앙값',render:v=>advValue(v,'명')},{key:'average_planned',label:'연간 평균',render:v=>advValue(v,'명')},{key:'average_plan_error',label:'연간 평균 − 실제',render:v=>advSigned(v,'명')},{key:'comparator_n',label:'비교 횟수'},{key:'lift_percent',label:'보정 lift',render:(v,r)=>r.lift_eligible?advSigned(v,'%'):'더 관찰 필요'},{key:'preference_bucket',label:'구분',render:v=>escapeHtml(v||'')},{key:'cooking_method',label:'조리법',render:v=>escapeHtml(v||'')},{key:'protein_source',label:'단백질',render:v=>escapeHtml(v||'')}],rows:items,pageSize:25,filename:'advanced_menu_metrics'});
-  draw();
-}
-function scatterPlot(items=[]) {
-  const points=items.filter(x=>x.avg_temp!==null&&x.actual_count!==null).slice(0,500); if(!points.length)return '<div class="stats-empty">표시할 짝 표본이 없습니다.</div>';
-  const xs=points.map(x=>x.avg_temp),ys=points.map(x=>x.actual_count),xmin=Math.min(...xs),xmax=Math.max(...xs),ymin=Math.min(...ys),ymax=Math.max(...ys),px=x=>35+(x-xmin)/(xmax-xmin||1)*520,py=y=>175-(y-ymin)/(ymax-ymin||1)*145;
-  return `<svg class="scatter-plot" viewBox="0 0 580 205" role="img" aria-label="평균기온과 실제 식수 산점도"><line x1="35" y1="175" x2="555" y2="175"/><line x1="35" y1="25" x2="35" y2="175"/>${points.map(p=>`<circle cx="${px(p.avg_temp).toFixed(1)}" cy="${py(p.actual_count).toFixed(1)}" r="3"><title>${p.service_date} ${p.meal_type==='LUNCH'?'중식':'석식'} · 평균기온 ${p.avg_temp}℃ · 실제 ${p.actual_count}명</title></circle>`).join('')}<text x="270" y="200">평균기온(℃)</text><text x="4" y="18">실제 식수(명)</text></svg><p class="muted">유효 표본 ${points.length}건${items.length>500?' (화면에는 최대 500건 표시)':''}</p>`;
-}
-function renderAdvancedWeather(root,data) {
-  const rainLabels={NULL:'정보 없음',0:'무강수', '>0':'강수 있음'};
-  const corr=Object.entries(data.correlations||{}).map(([key,x])=>`<div class="stat-line sample-line"><span>${({avg_temp:'평균기온',precipitation:'강수량',avg_humidity:'평균습도',snow_depth:'적설량',sunshine_hours:'일조시간'})[key]}</span><strong>${x.eligible?advSigned(x.pearson):'N<10 · 미제공'}</strong>${sampleBadge(x.n)}</div>`).join('');
-  const rainHtml=`<div class="stat-list">${(data.rain||[]).map(x=>`<div class="stat-line sample-line"><span>${rainLabels[x.bucket]}</span><strong>실제 ${advValue(x.average,'명')}${x.bucket==='>0'?` · 무강수 대비 ${advSigned(x.difference_vs_zero,'명')} (${advSigned(x.percent_vs_zero,'%')})`:''}</strong>${sampleBadge(x.n)}</div>`).join('')}</div>`;
-  root.innerHTML=`<div class="aggregation-note">시간별 자료가 있으면 중식 11·12시, 석식 17·18시 관측값을 우선 사용합니다. 시간대 매칭 ${numberText(data.meal_period_matched_count||0)}건</div><div class="kpi-grid">${kpiCard({label:'날씨 매칭',value:advValue(data.matched_service_count,'건'),sub:`미매칭 ${data.missing_weather_service_count}건`})}${kpiCard({label:'날씨 지점',value:escapeHtml(data.station_name||data.station_id||'정보 없음'),sub:escapeHtml(data.station_id||'정보 없음')})}</div><div class="chart-grid">${chartContainer({title:'기온 구간별 실제 식수',body:sampleList(data.temperature)})}${chartContainer({title:'강수 여부별 실제 식수',body:rainHtml})}${chartContainer({title:'습도 구간별 실제 식수',body:sampleList(data.humidity)})}${chartContainer({title:'적설 여부별 실제 식수',subtitle:`유효 N=${data.snow.meaningful_n} · 정보 없음 N=${data.snow.missing_n}`,body:sampleList(data.snow.items,{0:'적설 없음','>0':'적설 있음'})})}${chartContainer({title:'계절별 실제 식수',body:sampleList(data.seasons)})}${chartContainer({title:'평균기온 × 실제 식수',subtitle:'점에 마우스를 올리면 값을 확인할 수 있습니다.',body:scatterPlot(data.scatter)})}${chartContainer({title:'Pearson 상관계수',subtitle:data.correlation_disclaimer,body:`<div class="stat-list">${corr}</div>`})}${chartContainer({title:'분석 요약',body:advancedInsights(data.insights)})}</div>`;
-}
-function heatTable(items=[], rowKey, columns, rowLabel, kind='') {
-  const rows=[...new Set(items.map(x=>x[rowKey]))].sort((a,b)=>String(a).localeCompare(String(b),'ko')); if(!rows.length)return '<div class="stats-empty">데이터가 없습니다.</div>';
-  const values=items.map(x=>x.average).filter(x=>x!==null),min=Math.min(...values),max=Math.max(...values);
-  return `<div class="heatmap-wrap"><table class="data-table heatmap-table"><thead><tr><th>${rowLabel}</th>${columns.map(c=>`<th>${escapeHtml(c)}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr><th>${escapeHtml(String(r))}</th>${columns.map(c=>{const x=items.find(v=>v[rowKey]===r&&v.bucket===c);if(!x)return '<td class="heat-empty">정보 없음</td>';const level=x.average===null?0:Math.round((x.average-min)/(max-min||1)*4);return `<td class="heat-level-${level}${kind?' heat-clickable':''}" ${kind?`data-heat-kind="${kind}" data-heat-row="${escapeHtml(String(r))}" data-heat-bucket="${escapeHtml(c)}"`:''} title="${escapeHtml(String(r))} · ${c} · 평균 ${advValue(x.average)}명 · N=${x.n}"><strong>${advValue(x.average)}</strong><small>N=${x.n}${x.n<5?' · 표본 적음':''}</small></td>`;}).join('')}</tr>`).join('')}</tbody></table></div>`;
-}
-function renderAdvancedMenuWeather(root,data,current) {
-  const temp=['<0','0~4.9','5~9.9','10~14.9','15~19.9','20~24.9','25~29.9','>=30'],rain=['0','>0'];
-  root.innerHTML=`<div class="aggregation-note">셀은 평균 실제 식수와 N을 함께 표시합니다. ${sampleBadge(data.minimum_sample-1)} 표본은 해석에 주의하세요. 색상은 크기 보조 표시입니다.</div><div class="menu-weather-grid">${chartContainer({title:'요일 × 기온',body:heatTable(data.weekday_temperature,'weekday',temp,'요일')})}${chartContainer({title:'요일 × 강수',body:heatTable(data.weekday_rain,'weekday',rain,'요일')})}${chartContainer({title:'대표메뉴 × 기온',subtitle:'셀을 클릭하면 근거자료를 확인합니다.',body:heatTable(data.representative_menu_temperature,'canonical_name',temp,'대표메뉴','menu-temp')})}${chartContainer({title:'대표메뉴 × 강수',subtitle:'셀을 클릭하면 근거자료를 확인합니다.',body:heatTable(data.representative_menu_rain,'canonical_name',rain,'대표메뉴','menu-rain')})}</div>`;
-  $$('.heat-clickable',root).forEach(cell=>cell.addEventListener('click',()=>openAdvancedDrilldown(current,{menu:cell.dataset.heatRow,temp_bucket:cell.dataset.heatKind==='menu-temp'?cell.dataset.heatBucket:'',rain:cell.dataset.heatKind==='menu-rain'?(cell.dataset.heatBucket==='0'?'dry':'rain'):'all'})));
-}
-function renderAdvancedQuality(root,data) {
-  const labels={actual:'실제 식수',planned:'연간 평균 산출 가능',representative_menu:'대표메뉴',canonical_linkage:'표준메뉴 연결',weather_match:'날씨 매칭',avg_temp:'평균기온',precipitation:'강수량'};
-  const cards=Object.entries(data.metrics||{}).map(([key,x])=>kpiCard({label:labels[key],value:advValue(x.rate,'%'),sub:`${x.count}/${x.denominator}건`,tone:x.rate!==null&&x.rate<80?'warn':''})).join('');
-  root.innerHTML=`<div class="kpi-grid">${cards}</div><div class="chart-grid">${chartContainer({title:'식수 데이터',body:`<div class="stat-list"><div class="stat-line"><span>전체 서비스</span><strong>${data.service_count}건</strong></div><div class="stat-line"><span>실제 입력</span><strong>${data.actual_present_count}건</strong></div><div class="stat-line"><span>실제 미입력</span><strong>${data.actual_missing_count}건</strong></div><div class="stat-line"><span>실제 0명</span><strong>${data.actual_zero_count}건</strong></div></div>`})}${chartContainer({title:'메뉴 데이터',body:`<div class="stat-list"><div class="stat-line"><span>대표메뉴 있음</span><strong>${data.representative_menu_present_count}건</strong></div><div class="stat-line"><span>대표메뉴 없음</span><strong>${data.representative_menu_missing_count}건</strong></div><div class="stat-line"><span>표준메뉴 연결</span><strong>${data.canonical_linkage_count}건</strong></div></div>`})}${chartContainer({title:'날씨 데이터',subtitle:escapeHtml(data.station_name||data.station_id||'정보 없음'),body:`<div class="stat-list"><div class="stat-line"><span>날씨 매칭</span><strong>${data.weather_matched_service_count}건</strong></div><div class="stat-line"><span>날씨 미매칭</span><strong>${data.weather_missing_service_count}건</strong></div></div>`})}</div>`;
-}
-async function openAdvancedDrilldown(current,initial={}) {
-  const filters={page:1,page_size:50,rain:initial.rain||'all',menu:initial.menu||'',temp_bucket:initial.temp_bucket||''};
-  openDetailDrawer({title:'통계 상세자료',subtitle:`${current.start} ~ ${current.end}`,body:`<div class="drilldown-filters"><label>강수<select id="drill-rain"><option value="all">전체</option><option value="dry">무강수</option><option value="rain">강수 있음</option><option value="missing">정보 없음</option></select></label><label>대표메뉴<input id="drill-menu" placeholder="메뉴명"></label><label>기온 구간<select id="drill-temp"><option value="">전체</option>${['<0','0~4.9','5~9.9','10~14.9','15~19.9','20~24.9','25~29.9','>=30'].map(x=>`<option value="${x.replace(/</g,'&lt;')}">${x}</option>`).join('')}</select></label><button type="button" class="primary-button" id="drill-apply">조회</button></div><div id="drilldown-data"><div class="empty-editor">불러오는 중입니다.</div></div>`,footer:'<a class="secondary-button" id="drill-export" href="#">필터 결과 XLSX</a><button type="button" class="ghost-button" id="drawer-close-btn">닫기</button>'});
-  $('#drawer-close-btn').addEventListener('click',closeDetailDrawer);
-  $('#drill-rain').value=filters.rain;$('#drill-menu').value=filters.menu;$('#drill-temp').value=filters.temp_bucket;
-  const load=async()=>{
-    const extra={page:filters.page,page_size:filters.page_size,rain:filters.rain}; if(filters.menu)extra.menu=filters.menu;if(filters.temp_bucket)extra.temp_bucket=filters.temp_bucket;
-    const query=advancedQuery(current,extra), box=$('#drilldown-data');
-    $('#drill-export').href=`/api/statistics/advanced/export.xlsx?${advancedQuery(current,{rain:filters.rain,...(filters.menu?{menu:filters.menu}:{}),...(filters.temp_bucket?{temp_bucket:filters.temp_bucket}:{})})}`;
-    box.innerHTML='<div class="empty-editor">불러오는 중입니다.</div>';
-    try{const data=await api(`/api/statistics/advanced/drilldown?${query}`);box.innerHTML=`<div class="stats-table-wrap"><table class="data-table"><thead><tr><th>일자</th><th>구분</th><th>연간 평균</th><th>실제</th><th>연간 평균-실제</th><th>대표메뉴</th><th>기온</th><th>강수</th><th>비고</th></tr></thead><tbody>${data.items.map(x=>`<tr><td>${x.service_date}</td><td>${x.meal_type==='LUNCH'?'중식':'석식'}</td><td>${advValue(x.planned_count)}</td><td>${advValue(x.actual_count)}</td><td>${advSigned(x.plan_error)}</td><td>${escapeHtml(x.representative_menus.join(', ')||'정보 없음')}</td><td>${advValue(x.weather?.avg_temp,'℃')}</td><td>${advValue(x.weather?.precipitation,'mm')}</td><td>${escapeHtml(x.note||'정보 없음')}</td></tr>`).join('')||'<tr><td colspan="9">데이터가 없습니다.</td></tr>'}</tbody></table></div><div class="stats-table-foot"><span>총 ${data.total}건</span><div class="stats-pager"><button class="ghost-button" id="drill-prev" ${data.page<=1?'disabled':''}>이전</button><span>${data.page} / ${Math.max(1,Math.ceil(data.total/data.page_size))}</span><button class="ghost-button" id="drill-next" ${data.page*data.page_size>=data.total?'disabled':''}>다음</button></div></div>`;$('#drill-prev')?.addEventListener('click',()=>{filters.page--;load();});$('#drill-next')?.addEventListener('click',()=>{filters.page++;load();});}catch(e){box.innerHTML=`<div class="form-error">${escapeHtml(e.message)}</div>`;}
-  };
-  $('#drill-apply').addEventListener('click',()=>{filters.rain=$('#drill-rain').value;filters.menu=$('#drill-menu').value.trim();filters.temp_bucket=$('#drill-temp').value;filters.page=1;load();});
-  load();
-}
-async function initDashboard() {
-  const root = $('#dashboard-root'); if (!root) return;
-  root.innerHTML = `<div id="dashboard-period"></div><div class="stats-meal-type"><button type="button" data-meal="all" class="active">전체</button><button type="button" data-meal="lunch">중식</button><button type="button" data-meal="dinner">석식</button></div><div id="dashboard-content"><div class="empty-editor">불러오는 중입니다.</div></div>`;
-  const periodRoot = $('#dashboard-period'), content = $('#dashboard-content');
-  const current = { start: null, end: null, mealType: 'all' };
-  const load = async () => {
-    if (!current.start || !current.end) return;
-    content.innerHTML = '<div class="empty-editor">통계를 계산하고 있습니다.</div>';
-    try {
-      const data = await api(`/api/statistics/dashboard?start_date=${current.start}&end_date=${current.end}&meal_type=${current.mealType}`);
-      renderDashboard(content, data, current);
-    } catch (e) { content.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`; }
-  };
-  renderPeriodSelector(periodRoot, { preset: 'this-month', onApply: (start, end, preset) => { current.start = start; current.end = end; load(); } });
-  $$('.stats-meal-type button', root).forEach(btn => btn.addEventListener('click', () => {
-    current.mealType = btn.dataset.meal;
-    $$('.stats-meal-type button', root).forEach(x => x.classList.toggle('active', x === btn));
-    load();
-  }));
-  const range = periodRange('this-month');
-  if (range) { current.start = range.start; current.end = range.end; load(); }
-}
-function renderDashboard(root, data, current) {
-  const k = data.kpis;
-  const tone = (rate) => rate === null ? '' : (Math.abs(rate) >= 15 ? 'danger' : (Math.abs(rate) >= 10 ? 'warn' : ''));
-  const kpis = [
-    kpiCard({ label: '운영일수', value: `${k.operating_days}일`, sub: `${data.start_date} ~ ${data.end_date}` }),
-  ];
-  if (current.mealType === 'all' || current.mealType === 'lunch') {
-    const b = k.lunch;
-    kpis.push(kpiCard({ label: '중식 실제 식수', value: b && b.actual_sum !== null ? `${numberText(b.actual_sum)}명` : '-', sub: b ? `계획 ${numberText(b.planned_sum)}명${b.deviation_rate !== null ? ` · ${b.deviation_rate > 0 ? '+' : ''}${b.deviation_rate}%` : ''}` : '', hint: b ? `입력률 ${b.input_rate ?? '-'}%` : '', tone: b ? tone(b.deviation_rate) : '' }));
-  }
-  if (current.mealType === 'all' || current.mealType === 'dinner') {
-    const b = k.dinner;
-    kpis.push(kpiCard({ label: '석식 실제 식수', value: b && b.actual_sum !== null ? `${numberText(b.actual_sum)}명` : '-', sub: b ? `계획 ${numberText(b.planned_sum)}명${b.deviation_rate !== null ? ` · ${b.deviation_rate > 0 ? '+' : ''}${b.deviation_rate}%` : ''}` : '', hint: b ? `입력률 ${b.input_rate ?? '-'}%` : '', tone: b ? tone(b.deviation_rate) : '' }));
-  }
-  kpis.push(kpiCard({ label: '사용 메뉴', value: `${k.unique_menu_count}종`, sub: '기간 내 고유 메뉴' }));
-  const maxVal = Math.max(1, ...data.trend.map(m => Math.max(m.planned, m.actual)));
-  const trendBars = data.trend.map(m => `<div class="trend-month"><div class="trend-bars"><div class="trend-bar planned" title="계획 ${numberText(m.planned)}명" style="height:${m.planned / maxVal * 100}%"></div><div class="trend-bar actual" title="실제 ${numberText(m.actual)}명" style="height:${m.actual / maxVal * 100}%"></div></div><span class="trend-label">${m.month.slice(5)}</span></div>`).join('');
-  const trendHtml = `<div class="trend-chart">${trendBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div><div class="trend-legend"><span><i class="planned"></i>계획</span><span><i class="actual"></i>실제</span></div>`;
-  const a = data.anomalies;
-  const mealAnomalyHtml = a.meal.length ? a.meal.slice(0, 5).map(x => `<button type="button" class="anomaly-item" data-anomaly-type="meal" data-anomaly="${x.date}|${x.meal_type_name}"><div class="anomaly-top"><span class="anomaly-date">${x.date} ${x.meal_type_name}</span><span class="anomaly-badge level-${x.level === '중요' ? 'important' : 'check'}">${x.level}</span></div><div class="anomaly-meta">${x.type} · 계획 ${numberText(x.planned_count)}명 → 실제 ${numberText(x.actual_count)}명${x.deviation_rate !== null ? ` · 계획 대비 ${x.deviation_rate > 0 ? '+' : ''}${x.deviation_rate}%` : ''}</div></button>`).join('') : '<div class="stats-empty">식수 이상이 없습니다.</div>';
-  const repeatHtml = a.menu_repeats.length ? a.menu_repeats.map(x => `<div class="anomaly-item static"><div class="anomaly-top"><span class="anomaly-date">${escapeHtml(x.menu_name)}</span><span class="anomaly-badge level-check">${x.type}</span></div><div class="anomaly-meta">${x.window_days}일 내 ${x.count}회 사용</div></div>`).join('') : '<div class="stats-empty">반복 메뉴가 없습니다.</div>';
-  const ingHtml = a.ingredient_changes.length ? a.ingredient_changes.map(x => `<div class="anomaly-item static"><div class="anomaly-top"><span class="anomaly-date">${escapeHtml(x.group)}</span><span class="anomaly-badge level-${x.level === '중요' ? 'important' : 'check'}">${x.level}</span></div><div class="anomaly-meta">${x.current_kg}kg · 전월 대비 ${x.rate > 0 ? '+' : ''}${x.rate}%</div></div>`).join('') : '<div class="stats-empty">사용량 변화가 없습니다.</div>';
-  const gapHtml = a.record_gaps.length ? a.record_gaps.slice(0, 5).map(x => `<div class="anomaly-item static"><div class="anomaly-top"><span class="anomaly-date">${x.date} ${x.meal_type_name}</span><span class="anomaly-badge level-important">누락</span></div><div class="anomaly-meta">${x.type}</div></div>`).join('') : '<div class="stats-empty">기록 누락이 없습니다.</div>';
-  const menuMax = Math.max(1, ...data.menu_usage.map(x => x.count));
-  const menuBars = data.menu_usage.map(x => `<div class="stat-line"><span>${escapeHtml(x.menu_name)}</span><strong>${x.count}회</strong></div><div class="bar"><span style="width:${x.count / menuMax * 100}%"></span></div>`).join('');
-  const repeatBars = data.repeated_menus.map(x => `<div class="stat-line"><span>${escapeHtml(x.menu_name)}</span><strong>기간 ${x.period_count}회 · 이전 ${x.previous_4_weeks}회</strong></div>`).join('');
-  const groupMax = Math.max(1, ...data.ingredient_groups.map(x => x.usage_rows));
-  const groupBars = data.ingredient_groups.map(x => `<div class="stat-line"><span>${escapeHtml(x.group)}</span><strong>${x.usage_rows}건 · ${x.estimated_kg}kg</strong></div><div class="bar"><span style="width:${x.usage_rows / groupMax * 100}%"></span></div>`).join('');
-  const workflowRows = [['조리지시서 출력', data.workflow.cooking_output], ['보존식 기록 완료', data.workflow.preservation_completed], ['실제 식수 입력', data.workflow.actual_recorded]].map(([label, count]) => `<div class="stat-line"><span>${label}</span><strong>${count}건</strong></div>`).join('');
-  root.innerHTML = `
-    <div class="kpi-grid">${kpis.join('')}</div>
-    <div class="chart-grid">
-      ${chartContainer({ title: '월별 계획 식수 / 실제 식수 추세', subtitle: '최근 12개월', body: trendHtml })}
-      ${chartContainer({ title: '확인할 특이점', subtitle: '식수 이상 · 메뉴 반복 · 사용량 변화 · 기록 누락', body: `<div class="anomaly-groups"><div class="anomaly-group"><h4>식수 이상</h4>${mealAnomalyHtml}</div><div class="anomaly-group"><h4>메뉴 반복</h4>${repeatHtml}</div><div class="anomaly-group"><h4>사용량 변화</h4>${ingHtml}</div><div class="anomaly-group"><h4>기록 누락</h4>${gapHtml}</div></div>` })}
-      ${chartContainer({ title: '메뉴 사용 현황', subtitle: 'TOP 5', body: `<div class="stat-list">${menuBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>`, actions: `<button type="button" class="link-button" id="dashboard-menu-detail">상세 보기</button>` })}
-      ${chartContainer({ title: '최근 반복 메뉴', subtitle: '기간/직전 4주 사용 이력', body: `<div class="stat-list">${repeatBars || '<div class="stats-empty">반복 메뉴가 없습니다.</div>'}</div>` })}
-      ${chartContainer({ title: '식재료 사용 현황', subtitle: '주요 재료군', body: `<div class="stat-list">${groupBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
-      ${chartContainer({ title: '업무 기록 현황', subtitle: '완료 현황', body: `<div class="stat-list">${workflowRows}</div>` })}
-    </div>`;
-  $$('[data-anomaly-type="meal"]', root).forEach(btn => btn.addEventListener('click', () => {
-    const [date, mealName] = btn.dataset.anomaly.split('|');
-    openDetailDrawer({ title: '식수 이상 상세', subtitle: `${date} ${mealName}`, body: '<div id="drawer-backdata"></div>', footer: '<button type="button" class="primary-button" id="drawer-close-btn">닫기</button>' });
-    renderStatisticsDataTable($('#drawer-backdata'), { columns: [
-      { key: 'date', label: '날짜' },
-      { key: 'meal_type_name', label: '구분' },
-      { key: 'planned_count', label: '계획', render: v => numberText(v) },
-      { key: 'actual_count', label: '실제', render: v => v === null ? '-' : numberText(v) },
-      { key: 'deviation_rate', label: '편차율', render: v => v === null ? '계산 불가' : `${v > 0 ? '+' : ''}${v}%` },
-      { key: 'usual_median', label: '평소 중앙값', render: v => v === null ? '비교 데이터 부족' : numberText(v) },
-      { key: 'usual_deviation_rate', label: '평소 대비', render: (v, r) => r.usual_median === null ? '-' : `${v > 0 ? '+' : ''}${v}%` },
-    ], rows: data.anomalies.meal.filter(x => x.date === date && x.meal_type_name === mealName), pageSize: 10, filename: 'dashboard_meal_anomaly' });
-    $('#drawer-close-btn').addEventListener('click', closeDetailDrawer);
-  }));
-  $('#dashboard-menu-detail', root)?.addEventListener('click', () => {
-    openDetailDrawer({ title: '메뉴 사용 현황', subtitle: `${data.start_date} ~ ${data.end_date}`, body: '<div id="drawer-backdata"></div>', footer: '<button type="button" class="primary-button" id="drawer-close-btn">닫기</button>' });
-    renderStatisticsDataTable($('#drawer-backdata'), { columns: [
-      { key: 'menu_name', label: '메뉴명' },
-      { key: 'count', label: '사용 횟수' },
-    ], rows: data.menu_usage, pageSize: 10, filename: 'menu_usage' });
-    $('#drawer-close-btn').addEventListener('click', closeDetailDrawer);
-  });
-}
-function initStatsPage(key) {
-  if (key === 'meals') { initMealsStats(); return; }
-  if (key === 'menus') { initMenusStats(); return; }
-  if (key === 'ingredients') { initIngredientsStats(); return; }
-  if (key === 'operations') { initOperationsStats(); return; }
-}
-async function initMealsStats() {
-  const root = $('#stats-meals-root'); if (!root) return;
-  root.innerHTML = `<div id="stats-meals-period"></div><div class="stats-meal-type"><button type="button" data-meal="all" class="active">전체</button><button type="button" data-meal="lunch">중식</button><button type="button" data-meal="dinner">석식</button></div><div id="stats-meals-content"><div class="empty-editor">불러오는 중입니다.</div></div>`;
-  const periodRoot = $('#stats-meals-period'), content = $('#stats-meals-content');
-  const current = { start: null, end: null, mealType: 'all' };
-  const load = async () => {
-    if (!current.start || !current.end) return;
-    content.innerHTML = '<div class="empty-editor">통계를 계산하고 있습니다.</div>';
-    try {
-      const [data, trend] = await Promise.all([
-        api(`/api/statistics/meals?start_date=${current.start}&end_date=${current.end}&meal_type=${current.mealType}`),
-        api(`/api/statistics/meals/trend?start_date=${current.start}&end_date=${current.end}&meal_type=${current.mealType}`),
-      ]);
-      renderMealsStats(content, data, trend, current);
-    } catch (e) { content.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`; }
-  };
-  renderPeriodSelector(periodRoot, { preset: '6m', onApply: (start, end, preset) => { current.start = start; current.end = end; load(); } });
-  $$('.stats-meal-type button', root).forEach(btn => btn.addEventListener('click', () => {
-    current.mealType = btn.dataset.meal;
-    $$('.stats-meal-type button', root).forEach(x => x.classList.toggle('active', x === btn));
-    load();
-  }));
-  const range = periodRange('6m');
-  if (range) { current.start = range.start; current.end = range.end; load(); }
-}
-function renderMealsStats(root, data, trend, current) {
-  const s = data.summary;
-  const tone = (rate) => rate === null ? '' : (Math.abs(rate) >= 15 ? 'danger' : (Math.abs(rate) >= 10 ? 'warn' : ''));
-  const kpis = [
-    kpiCard({ label: '계획 식수 합계', value: `${numberText(s.planned_sum)}명`, sub: `운영일 ${s.service_count}일` }),
-    kpiCard({ label: '실제 식수 합계', value: s.actual_sum === null ? '-' : `${numberText(s.actual_sum)}명`, sub: `입력 ${s.input_count}일`, hint: s.input_rate !== null ? `입력률 ${s.input_rate}%` : '입력 데이터 없음' }),
-    kpiCard({ label: '계획 대비 차이', value: s.diff === null ? '-' : `${s.diff >= 0 ? '+' : ''}${numberText(s.diff)}명`, tone: tone(s.deviation_rate) }),
-    kpiCard({ label: '계획 대비 편차율', value: s.deviation_rate !== null ? `${s.deviation_rate > 0 ? '+' : ''}${s.deviation_rate}%` : '계산 불가', tone: tone(s.deviation_rate) }),
-  ];
-  const breakdownHtml = current.mealType === 'all' ? `<div class="kpi-grid">${['lunch', 'dinner'].map(k => {
-    const b = data.breakdown[k]; if (!b) return '';
-    return kpiCard({ label: `${b.meal_type_name} 실제 식수`, value: b.actual_sum === null ? '-' : `${numberText(b.actual_sum)}명`, sub: `계획 ${numberText(b.planned_sum)}명${b.deviation_rate !== null ? ` · ${b.deviation_rate > 0 ? '+' : ''}${b.deviation_rate}%` : ' · 계산 불가'}`, hint: `입력률 ${b.input_rate ?? '-'}%`, tone: tone(b.deviation_rate) });
-  }).join('')}</div>` : '';
-  const maxVal = Math.max(1, ...trend.trend.map(m => Math.max(m.planned, m.actual)));
-  const trendBars = trend.trend.map(m => `<div class="trend-month"><div class="trend-bars"><div class="trend-bar planned" title="계획 ${numberText(m.planned)}명" style="height:${m.planned / maxVal * 100}%"></div><div class="trend-bar actual" title="실제 ${numberText(m.actual)}명" style="height:${m.actual / maxVal * 100}%"></div></div><span class="trend-label">${m.month.slice(5)}</span></div>`).join('');
-  const trendHtml = `<div class="trend-chart">${trendBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div><div class="trend-legend"><span><i class="planned"></i>계획</span><span><i class="actual"></i>실제</span></div>`;
-  const wdMax = Math.max(1, ...data.weekday_averages.map(w => Math.max(w.planned_average || 0, w.actual_average || 0)));
-  const wdBars = data.weekday_averages.map(w => `<div class="stat-line"><span>${w.weekday}</span><strong>${w.actual_average ?? '-'}명</strong></div><div class="bar"><span style="width:${(w.actual_average || 0) / wdMax * 100}%"></span></div><small class="muted">계획 평균 ${w.planned_average ?? '-'}명 · 입력 ${w.actual_records}/${w.records}일</small>`).join('');
-  const devRows = data.backdata.filter(r => r.deviation_rate !== null).sort((a, b) => Math.abs(b.deviation_rate) - Math.abs(a.deviation_rate)).slice(0, 15);
-  const devMax = Math.max(1, ...devRows.map(r => Math.abs(r.deviation_rate)));
-  const devBars = devRows.map(r => `<div class="stat-line deviation-line"><span>${r.date.slice(5).replace('-', '/')} ${r.meal_type_name}</span><strong>${r.deviation_rate > 0 ? '+' : ''}${r.deviation_rate}%</strong></div><div class="deviation-bar ${r.deviation_rate >= 0 ? 'positive' : 'negative'}" style="width:${Math.abs(r.deviation_rate) / devMax * 100}%"></div>`).join('');
-  const anomalyHtml = data.anomalies.length ? `<div class="anomaly-list">${data.anomalies.map(a => `<button type="button" class="anomaly-item" data-anomaly="${a.date}|${a.meal_type_name}"><div class="anomaly-top"><span class="anomaly-date">${a.date} ${a.meal_type_name}</span><span class="anomaly-badge level-${a.level === '중요' ? 'important' : 'check'}">${a.level}</span></div><div class="anomaly-meta">${a.type} · 계획 ${numberText(a.planned_count)}명 → 실제 ${numberText(a.actual_count)}명${a.deviation_rate !== null ? ` · 계획 대비 ${a.deviation_rate > 0 ? '+' : ''}${a.deviation_rate}%` : ''}${a.usual_median !== null ? ` · 평소 중앙값 ${numberText(a.usual_median)}명 (${a.usual_deviation_rate > 0 ? '+' : ''}${a.usual_deviation_rate}%)` : (a.insufficient_comparison ? ' · 비교 데이터 부족' : '')}</div></button>`).join('')}</div>` : '<div class="stats-empty">특이 일자가 없습니다.</div>';
-  const backdataCols = [
-    { key: 'date', label: '날짜' },
-    { key: 'weekday', label: '요일' },
-    { key: 'meal_type_name', label: '구분' },
-    { key: 'planned_count', label: '계획', render: v => numberText(v) },
-    { key: 'actual_count', label: '실제', render: v => v === null ? '-' : numberText(v) },
-    { key: 'diff', label: '차이', render: v => v === null ? '-' : `${v > 0 ? '+' : ''}${numberText(v)}` },
-    { key: 'deviation_rate', label: '편차율', render: v => v === null ? '계산 불가' : `${v > 0 ? '+' : ''}${v}%` },
-    { key: 'usual_median', label: '평소 중앙값', render: v => v === null ? '비교 데이터 부족' : numberText(v) },
-    { key: 'usual_deviation_rate', label: '평소 대비', render: (v, r) => r.usual_median === null ? '-' : `${v > 0 ? '+' : ''}${v}%` },
-    { key: 'input', label: '입력', render: v => v ? '✓' : '미입력' },
-  ];
-  root.innerHTML = `
-    <div class="kpi-grid">${kpis.join('')}</div>
-    ${breakdownHtml}
-    <div class="chart-grid">
-      ${chartContainer({ title: '월별 계획 식수 / 실제 식수 추세', subtitle: `${current.start} ~ ${current.end}`, body: trendHtml })}
-      ${chartContainer({ title: '요일별 평균 식수', subtitle: '실제 식수 기준', body: `<div class="stat-list">${wdBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
-      ${chartContainer({ title: '계획 대비 편차 분포', subtitle: '특이값 강조', body: `<div class="stat-list deviation-list">${devBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
-      ${chartContainer({ title: '식수 특이 일자', subtitle: '계획/평소 대비 ±10% 이상', body: anomalyHtml, actions: `<button type="button" class="link-button" id="meals-backdata-btn">백데이터 보기</button>` })}
-    </div>
-    <div id="meals-backdata"></div>`;
-  $$('.anomaly-item', root).forEach(btn => btn.addEventListener('click', () => {
-    const [date, mealName] = btn.dataset.anomaly.split('|');
-    openDetailDrawer({ title: '식수 특이 일자 상세', subtitle: `${date} ${mealName}`, body: '<div id="drawer-backdata"></div>', footer: '<button type="button" class="primary-button" id="drawer-close-btn">닫기</button>' });
-    renderStatisticsDataTable($('#drawer-backdata'), { columns: backdataCols, rows: data.backdata.filter(r => r.date === date && r.meal_type_name === mealName), pageSize: 10, filename: 'meal_anomaly_backdata' });
-    $('#drawer-close-btn').addEventListener('click', closeDetailDrawer);
-  }));
-  $('#meals-backdata-btn', root)?.addEventListener('click', () => {
-    openDetailDrawer({ title: '식수 백데이터', subtitle: `${current.start} ~ ${current.end}`, body: '<div id="drawer-backdata"></div>', footer: '<button type="button" class="primary-button" id="drawer-close-btn">닫기</button>' });
-    renderStatisticsDataTable($('#drawer-backdata'), { columns: backdataCols, rows: data.backdata, pageSize: 10, filename: 'meal_backdata' });
-    $('#drawer-close-btn').addEventListener('click', closeDetailDrawer);
-  });
-}
-
-async function initMenusStats() {
-  const root = $('#stats-menus-root'); if (!root) return;
-  root.innerHTML = `<div id="stats-menus-period"></div><div class="stats-meal-type"><button type="button" data-meal="all" class="active">전체</button><button type="button" data-meal="lunch">중식</button><button type="button" data-meal="dinner">석식</button></div><div class="stats-unused-days"><label>장기 미사용 기준 <select id="stats-unused-days"><option value="30">30일</option><option value="60">60일</option><option value="90" selected>90일</option><option value="180">180일</option></select></label></div><div id="stats-menus-content"><div class="empty-editor">불러오는 중입니다.</div></div>`;
-  const periodRoot = $('#stats-menus-period'), content = $('#stats-menus-content');
-  const current = { start: null, end: null, mealType: 'all', unusedDays: 90 };
-  const load = async () => {
-    if (!current.start || !current.end) return;
-    content.innerHTML = '<div class="empty-editor">통계를 계산하고 있습니다.</div>';
-    try {
-      const data = await api(`/api/statistics/menus?start_date=${current.start}&end_date=${current.end}&meal_type=${current.mealType}&unused_days=${current.unusedDays}`);
-      renderMenusStats(content, data, current);
-    } catch (e) { content.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`; }
-  };
-  renderPeriodSelector(periodRoot, { preset: '6m', onApply: (start, end, preset) => { current.start = start; current.end = end; load(); } });
-  $$('.stats-meal-type button', root).forEach(btn => btn.addEventListener('click', () => {
-    current.mealType = btn.dataset.meal;
-    $$('.stats-meal-type button', root).forEach(x => x.classList.toggle('active', x === btn));
-    load();
-  }));
-  $('#stats-unused-days', root).addEventListener('change', e => { current.unusedDays = Number(e.target.value); load(); });
-  const range = periodRange('6m');
-  if (range) { current.start = range.start; current.end = range.end; load(); }
-}
-function renderMenusStats(root, data, current) {
-  const s = data.summary;
-  const kpis = [
-    kpiCard({ label: '고유 메뉴 수', value: `${s.unique_menu_count}종`, sub: '기간 내 사용 메뉴' }),
-    kpiCard({ label: '총 메뉴 사용 횟수', value: `${s.total_usage_count}회`, sub: '식단 내 메뉴 행 기준' }),
-    kpiCard({ label: '신규 메뉴 수', value: `${s.new_menu_count}종`, sub: '기간 이전 사용 기록 없음' }),
-    kpiCard({ label: '반복 메뉴 수', value: `${s.repeat_menu_count}종`, sub: '14일 2회 / 28일 3회' }),
-    kpiCard({ label: '장기 미사용 메뉴', value: `${s.unused_menu_count}종`, sub: `${current.unusedDays}일 기준` }),
-  ];
-  const topMax = Math.max(1, ...data.top_menus.map(x => x.usage_count));
-  const topBars = data.top_menus.map(x => {
-    const clickable = x.menu_id !== null;
-    return `<button type="button" class="menu-top-item" ${clickable ? `data-menu-id="${x.menu_id}"` : ''} data-menu-name="${escapeHtml(x.menu_name)}" ${clickable ? '' : 'disabled'}><div class="stat-line"><span>${escapeHtml(x.menu_name)}</span><strong>${x.usage_count}회</strong></div><div class="bar"><span style="width:${x.usage_count / topMax * 100}%"></span></div><small class="muted">중식 ${x.lunch_count}회 · 석식 ${x.dinner_count}회 · 최근 ${x.last_used}</small></button>`;
-  }).join('');
-  const repeatHtml = data.repeats.length ? data.repeats.map(x => `<div class="stat-line"><span>${escapeHtml(x.menu_name)}</span><strong>${x.type} ${x.count}회</strong></div>`).join('') : '<div class="stats-empty">반복 메뉴가 없습니다.</div>';
-  const unusedHtml = data.unused_menus.length ? data.unused_menus.slice(0, 10).map(x => `<div class="stat-line"><span>${escapeHtml(x.menu_name)}</span><strong>${x.days_since_last !== null ? `${x.days_since_last}일` : '사용 이력 없음'}</strong></div>`).join('') : '<div class="stats-empty">장기 미사용 메뉴가 없습니다.</div>';
-  const backdataCols = [
-    { key: 'date', label: '날짜' },
-    { key: 'weekday', label: '요일' },
-    { key: 'meal_type_name', label: '구분' },
-    { key: 'role', label: '역할' },
-    { key: 'menu_name', label: '메뉴명' },
-    { key: 'menu_id', label: '메뉴 ID', render: v => v ?? '-' },
-    { key: 'planned_count', label: '계획', render: v => numberText(v) },
-    { key: 'actual_count', label: '실제', render: v => v === null ? '-' : numberText(v) },
-    { key: 'previous_used_date', label: '이전 사용일', render: v => v ?? '-' },
-    { key: 'days_since_previous', label: '경과일', render: v => v === null ? '-' : `${v}일` },
-  ];
-  root.innerHTML = `
-    <div class="kpi-grid">${kpis.join('')}</div>
-    <div class="chart-grid">
-      ${chartContainer({ title: '메뉴 사용 TOP', subtitle: '클릭하면 상세 분석', body: `<div class="menu-top-list">${topBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
-      ${chartContainer({ title: '반복 메뉴', subtitle: '단기 14일 2회 · 과다 28일 3회', body: `<div class="stat-list">${repeatHtml}</div>` })}
-      ${chartContainer({ title: '장기 미사용 메뉴', subtitle: `${current.unusedDays}일 기준`, body: `<div class="stat-list">${unusedHtml}</div>` })}
-      ${chartContainer({ title: '백데이터', subtitle: '메뉴 사용 이력', body: '<div class="stats-empty">백데이터 보기 버튼으로 확인합니다.</div>', actions: `<button type="button" class="link-button" id="menus-backdata-btn">백데이터 보기</button>` })}
-    </div>`;
-  $$('.menu-top-item', root).forEach(btn => btn.addEventListener('click', () => {
-    if (!btn.dataset.menuId) return;
-    openMenuDetailDrawer(Number(btn.dataset.menuId), btn.dataset.menuName, current);
-  }));
-  $('#menus-backdata-btn', root)?.addEventListener('click', () => {
-    openDetailDrawer({ title: '메뉴 백데이터', subtitle: `${current.start} ~ ${current.end}`, body: '<div id="drawer-backdata"></div>', footer: '<button type="button" class="primary-button" id="drawer-close-btn">닫기</button>' });
-    renderStatisticsDataTable($('#drawer-backdata'), { columns: backdataCols, rows: data.backdata, pageSize: 10, filename: 'menu_backdata' });
-    $('#drawer-close-btn').addEventListener('click', closeDetailDrawer);
-  });
-}
-async function openMenuDetailDrawer(menuId, menuName, current) {
-  openDetailDrawer({ title: menuName, subtitle: `${current.start} ~ ${current.end}`, body: '<div class="empty-editor">불러오는 중입니다.</div>', footer: '<button type="button" class="primary-button" id="drawer-close-btn">닫기</button>' });
-  $('#drawer-close-btn').addEventListener('click', closeDetailDrawer);
-  try {
-    const data = await api(`/api/statistics/menus/${menuId}?start_date=${current.start}&end_date=${current.end}&meal_type=${current.mealType}`);
-    renderMenuDetailDrawer(data);
-  } catch (e) {
-    const body = $('.drawer-body'); if (body) body.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`;
-  }
-}
-function renderMenuDetailDrawer(data) {
-  const s = data.summary;
-  const body = $('.drawer-body'); if (!body) return;
-  const monthlyMax = Math.max(1, ...data.monthly_usage.map(m => m.count));
-  const monthlyBars = data.monthly_usage.map(m => `<div class="stat-line"><span>${m.month}</span><strong>${m.count}회</strong></div><div class="bar"><span style="width:${m.count / monthlyMax * 100}%"></span></div>`).join('');
-  const historyHtml = data.recent_history.slice().reverse().map(r => `<div class="stat-line"><span>${r.date} ${r.meal_type_name}</span><strong>계획 ${numberText(r.planned_count)}명${r.actual_count !== null ? ` · 실제 ${numberText(r.actual_count)}명` : ''}</strong></div>`).join('');
-  const coHtml = data.co_used.map(c => `<div class="stat-line"><span>${escapeHtml(c.menu_name)}</span><strong>${c.count}회</strong></div>`).join('');
-  const backdataCols = [
-    { key: 'date', label: '날짜' },
-    { key: 'weekday', label: '요일' },
-    { key: 'meal_type_name', label: '구분' },
-    { key: 'role', label: '역할' },
-    { key: 'planned_count', label: '계획', render: v => numberText(v) },
-    { key: 'actual_count', label: '실제', render: v => v === null ? '-' : numberText(v) },
-    { key: 'previous_used_date', label: '이전 사용일', render: v => v ?? '-' },
-    { key: 'days_since_previous', label: '경과일', render: v => v === null ? '-' : `${v}일` },
-  ];
-  body.innerHTML = `
-    <div class="kpi-grid">
-      ${kpiCard({ label: '사용 횟수', value: `${s.usage_count}회`, sub: `중식 ${s.lunch_count}회 · 석식 ${s.dinner_count}회` })}
-      ${kpiCard({ label: '최근 사용일', value: s.last_used ?? '-', sub: `최초 ${s.first_used ?? '-'}` })}
-      ${kpiCard({ label: '평균 재사용 간격', value: s.avg_interval !== null ? `${s.avg_interval}일` : '-', sub: '연속 사용 간격 평균' })}
-    </div>
-    <div class="chart-grid">
-      ${chartContainer({ title: '월별 사용 횟수', body: `<div class="stat-list">${monthlyBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
-      ${chartContainer({ title: '최근 사용 이력', body: `<div class="stat-list">${historyHtml || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
-      ${chartContainer({ title: '함께 사용된 메뉴', body: `<div class="stat-list">${coHtml || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
-      ${chartContainer({ title: '백데이터', body: '<div id="drawer-backdata"></div>' })}
-    </div>`;
-  renderStatisticsDataTable($('#drawer-backdata'), { columns: backdataCols, rows: data.backdata, pageSize: 10, filename: `menu_${data.menu_id}_backdata` });
-}
-
-async function initIngredientsStats() {
-  const root = $('#stats-ingredients-root'); if (!root) return;
-  root.innerHTML = `${advancedStatsTabs(state.view)}<div id="stats-ingredients-period"></div><div class="advanced-filterbar"><div class="stats-meal-type"><button type="button" data-meal="all" class="active">전체</button><button type="button" data-meal="lunch">중식</button><button type="button" data-meal="dinner">석식</button></div><label>장기 미사용 기준<select id="stats-ing-unused-days"><option value="30">30일</option><option value="60">60일</option><option value="90" selected>90일</option><option value="180">180일</option></select></label></div><div id="stats-ingredients-content"><div class="empty-editor">불러오는 중입니다.</div></div>`;
-  bindAdvancedStatsTabs(root);
-  const periodRoot = $('#stats-ingredients-period'), content = $('#stats-ingredients-content');
-  const current = { start: null, end: null, mealType: 'all', unusedDays: 90 };
-  const load = async () => {
-    if (!current.start || !current.end) return;
-    content.innerHTML = '<div class="empty-editor">통계를 계산하고 있습니다.</div>';
-    try {
-      const data = await api(`/api/statistics/ingredients?start_date=${current.start}&end_date=${current.end}&meal_type=${current.mealType}&unused_days=${current.unusedDays}`);
-      renderIngredientsStats(content, data, current);
-    } catch (e) { content.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`; }
-  };
-  renderPeriodSelector(periodRoot, { preset: '6m', onApply: (start, end, preset) => { current.start = start; current.end = end; load(); } });
-  $$('.stats-meal-type button', root).forEach(btn => btn.addEventListener('click', () => {
-    current.mealType = btn.dataset.meal;
-    $$('.stats-meal-type button', root).forEach(x => x.classList.toggle('active', x === btn));
-    load();
-  }));
-  $('#stats-ing-unused-days', root).addEventListener('change', e => { current.unusedDays = Number(e.target.value); load(); });
-  const range = periodRange('6m');
-  if (range) { current.start = range.start; current.end = range.end; load(); }
-}
-function ingredientAmountText(row){const parts=[];if(row.quantity_kg!==null&&row.quantity_kg!==undefined)parts.push(`${numberText(row.quantity_kg)}kg`);Object.entries(row.unconverted_amounts||{}).forEach(([unit,value])=>parts.push(`${numberText(value)}${unit}`));if(!parts.length&&row.quantity_total!==null&&row.quantity_total!==undefined)parts.push(`${numberText(row.quantity_total)}${row.unit||''}`);return parts.join(' · ')||'환산 정보 없음';}
-function renderIngredientsStats(root, data, current) {
-  const s = data.summary;
-  const kpis = [
-    kpiCard({ label: '고유 재료 수', value: `${s.unique_ingredient_count}종`, sub: '기간 내 사용 재료' }),
-    kpiCard({ label: '총 사용 횟수', value: `${s.total_usage_count}회`, sub: '식단 내 재료 행 기준' }),
-    kpiCard({ label: '신규 재료 수', value: `${s.new_ingredient_count}종`, sub: '기간 이전 사용 기록 없음' }),
-    kpiCard({ label: '장기 미사용 재료', value: `${s.unused_ingredient_count}종`, sub: `${current.unusedDays}일 기준` }),
-  ];
-  const topMax = Math.max(1, ...data.top_ingredients.map(x => x.usage_count));
-  const topBars = data.top_ingredients.map(x => {
-    const clickable = x.ingredient_id !== null;
-    return `<button type="button" class="menu-top-item" ${clickable ? `data-ing-id="${x.ingredient_id}"` : ''} data-ing-name="${escapeHtml(x.ingredient_name)}" ${clickable ? '' : 'disabled'}><div class="stat-line"><span>${escapeHtml(x.ingredient_name)}</span><strong>${x.usage_count}회</strong></div><div class="bar"><span style="width:${x.usage_count / topMax * 100}%"></span></div><small class="muted">${ingredientAmountText(x)} · 중식 ${x.lunch_count}회 · 석식 ${x.dinner_count}회 · 최근 ${x.last_used}</small></button>`;
-  }).join('');
-  const unusedHtml = data.unused_ingredients.length ? data.unused_ingredients.slice(0, 10).map(x => `<div class="stat-line"><span>${escapeHtml(x.ingredient_name)}</span><strong>${x.days_since_last !== null ? `${x.days_since_last}일` : '사용 이력 없음'}</strong></div>`).join('') : '<div class="stats-empty">장기 미사용 재료가 없습니다.</div>';
-  const backdataCols = [
-    { key: 'date', label: '날짜' },
-    { key: 'weekday', label: '요일' },
-    { key: 'meal_type_name', label: '구분' },
-    { key: 'ingredient_name', label: '재료명' },
-    { key: 'ingredient_id', label: '재료 ID', render: v => v ?? '-' },
-    { key: 'quantity_kg', label: '식단 등록 기준 사용량', render: (v,row) => ingredientAmountText(row) },
-    { key: 'planned_count', label: '계획', render: v => numberText(v) },
-    { key: 'actual_count', label: '실제', render: v => v === null ? '-' : numberText(v) },
-    { key: 'previous_used_date', label: '이전 사용일', render: v => v ?? '-' },
-    { key: 'days_since_previous', label: '경과일', render: v => v === null ? '-' : `${v}일` },
-  ];
-  root.innerHTML = `
-    <div class="kpi-grid">${kpis.join('')}</div>
-    <div class="chart-grid">
-      ${chartContainer({ title: '재료 사용 TOP', subtitle: '클릭하면 상세 분석', body: `<div class="menu-top-list">${topBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
-      ${chartContainer({ title: '장기 미사용 재료', subtitle: `${current.unusedDays}일 기준`, body: `<div class="stat-list">${unusedHtml}</div>` })}
-      ${chartContainer({ title: '백데이터', subtitle: '재료 사용 이력', body: '<div class="stats-empty">백데이터 보기 버튼으로 확인합니다.</div>', actions: `<button type="button" class="link-button" id="ingredients-backdata-btn">백데이터 보기</button>` })}
-    </div>`;
-  $$('.menu-top-item', root).forEach(btn => btn.addEventListener('click', () => {
-    if (!btn.dataset.ingId) return;
-    openIngredientDetailDrawer(Number(btn.dataset.ingId), btn.dataset.ingName, current);
-  }));
-  $('#ingredients-backdata-btn', root)?.addEventListener('click', () => {
-    openDetailDrawer({ title: '재료 백데이터', subtitle: `${current.start} ~ ${current.end}`, body: '<div id="drawer-backdata"></div>', footer: '<button type="button" class="primary-button" id="drawer-close-btn">닫기</button>' });
-    renderStatisticsDataTable($('#drawer-backdata'), { columns: backdataCols, rows: data.backdata, pageSize: 10, filename: 'ingredient_backdata' });
-    $('#drawer-close-btn').addEventListener('click', closeDetailDrawer);
-  });
-}
-async function openIngredientDetailDrawer(ingredientId, ingredientName, current) {
-  openDetailDrawer({ title: ingredientName, subtitle: `${current.start} ~ ${current.end}`, body: '<div class="empty-editor">불러오는 중입니다.</div>', footer: '<button type="button" class="primary-button" id="drawer-close-btn">닫기</button>' });
-  $('#drawer-close-btn').addEventListener('click', closeDetailDrawer);
-  try {
-    const data = await api(`/api/statistics/ingredients/${ingredientId}?start_date=${current.start}&end_date=${current.end}&meal_type=${current.mealType}`);
-    renderIngredientDetailDrawer(data);
-  } catch (e) {
-    const body = $('.drawer-body'); if (body) body.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`;
-  }
-}
-function renderIngredientDetailDrawer(data) {
-  const s = data.summary;
-  const body = $('.drawer-body'); if (!body) return;
-  const monthlyMax = Math.max(1, ...data.monthly_usage.map(m => m.count));
-  const monthlyBars = data.monthly_usage.map(m => `<div class="stat-line"><span>${m.month}</span><strong>${m.count}회</strong></div><div class="bar"><span style="width:${m.count / monthlyMax * 100}%"></span></div>`).join('');
-  const historyHtml = data.recent_history.slice().reverse().map(r => `<div class="stat-line"><span>${r.date} ${r.meal_type_name}</span><strong>${escapeHtml(r.menu_name ?? '-')}${r.quantity_kg!==null||r.quantity_total!==null?` · ${ingredientAmountText(r)}`:''}${r.actual_count !== null ? ` · 실제 ${numberText(r.actual_count)}명` : ''}</strong></div>`).join('');
-  const coHtml = data.co_used.map(c => `<div class="stat-line"><span>${escapeHtml(c.ingredient_name)}</span><strong>${c.count}회</strong></div>`).join('');
-  const backdataCols = [
-    { key: 'date', label: '날짜' },
-    { key: 'weekday', label: '요일' },
-    { key: 'meal_type_name', label: '구분' },
-    { key: 'quantity_kg', label: '식단 등록 기준 사용량', render: (v,row) => ingredientAmountText(row) },
-    { key: 'planned_count', label: '계획', render: v => numberText(v) },
-    { key: 'actual_count', label: '실제', render: v => v === null ? '-' : numberText(v) },
-    { key: 'previous_used_date', label: '이전 사용일', render: v => v ?? '-' },
-    { key: 'days_since_previous', label: '경과일', render: v => v === null ? '-' : `${v}일` },
-  ];
-  body.innerHTML = `
-    <div class="kpi-grid">
-      ${kpiCard({ label: '사용 횟수', value: `${s.usage_count}회`, sub: `중식 ${s.lunch_count}회 · 석식 ${s.dinner_count}회` })}
-      ${kpiCard({ label: '식단 등록 기준 사용량', value: ingredientAmountText(s), sub: `재료군 ${escapeHtml(data.stat_group)} · 환산 가능한 단위만 kg 합산` })}
-      ${kpiCard({ label: '최근 사용일', value: s.last_used ?? '-', sub: `최초 ${s.first_used ?? '-'}` })}
-      ${kpiCard({ label: '평균 재사용 간격', value: s.avg_interval !== null ? `${s.avg_interval}일` : '-', sub: '연속 사용 간격 평균' })}
-    </div>
-    <div class="chart-grid">
-      ${chartContainer({ title: '월별 사용 횟수', body: `<div class="stat-list">${monthlyBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
-      ${chartContainer({ title: '최근 사용 이력', body: `<div class="stat-list">${historyHtml || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
-      ${chartContainer({ title: '함께 사용된 재료', body: `<div class="stat-list">${coHtml || '<div class="stats-empty">데이터가 없습니다.</div>'}</div>` })}
-      ${chartContainer({ title: '백데이터', body: '<div id="drawer-backdata"></div>' })}
-    </div>`;
-  renderStatisticsDataTable($('#drawer-backdata'), { columns: backdataCols, rows: data.backdata, pageSize: 10, filename: `ingredient_${data.ingredient_id}_backdata` });
-}
-
-async function initOperationsStats() {
-  const root = $('#stats-operations-root'); if (!root) return;
-  root.innerHTML = `<div id="stats-operations-period"></div><div class="stats-meal-type"><button type="button" data-meal="all" class="active">전체</button><button type="button" data-meal="lunch">중식</button><button type="button" data-meal="dinner">석식</button></div><div id="stats-operations-content"><div class="empty-editor">불러오는 중입니다.</div></div>`;
-  const periodRoot = $('#stats-operations-period'), content = $('#stats-operations-content');
-  const current = { start: null, end: null, mealType: 'all' };
-  const load = async () => {
-    if (!current.start || !current.end) return;
-    content.innerHTML = '<div class="empty-editor">통계를 계산하고 있습니다.</div>';
-    try {
-      const data = await api(`/api/statistics/operations?start_date=${current.start}&end_date=${current.end}&meal_type=${current.mealType}`);
-      renderOperationsStats(content, data, current);
-    } catch (e) { content.innerHTML = `<div class="form-error">${escapeHtml(e.message)}</div>`; }
-  };
-  renderPeriodSelector(periodRoot, { preset: '6m', onApply: (start, end, preset) => { current.start = start; current.end = end; load(); } });
-  $$('.stats-meal-type button', root).forEach(btn => btn.addEventListener('click', () => {
-    current.mealType = btn.dataset.meal;
-    $$('.stats-meal-type button', root).forEach(x => x.classList.toggle('active', x === btn));
-    load();
-  }));
-  const range = periodRange('6m');
-  if (range) { current.start = range.start; current.end = range.end; load(); }
-}
-function renderOperationsStats(root, data, current) {
-  const s = data.summary;
-  const rateTone = (rate) => rate === null ? '' : (rate < 70 ? 'danger' : (rate < 90 ? 'warn' : ''));
-  const kpis = [
-    kpiCard({ label: '운영 배식 건수', value: `${s.service_count}건`, sub: `${current.start} ~ ${current.end}` }),
-    kpiCard({ label: '실제 식수 입력률', value: s.actual_input_rate !== null ? `${s.actual_input_rate}%` : '-', sub: `입력 ${s.actual_input_count}건`, tone: rateTone(s.actual_input_rate) }),
-    kpiCard({ label: '보존식 기록 완료율', value: s.preservation_rate !== null ? `${s.preservation_rate}%` : '-', sub: `완료 ${s.preservation_count}건`, tone: rateTone(s.preservation_rate) }),
-    kpiCard({ label: '식단표 출력률', value: s.meal_plan_output_rate !== null ? `${s.meal_plan_output_rate}%` : '-', sub: `출력 ${s.meal_plan_output_count}건`, tone: rateTone(s.meal_plan_output_rate) }),
-    kpiCard({ label: '조리지시서 출력률', value: s.cooking_output_rate !== null ? `${s.cooking_output_rate}%` : '-', sub: `출력 ${s.cooking_output_count}건`, tone: rateTone(s.cooking_output_rate) }),
-  ];
-  const breakdownHtml = current.mealType === 'all' ? `<div class="kpi-grid">${['lunch', 'dinner'].map(k => {
-    const b = data.breakdown[k]; if (!b) return '';
-    return kpiCard({ label: `${b.meal_type_name} 완료율`, value: `${b.actual_input_rate ?? '-'}%`, sub: `식수 입력 ${b.actual_input_count}/${b.service_count}건`, hint: `보존식 ${b.preservation_rate ?? '-'}% · 식단표 ${b.meal_plan_output_rate ?? '-'}% · 조리지시서 ${b.cooking_output_rate ?? '-'}%`, tone: rateTone(b.actual_input_rate) });
-  }).join('')}</div>` : '';
-  const trendMax = Math.max(1, ...data.trend.map(m => Math.max(m.actual_input_rate || 0, m.preservation_rate || 0, m.meal_plan_output_rate || 0, m.cooking_output_rate || 0)));
-  const trendBars = data.trend.map(m => `<div class="trend-month"><div class="trend-bars"><div class="trend-bar actual" title="식수 입력 ${m.actual_input_rate ?? '-'}%" style="height:${(m.actual_input_rate || 0) / trendMax * 100}%"></div><div class="trend-bar preservation" title="보존식 ${m.preservation_rate ?? '-'}%" style="height:${(m.preservation_rate || 0) / trendMax * 100}%"></div><div class="trend-bar meal-plan" title="식단표 ${m.meal_plan_output_rate ?? '-'}%" style="height:${(m.meal_plan_output_rate || 0) / trendMax * 100}%"></div><div class="trend-bar cooking" title="조리지시서 ${m.cooking_output_rate ?? '-'}%" style="height:${(m.cooking_output_rate || 0) / trendMax * 100}%"></div></div><span class="trend-label">${m.month.slice(5)}</span></div>`).join('');
-  const trendHtml = `<div class="trend-chart">${trendBars || '<div class="stats-empty">데이터가 없습니다.</div>'}</div><div class="trend-legend"><span><i class="actual"></i>식수 입력</span><span><i class="preservation"></i>보존식</span><span><i class="meal-plan"></i>식단표</span><span><i class="cooking"></i>조리지시서</span></div>`;
-  const gaps = data.anomalies.record_gaps;
-  const gapGroups = {};
-  gaps.forEach(g => { gapGroups[g.type] = (gapGroups[g.type] || 0) + 1; });
-  const gapHtml = Object.entries(gapGroups).length ? Object.entries(gapGroups).map(([type, count]) => `<div class="stat-line"><span>${type}</span><strong>${count}건</strong></div>`).join('') : '<div class="stats-empty">기록 누락이 없습니다.</div>';
-  const lateHtml = data.anomalies.late_inputs.length ? data.anomalies.late_inputs.slice(0, 10).map(x => `<div class="stat-line"><span>${x.date} ${x.meal_type_name}</span><strong>${x.actual_count}명 · 입력 ${x.recorded_at ? x.recorded_at.slice(0, 10) : '-'}</strong></div>`).join('') : '<div class="stats-empty">지연 입력이 없습니다.</div>';
-  const p = data.preservation;
-  const managerHtml = p.by_manager.length ? p.by_manager.map(m => `<div class="stat-line"><span>${escapeHtml(m.manager_name)}</span><strong>${m.count}건</strong></div>`).join('') : '<div class="stats-empty">보존식 기록이 없습니다.</div>';
-  const tempHtml = p.temperature_records.length ? p.temperature_records.slice(0, 10).map(t => `<div class="stat-line"><span>${t.date} ${t.meal_type_name}</span><strong>${escapeHtml(t.temperature)}</strong></div>`).join('') : '<div class="stats-empty">온도 기록이 없습니다.</div>';
-  const backdataCols = [
-    { key: 'date', label: '날짜' },
-    { key: 'weekday', label: '요일' },
-    { key: 'meal_type_name', label: '구분' },
-    { key: 'planned_count', label: '계획', render: v => numberText(v) },
-    { key: 'actual_count', label: '실제', render: v => v === null ? '-' : numberText(v) },
-    { key: 'actual_input', label: '식수 입력', render: v => v ? '✓' : '미입력' },
-    { key: 'actual_recorded_at', label: '입력 시각', render: v => v ? v.slice(0, 16).replace('T', ' ') : '-' },
-    { key: 'meal_plan_output', label: '식단표', render: v => v ? '✓' : '미출력' },
-    { key: 'cooking_output', label: '조리지시서', render: v => v ? '✓' : '미출력' },
-    { key: 'preservation_completed', label: '보존식', render: v => v ? '✓' : '미완료' },
-    { key: 'preservation_manager', label: '보존식 담당', render: v => v ?? '-' },
-    { key: 'preservation_temperature', label: '냉동고 온도', render: v => v ?? '-' },
-  ];
-  root.innerHTML = `
-    <div class="kpi-grid">${kpis.join('')}</div>
-    ${breakdownHtml}
-    <div class="chart-grid">
-      ${chartContainer({ title: '월별 기록 완료율 추세', subtitle: `${current.start} ~ ${current.end}`, body: trendHtml })}
-      ${chartContainer({ title: '기록 누락 현황', subtitle: '미입력·미출력·미완료 건수', body: `<div class="stat-list">${gapHtml}</div>` })}
-      ${chartContainer({ title: '실제 식수 지연 입력', subtitle: '배식 다음 날 이후 입력', body: `<div class="stat-list">${lateHtml}</div>` })}
-      ${chartContainer({ title: '보존식 담당자별 기록', subtitle: `수거 ${p.collected_count}건 · 폐기 ${p.disposed_count}건`, body: `<div class="stat-list">${managerHtml}</div>` })}
-      ${chartContainer({ title: '냉동고 온도 기록', subtitle: '최근 10건', body: `<div class="stat-list">${tempHtml}</div>` })}
-      ${chartContainer({ title: '백데이터', subtitle: '배식별 운영 상태', body: '<div class="stats-empty">백데이터 보기 버튼으로 확인합니다.</div>', actions: `<button type="button" class="link-button" id="operations-backdata-btn">백데이터 보기</button>` })}
-    </div>`;
-  $('#operations-backdata-btn', root)?.addEventListener('click', () => {
-    openDetailDrawer({ title: '운영 기록 백데이터', subtitle: `${current.start} ~ ${current.end}`, body: '<div id="drawer-backdata"></div>', footer: '<button type="button" class="primary-button" id="drawer-close-btn">닫기</button>' });
-    renderStatisticsDataTable($('#drawer-backdata'), { columns: backdataCols, rows: data.backdata, pageSize: 10, filename: 'operation_backdata' });
-    $('#drawer-close-btn').addEventListener('click', closeDetailDrawer);
-  });
-}
-
 function previewCurrentDocument(){
   openDocumentPreviewDialog();
 }
@@ -2238,8 +1314,8 @@ function showMigrationPreviewResult(result){
   $('#migration-result').innerHTML=`<div class="result-card"><h3>${ok?'업로드 가능':'검증 필요'}</h3><p>배식 ${s.meal_types||0}, 메뉴 ${s.menus||0}, 재료 ${s.ingredients||0}, 레시피 ${s.recipe_rows||0}, 식단이력 ${s.meal_history_rows||0}</p>${ok?'':`<pre>${escapeHtml(JSON.stringify(result.errors,null,2))}</pre>`}<div class="inline-form"><select id="import-mode" ${ok?'':'disabled'}><option value="replace">기존 업무데이터 교체</option><option value="merge">기존 데이터에 병합</option></select><button class="primary-button" id="apply-migration" ${ok?'':'disabled'}>기초데이터 생성</button></div></div>`;
   if(ok)$('#apply-migration').addEventListener('click',applyMigration);
 }
-async function previewMigration(){const file=$('#migration-file').files[0];if(!file){toast('XLSX 파일을 선택해 주세요.',true);return;}const data=new FormData();data.append('file',file);try{$('#migration-result').innerHTML='<div class="result-card">검증 중입니다.</div>';const result=await api('/api/setup/import/preview',{method:'POST',body:data});showMigrationPreviewResult(result);}catch(e){toast(e.message,true);}}
-async function waitForMigrationImport(token){
+async function previewMigration(){const file=$('#migration-file').files[0];if(!file){toast('XLSX 파일을 선택해 주세요.',true);return;}const data=new FormData();data.append('file',file);const lock=lockUI('기초데이터 파일을 올리고 검증하고 있습니다.');try{$('#migration-result').innerHTML='<div class="result-card">검증 중입니다.</div>';const result=await api('/api/setup/import/preview',{method:'POST',body:data});showMigrationPreviewResult(result);}catch(e){$('#migration-result').innerHTML='';toast(e.message,true);}finally{lock.release();}}
+async function waitForMigrationImport(token, lock=null){
   let connectionErrors=0;
   while(true){
     await new Promise(resolve=>setTimeout(resolve,2000));
@@ -2247,10 +1323,12 @@ async function waitForMigrationImport(token){
     try{job=await api(`/api/setup/import/jobs/${encodeURIComponent(token)}`);connectionErrors=0;}
     catch(e){
       connectionErrors++;
+      if(lock) lock.update(`서버 응답을 기다리고 있습니다 (${connectionErrors}회). 작업은 서버에서 계속됩니다.`, null);
       $('#migration-result').innerHTML=`<div class="result-card"><h3>기초데이터 생성 중</h3><p>서버 작업은 계속 진행 중이며 진행 상태를 다시 확인하고 있습니다 (${connectionErrors}회).</p></div>`;
       continue;
     }
     if(job.status==='PROCESSING'){
+      if(lock) lock.update(job.progress?.message?`기초데이터 생성 중 · ${job.progress.message}`:'기초데이터를 생성하고 있습니다.', typeof job.progress?.percent==='number'?job.progress.percent:null);
       $('#migration-result').innerHTML='<div class="result-card"><h3>기초데이터 생성 중</h3><p>대량 데이터를 반영하고 있습니다. 이 화면을 닫지 않아도 서버에서 작업은 계속됩니다.</p></div>';
       continue;
     }
@@ -2262,18 +1340,20 @@ async function waitForMigrationImport(token){
 async function applyMigration(){
   if(!confirm('선택한 방식으로 기초데이터와 과거 식단을 생성할까요?'))return;
   const btn=$('#apply-migration');
+  const lock=lockUI('기초데이터 생성을 시작하고 있습니다.', 0);
   try{
     btn.disabled=true;btn.textContent='생성 중…';
     await api('/api/setup/import/apply',json('POST',{token:state.importToken,mode:$('#import-mode').value}));
     $('#migration-result').innerHTML='<div class="result-card"><h3>기초데이터 생성 중</h3><p>서버에서 반영 작업을 시작했습니다.</p></div>';
-    const result=await waitForMigrationImport(state.importToken);
+    const result=await waitForMigrationImport(state.importToken, lock);
+    lock.update('화면을 새로 고치고 있습니다.', 100);
     $('#migration-result').innerHTML=`<div class="result-card"><h3>생성 완료</h3><pre>${escapeHtml(JSON.stringify(result,null,2))}</pre></div>`;
     state.weekStart=mondayOf(new Date());await loadWorkspace(false);toast('기초데이터 생성을 완료했습니다.');
   }catch(e){
     btn.disabled=false;btn.textContent='기초데이터 생성';
     $('#migration-result').innerHTML=`<div class="result-card"><h3 style="color:#9e2f28">생성 실패</h3><pre>${escapeHtml(e.message)}</pre></div>`;
     toast(e.message,true);
-  }
+  }finally{lock.release();}
 }
 
 async function loadMasterData(){
@@ -2290,7 +1370,7 @@ async function loadMasterData(){
 
 async function renderWeatherView(root){
   root.innerHTML=`<div class="weather-management">
-    <section class="narrow-card"><h2>날씨정보 관리</h2><p>일별 자료와 시간별 관측자료를 저장합니다. 시간별 자료의 11·12시는 중식, 17·18시는 석식 통계에 적용되고, 하루 20시간 이상 있는 날은 일별 자료(평균·최저·최고기온, 강수 합계, 평균습도)도 자동으로 만듭니다.</p>
+    <section class="narrow-card"><h2>날씨정보 관리</h2><p>일별 자료와 시간별 관측자료를 저장합니다. 시간별 자료의 11·12시는 중식, 17·18시는 석식 시간대 날씨로 함께 저장되고, 하루 20시간 이상 있는 날은 일별 자료(평균·최저·최고기온, 강수 합계, 평균습도)도 자동으로 만듭니다.</p>
       <details class="weather-format-help"><summary>지원하는 파일 형식</summary><ul>
         <li><strong>weather.nuni.co.kr 시간별 내려받기 CSV</strong> (권장): 첫 줄 <code># source=KMA …</code> 안내행, 열 <code>observation_datetime, station_id, station_name, temperature, precipitation, humidity, wind_speed, source_kind</code>. 파일을 그대로 올리면 됩니다.</li>
         <li>같은 시각이 <code>01:00</code>과 <code>01:00:00</code>처럼 두 번 들어 있고 값이 같으면 한 건만 저장합니다. 값이 다르면 오류로 표시합니다.</li>
@@ -2312,15 +1392,15 @@ async function renderWeatherView(root){
 function weatherNumber(value,suffix=''){return value===null||value===undefined?'—':`${numberText(value)}${suffix}`;}
 function renderWeatherPreview(response){
   state.weatherUpload=response;const s=response.summary;const root=$('#weather-preview-result');const hourly=s.data_granularity==='hourly';const labels={observation_date:'관측일자',observation_datetime:'관측일시',station_id:'지점번호',station_name:'지점명',avg_temp:'평균기온',temperature:'기온',min_temp:'최저기온',max_temp:'최고기온',precipitation:'강수량',avg_humidity:'평균습도',humidity:'습도',snow_depth:'적설',sunshine_hours:'일조시간',wind_speed:'풍속',source_kind:'자료구분'};
-  const table=hourly?`<div class="table-wrap"><table class="data-table"><thead><tr><th>행</th><th>관측일시</th><th>지점</th><th>기온</th><th>강수</th><th>습도</th><th>풍속</th><th>적용 배식</th><th>상태</th><th>확인사항</th></tr></thead><tbody>${response.preview_rows.map(row=>{const hour=Number((row.observation_datetime||'').slice(11,13));const meal=[11,12].includes(hour)?'중식':[17,18].includes(hour)?'석식':'통계 미사용';return `<tr><td>${row.source_row}</td><td>${escapeHtml(row.observation_datetime||'—')}</td><td>${escapeHtml(row.station_name||row.station_id||'—')}<small class="muted"> ${escapeHtml(row.station_id||'')}</small></td><td>${weatherNumber(row.temperature,'℃')}</td><td>${weatherNumber(row.precipitation,'mm')}</td><td>${weatherNumber(row.humidity,'%')}</td><td>${weatherNumber(row.wind_speed,'m/s')}</td><td>${meal}</td><td><span class="badge ${row.status==='오류'?'badge-fail':row.status==='수정'?'badge-warn':row.status==='신규'?'badge-ok':'badge-inactive'}">${row.status}</span></td><td class="${row.error?'form-error':'muted'}">${escapeHtml(row.error||row.warnings.join(' · '))}</td></tr>`;}).join('')}</tbody></table></div>`:`<div class="table-wrap"><table class="data-table"><thead><tr><th>행</th><th>날짜</th><th>지점</th><th>평균</th><th>최저</th><th>최고</th><th>강수</th><th>습도</th><th>상태</th><th>확인사항</th></tr></thead><tbody>${response.preview_rows.map(row=>`<tr><td>${row.source_row}</td><td>${row.observation_date||'—'}</td><td>${escapeHtml(row.station_name||row.station_id||'—')}<small class="muted"> ${escapeHtml(row.station_id||'')}</small></td><td>${weatherNumber(row.avg_temp,'℃')}</td><td>${weatherNumber(row.min_temp,'℃')}</td><td>${weatherNumber(row.max_temp,'℃')}</td><td>${weatherNumber(row.precipitation,'mm')}</td><td>${weatherNumber(row.avg_humidity,'%')}</td><td><span class="badge ${row.status==='오류'?'badge-fail':row.status==='수정'?'badge-warn':row.status==='신규'?'badge-ok':'badge-inactive'}">${row.status}</span></td><td class="${row.error?'form-error':'muted'}">${escapeHtml(row.error||row.warnings.join(' · '))}</td></tr>`).join('')}</tbody></table></div>`;
+  const table=hourly?`<div class="table-wrap"><table class="data-table"><thead><tr><th>행</th><th>관측일시</th><th>지점</th><th>기온</th><th>강수</th><th>습도</th><th>풍속</th><th>적용 배식</th><th>상태</th><th>확인사항</th></tr></thead><tbody>${response.preview_rows.map(row=>{const hour=Number((row.observation_datetime||'').slice(11,13));const meal=[11,12].includes(hour)?'중식':[17,18].includes(hour)?'석식':'배식시간 외';return `<tr><td>${row.source_row}</td><td>${escapeHtml(row.observation_datetime||'—')}</td><td>${escapeHtml(row.station_name||row.station_id||'—')}<small class="muted"> ${escapeHtml(row.station_id||'')}</small></td><td>${weatherNumber(row.temperature,'℃')}</td><td>${weatherNumber(row.precipitation,'mm')}</td><td>${weatherNumber(row.humidity,'%')}</td><td>${weatherNumber(row.wind_speed,'m/s')}</td><td>${meal}</td><td><span class="badge ${row.status==='오류'?'badge-fail':row.status==='수정'?'badge-warn':row.status==='신규'?'badge-ok':'badge-inactive'}">${row.status}</span></td><td class="${row.error?'form-error':'muted'}">${escapeHtml(row.error||row.warnings.join(' · '))}</td></tr>`;}).join('')}</tbody></table></div>`:`<div class="table-wrap"><table class="data-table"><thead><tr><th>행</th><th>날짜</th><th>지점</th><th>평균</th><th>최저</th><th>최고</th><th>강수</th><th>습도</th><th>상태</th><th>확인사항</th></tr></thead><tbody>${response.preview_rows.map(row=>`<tr><td>${row.source_row}</td><td>${row.observation_date||'—'}</td><td>${escapeHtml(row.station_name||row.station_id||'—')}<small class="muted"> ${escapeHtml(row.station_id||'')}</small></td><td>${weatherNumber(row.avg_temp,'℃')}</td><td>${weatherNumber(row.min_temp,'℃')}</td><td>${weatherNumber(row.max_temp,'℃')}</td><td>${weatherNumber(row.precipitation,'mm')}</td><td>${weatherNumber(row.avg_humidity,'%')}</td><td><span class="badge ${row.status==='오류'?'badge-fail':row.status==='수정'?'badge-warn':row.status==='신규'?'badge-ok':'badge-inactive'}">${row.status}</span></td><td class="${row.error?'form-error':'muted'}">${escapeHtml(row.error||row.warnings.join(' · '))}</td></tr>`).join('')}</tbody></table></div>`;
   root.innerHTML=`<div class="result-card"><h3>파일 분석 결과</h3><div class="stats-mini"><div class="stat-mini-card"><strong>파일</strong><span>${escapeHtml(response.filename)}</span></div><div class="stat-mini-card"><strong>자료 유형</strong><span>${hourly?'시간별 관측자료':'일별 날씨자료'}</span></div><div class="stat-mini-card"><strong>기간</strong><span>${s.date_from||'—'} ~ ${s.date_to||'—'}</span></div><div class="stat-mini-card"><strong>관측지점</strong><span>${numberText(s.stations.length)}개</span></div><div class="stat-mini-card"><strong>전체/정상</strong><span>${numberText(s.total_rows)} / ${numberText(s.valid_rows)}건</span></div><div class="stat-mini-card"><strong>신규/갱신/동일</strong><span>${numberText(s.inserted_rows)} / ${numberText(s.updated_rows)} / ${numberText(s.skipped_rows)}건</span></div><div class="stat-mini-card"><strong>오류/필드 확인</strong><span>${numberText(s.error_rows)} / ${numberText(s.warning_fields)}건</span></div>${hourly?`<div class="stat-mini-card"><strong>같은 값 중복 제외</strong><span>${numberText(s.duplicate_rows||0)}건</span></div><div class="stat-mini-card"><strong>강수 빈칸 → 0mm</strong><span>${numberText(s.precipitation_blank_as_zero||0)}건</span></div><div class="stat-mini-card"><strong>일별 자료 생성 예정</strong><span>${numberText(s.daily_aggregate_days||0)}일${s.partial_days?` · ${numberText(s.partial_days)}일은 20시간 미만이라 제외`:''}</span></div>`:''}</div>${s.source_note?`<p class="muted">파일 정보: ${escapeHtml(s.source_note)}</p>`:''}
-  ${hourly?'<div class="aggregation-note">시간별 원본을 그대로 저장하며 11·12시 관측값은 중식, 17·18시 관측값은 석식 통계에 사용합니다.</div>':''}<div class="validation-result"><strong>자동 인식 컬럼</strong><div class="placeholder-list">${Object.entries(s.mapped_headers).map(([field,header])=>`<span class="placeholder-chip">${escapeHtml(header)} → ${labels[field]||field}</span>`).join('')}</div>${s.unknown_headers.length?`<p class="muted">사용하지 않은 컬럼: ${s.unknown_headers.map(escapeHtml).join(', ')}</p>`:''}</div>${table}
+  ${hourly?'<div class="aggregation-note">시간별 원본을 그대로 저장하며 11·12시 관측값은 중식, 17·18시 관측값은 석식 시간대 날씨로 함께 저장합니다.</div>':''}<div class="validation-result"><strong>자동 인식 컬럼</strong><div class="placeholder-list">${Object.entries(s.mapped_headers).map(([field,header])=>`<span class="placeholder-chip">${escapeHtml(header)} → ${labels[field]||field}</span>`).join('')}</div>${s.unknown_headers.length?`<p class="muted">사용하지 않은 컬럼: ${s.unknown_headers.map(escapeHtml).join(', ')}</p>`:''}</div>${table}
   ${response.errors.length?`<div class="validation-result"><strong>오류 ${numberText(s.error_rows)}건</strong><p class="muted">오류 행은 제외하고 정상 ${numberText(s.valid_rows)}건만 반영할 수 있습니다.</p>${response.errors.slice(0,20).map(error=>`<p class="form-error">${error.row}행: ${escapeHtml(error.message)}</p>`).join('')}</div>`:''}
   <div class="save-bar"><span class="save-state">분석만으로는 자료가 저장되지 않습니다.</span><button class="primary-button" id="weather-apply" ${s.valid_rows?'':'disabled'}>DB 반영</button></div></div>`;
   $('#weather-apply')?.addEventListener('click',applyWeatherFile);
 }
-async function previewWeatherFile(){const file=$('#weather-file').files[0];if(!file){toast('날씨자료 파일(weather.nuni.co.kr CSV 또는 기상청 자료)을 선택해 주세요.',true);return;}const fd=new FormData();fd.append('file',file);$('#weather-preview-result').innerHTML='<div class="result-card">파일을 분석하고 있습니다.</div>';try{renderWeatherPreview(await api('/api/weather/preview',{method:'POST',body:fd}));}catch(e){$('#weather-preview-result').innerHTML=`<div class="result-card"><h3 class="form-error">분석 실패</h3><p>${escapeHtml(e.message)}</p></div>`;toast(e.message,true);}}
-async function applyWeatherFile(){const upload=state.weatherUpload;if(!upload?.token)return;if(!confirm(`정상 날씨자료 ${numberText(upload.summary.valid_rows)}건을 반영하시겠습니까? 오류 ${numberText(upload.summary.error_rows)}건은 제외됩니다.`))return;const button=$('#weather-apply');button.disabled=true;button.textContent='반영 중…';try{const response=await api('/api/weather/apply',json('POST',{token:upload.token}));const r=response.result;$('#weather-preview-result').innerHTML=`<div class="result-card"><h3 style="color:var(--ok)">반영 완료</h3><p>반영 일시 ${new Date(response.completed_at).toLocaleString('ko-KR')}</p><div class="stats-mini"><div class="stat-mini-card"><strong>전체</strong><span>${numberText(r.total_rows)}건</span></div><div class="stat-mini-card"><strong>신규 등록</strong><span>${numberText(r.inserted_rows)}건</span></div><div class="stat-mini-card"><strong>기존자료 갱신</strong><span>${numberText(r.updated_rows)}건</span></div><div class="stat-mini-card"><strong>변경 없음</strong><span>${numberText(r.skipped_rows)}건</span></div><div class="stat-mini-card"><strong>오류 제외</strong><span>${numberText(r.error_rows)}건</span></div>${r.duplicate_rows?`<div class="stat-mini-card"><strong>같은 값 중복 제외</strong><span>${numberText(r.duplicate_rows)}건</span></div>`:''}${r.daily_aggregated_days!==undefined?`<div class="stat-mini-card"><strong>일별 자료 생성·갱신</strong><span>${numberText(r.daily_aggregated_days)}일</span></div>`:''}</div></div>`;state.weatherUpload=null;await Promise.all([loadWeatherRecords(),loadMealPeriodWeatherRecords(),loadWeatherUploads()]);toast('날씨자료 반영을 완료했습니다.');}catch(e){button.disabled=false;button.textContent='DB 반영';toast(e.message,true);}}
+async function previewWeatherFile(){const file=$('#weather-file').files[0];if(!file){toast('날씨자료 파일(weather.nuni.co.kr CSV 또는 기상청 자료)을 선택해 주세요.',true);return;}const fd=new FormData();fd.append('file',file);$('#weather-preview-result').innerHTML='<div class="result-card">파일을 분석하고 있습니다.</div>';const lock=lockUI('날씨자료 파일을 올리고 분석하고 있습니다.');try{renderWeatherPreview(await api('/api/weather/preview',{method:'POST',body:fd}));}catch(e){$('#weather-preview-result').innerHTML=`<div class="result-card"><h3 class="form-error">분석 실패</h3><p>${escapeHtml(e.message)}</p></div>`;toast(e.message,true);}finally{lock.release();}}
+async function applyWeatherFile(){const upload=state.weatherUpload;if(!upload?.token)return;if(!confirm(`정상 날씨자료 ${numberText(upload.summary.valid_rows)}건을 반영하시겠습니까? 오류 ${numberText(upload.summary.error_rows)}건은 제외됩니다.`))return;const button=$('#weather-apply');button.disabled=true;button.textContent='반영 중…';const lock=lockUI('날씨자료를 저장하고 있습니다.');try{const response=await api('/api/weather/apply',json('POST',{token:upload.token}));const r=response.result;$('#weather-preview-result').innerHTML=`<div class="result-card"><h3 style="color:var(--ok)">반영 완료</h3><p>반영 일시 ${new Date(response.completed_at).toLocaleString('ko-KR')}</p><div class="stats-mini"><div class="stat-mini-card"><strong>전체</strong><span>${numberText(r.total_rows)}건</span></div><div class="stat-mini-card"><strong>신규 등록</strong><span>${numberText(r.inserted_rows)}건</span></div><div class="stat-mini-card"><strong>기존자료 갱신</strong><span>${numberText(r.updated_rows)}건</span></div><div class="stat-mini-card"><strong>변경 없음</strong><span>${numberText(r.skipped_rows)}건</span></div><div class="stat-mini-card"><strong>오류 제외</strong><span>${numberText(r.error_rows)}건</span></div>${r.duplicate_rows?`<div class="stat-mini-card"><strong>같은 값 중복 제외</strong><span>${numberText(r.duplicate_rows)}건</span></div>`:''}${r.daily_aggregated_days!==undefined?`<div class="stat-mini-card"><strong>일별 자료 생성·갱신</strong><span>${numberText(r.daily_aggregated_days)}일</span></div>`:''}</div></div>`;state.weatherUpload=null;await Promise.all([loadWeatherRecords(),loadMealPeriodWeatherRecords(),loadWeatherUploads()]);toast('날씨자료 반영을 완료했습니다.');}catch(e){button.disabled=false;button.textContent='DB 반영';toast(e.message,true);}finally{lock.release();}}
 async function loadWeatherRecords(){const root=$('#weather-records');if(!root)return;const params=new URLSearchParams({offset:String(state.weatherOffset),limit:'50'});const fields={start_date:'#weather-start',end_date:'#weather-end',station:'#weather-station',min_temp:'#weather-min-temp',max_temp:'#weather-max-temp',precipitation:'#weather-rain'};Object.entries(fields).forEach(([key,selector])=>{const value=$(selector)?.value;if(value)params.set(key,value);});try{const data=await api(`/api/weather/records?${params}`);root.innerHTML=`<div class="table-wrap"><table class="data-table"><thead><tr><th>날짜</th><th>지점</th><th>평균</th><th>최저</th><th>최고</th><th>강수</th><th>습도</th><th>적설</th><th>등록일</th></tr></thead><tbody>${data.items.map(row=>`<tr><td>${row.observation_date}</td><td>${escapeHtml(row.station_name||row.station_id)}<small class="muted"> ${escapeHtml(row.station_id)}</small></td><td>${weatherNumber(row.avg_temp,'℃')}</td><td>${weatherNumber(row.min_temp,'℃')}</td><td>${weatherNumber(row.max_temp,'℃')}</td><td>${weatherNumber(row.precipitation,'mm')}</td><td>${weatherNumber(row.avg_humidity,'%')}</td><td>${weatherNumber(row.snow_depth)}</td><td>${new Date(row.created_at).toLocaleDateString('ko-KR')}</td></tr>`).join('')||'<tr><td colspan="9" class="muted">저장된 날씨자료가 없습니다.</td></tr>'}</tbody></table></div><div class="table-tools"><span class="muted">전체 ${numberText(data.total)}건</span><button class="secondary-button" id="weather-record-prev" ${state.weatherOffset===0?'disabled':''}>이전</button><button class="secondary-button" id="weather-record-next" ${state.weatherOffset+data.limit>=data.total?'disabled':''}>다음</button></div>`;$('#weather-record-prev')?.addEventListener('click',()=>{state.weatherOffset=Math.max(0,state.weatherOffset-50);loadWeatherRecords();});$('#weather-record-next')?.addEventListener('click',()=>{state.weatherOffset+=50;loadWeatherRecords();});}catch(e){root.innerHTML=`<div class="form-error">${escapeHtml(e.message)}</div>`;}}
 async function loadMealPeriodWeatherRecords(){const root=$('#weather-meal-records');if(!root)return;const params=new URLSearchParams({offset:String(state.weatherMealOffset),limit:'50'});const fields={start_date:'#weather-start',end_date:'#weather-end',station:'#weather-station',min_temp:'#weather-min-temp',max_temp:'#weather-max-temp',precipitation:'#weather-rain'};Object.entries(fields).forEach(([key,selector])=>{const value=$(selector)?.value;if(value)params.set(key,value);});try{const data=await api(`/api/weather/meal-period-records?${params}`);root.innerHTML=`<div class="aggregation-note">중식은 11·12시, 석식은 17·18시 관측자료를 사용합니다. 관측 건수는 최대 2건입니다.</div><div class="table-wrap"><table class="data-table"><thead><tr><th>날짜</th><th>배식</th><th>지점</th><th>평균</th><th>최저</th><th>최고</th><th>강수</th><th>습도</th><th>풍속</th><th>관측 건수</th></tr></thead><tbody>${data.items.map(row=>`<tr><td>${row.observation_date}</td><td>${row.meal_type==='LUNCH'?'중식':'석식'}</td><td>${escapeHtml(row.station_name||row.station_id)}<small class="muted"> ${escapeHtml(row.station_id)}</small></td><td>${weatherNumber(row.avg_temp,'℃')}</td><td>${weatherNumber(row.min_temp,'℃')}</td><td>${weatherNumber(row.max_temp,'℃')}</td><td>${weatherNumber(row.precipitation,'mm')}</td><td>${weatherNumber(row.avg_humidity,'%')}</td><td>${weatherNumber(row.avg_wind_speed,'m/s')}</td><td>${numberText(row.sample_count)}/2</td></tr>`).join('')||'<tr><td colspan="10" class="muted">저장된 배식 시간대 날씨자료가 없습니다.</td></tr>'}</tbody></table></div><div class="table-tools"><span class="muted">전체 ${numberText(data.total)}건</span><button class="secondary-button" id="weather-meal-prev" ${state.weatherMealOffset===0?'disabled':''}>이전</button><button class="secondary-button" id="weather-meal-next" ${state.weatherMealOffset+data.limit>=data.total?'disabled':''}>다음</button></div>`;$('#weather-meal-prev')?.addEventListener('click',()=>{state.weatherMealOffset=Math.max(0,state.weatherMealOffset-50);loadMealPeriodWeatherRecords();});$('#weather-meal-next')?.addEventListener('click',()=>{state.weatherMealOffset+=50;loadMealPeriodWeatherRecords();});}catch(e){root.innerHTML=`<div class="form-error">${escapeHtml(e.message)}</div>`;}}
 async function loadWeatherUploads(){const root=$('#weather-uploads');if(!root)return;try{const data=await api(`/api/weather/uploads?offset=${state.weatherHistoryOffset}&limit=20`);root.innerHTML=`<div class="table-wrap"><table class="data-table"><thead><tr><th>업로드 일시</th><th>파일명</th><th>기간</th><th>지점</th><th>전체</th><th>신규</th><th>갱신</th><th>오류</th><th>상태</th></tr></thead><tbody>${data.items.map(row=>`<tr><td>${new Date(row.created_at).toLocaleString('ko-KR')}</td><td>${escapeHtml(row.original_filename)}</td><td>${row.date_from||'—'} ~ ${row.date_to||'—'}</td><td>${numberText(row.stations.length)}개</td><td>${numberText(row.total_rows)}</td><td>${numberText(row.inserted_rows)}</td><td>${numberText(row.updated_rows)}</td><td>${row.error_rows?`<a href="/api/weather/uploads/${row.id}/errors.csv">${numberText(row.error_rows)}건</a>`:'0건'}</td><td>${escapeHtml(row.status)}</td></tr>`).join('')||'<tr><td colspan="9" class="muted">업로드 이력이 없습니다.</td></tr>'}</tbody></table></div><div class="table-tools"><span class="muted">전체 ${numberText(data.total)}건</span><button class="secondary-button" id="weather-upload-prev" ${state.weatherHistoryOffset===0?'disabled':''}>이전</button><button class="secondary-button" id="weather-upload-next" ${state.weatherHistoryOffset+20>=data.total?'disabled':''}>다음</button></div>`;$('#weather-upload-prev')?.addEventListener('click',()=>{state.weatherHistoryOffset=Math.max(0,state.weatherHistoryOffset-20);loadWeatherUploads();});$('#weather-upload-next')?.addEventListener('click',()=>{state.weatherHistoryOffset+=20;loadWeatherUploads();});}catch(e){root.innerHTML=`<div class="form-error">${escapeHtml(e.message)}</div>`;}}
@@ -2368,9 +1448,10 @@ async function previewActualMealUpload(){
   actualMealRequestInFlight=true;
   const previewButton=$('#actual-meal-preview');const previewLabel=previewButton?previewButton.textContent:'';if(previewButton){previewButton.disabled=true;previewButton.textContent='검증 중…';}
   const data=new FormData();data.append('file',file);const result=$('#actual-meal-result');result.innerHTML='<div class="result-card">파일을 검증하고 있습니다.</div>';
+  const lock=lockUI('식수 정보 파일을 올리고 검증하고 있습니다.');
   try{const response=await api('/api/setup/actual-meals/preview',{method:'POST',body:data});state.actualMealUpload={...response,filename:file.name,page:0};renderActualMealRows();}
   catch(e){result.innerHTML=`<div class="result-card"><h3 class="form-error">검증 실패</h3><p>${escapeHtml(e.message)}</p></div>`;toast(e.message,true);}
-  finally{actualMealRequestInFlight=false;const b=$('#actual-meal-preview');if(b){b.disabled=false;b.textContent=previewLabel||'파일 검증';}}
+  finally{lock.release();actualMealRequestInFlight=false;const b=$('#actual-meal-preview');if(b){b.disabled=false;b.textContent=previewLabel||'파일 검증';}}
 }
 
 async function applyActualMealUpload(){
@@ -2380,9 +1461,10 @@ async function applyActualMealUpload(){
   actualMealRequestInFlight=true;
   const previewButton=$('#actual-meal-preview');if(previewButton)previewButton.disabled=true;
   const button=$('#actual-meal-apply');if(button){button.disabled=true;button.textContent='반영 중…';}
+  const lock=lockUI('식수 정보를 저장하고 있습니다.');
   try{const response=await api('/api/setup/actual-meals/apply',json('POST',{token:upload.token}));const result=response.result;const v=response.verification||{};$('#actual-meal-result').innerHTML=`<div class="result-card"><h3 style="color:var(--ok)">✓ 반영 완료</h3><p>반영 일시 ${new Date(response.completed_at).toLocaleString('ko-KR')}</p><div class="stats-mini"><div class="stat-mini-card"><strong>전체 반영 후보</strong><span>${numberText(result.candidate_count)}건</span></div><div class="stat-mini-card"><strong>신규 등록</strong><span>${numberText(result.new_count)}건</span></div><div class="stat-mini-card"><strong>수정</strong><span>${numberText(result.update_count)}건</span></div><div class="stat-mini-card"><strong>변경 없음</strong><span>${numberText(result.unchanged_count)}건</span></div><div class="stat-mini-card"><strong>신규 배식 생성</strong><span>${numberText(result.service_created_count||0)}건</span></div><div class="stat-mini-card"><strong>제외</strong><span>${numberText(result.excluded_count)}건</span></div><div class="stat-mini-card"><strong>실패</strong><span>${numberText(result.failed_count)}건</span></div></div><div class="result-card" style="margin-top:12px;background:#eef8f3;border-color:#cfe8db"><h4>반영 검증</h4><p>DB 전체 실제식수 기록: <strong>${numberText(v.total_actual_records||0)}건</strong> / 전체 배식정보: <strong>${numberText(v.total_services||0)}건</strong></p><p class="muted">주간 식단표에서 반영된 식수를 확인할 수 있습니다.</p></div><div class="inline-form" style="margin-top:12px"><button class="secondary-button" id="actual-meal-goto-workspace">주간 식단표에서 확인</button><button class="secondary-button" id="actual-meal-reupload">추가 업로드</button></div></div>`;toast('식수 정보 반영을 완료했습니다.');$('#actual-meal-goto-workspace')?.addEventListener('click',()=>{switchView('workspace');});$('#actual-meal-reupload')?.addEventListener('click',()=>{state.actualMealUpload=null;renderActualMealUploadView($('#master-data-content'));});}
   catch(e){if(button){button.disabled=false;button.textContent='DB 반영';}toast(e.message,true);}
-  finally{actualMealRequestInFlight=false;const b=$('#actual-meal-preview');if(b)b.disabled=false;}
+  finally{lock.release();actualMealRequestInFlight=false;const b=$('#actual-meal-preview');if(b)b.disabled=false;}
 }
 
 function renderSetupImportView(root){
@@ -2506,13 +1588,13 @@ async function renderMenusMaster(root,q=state.masterMenuQuery||''){const token=+
   const oldInput=$('#master-search');const hadFocus=document.activeElement===oldInput;const curVal=oldInput?.value??q;const curCursor=oldInput?.selectionStart;const curScroll=oldInput?.scrollTop;
   root.innerHTML=`<div class="master-split">
     <section class="master-list-panel">
-      <div class="table-tools"><input id="master-search" placeholder="메뉴 검색" value="${escapeHtml(curVal)}"><button class="secondary-button" id="new-menu">＋ 메뉴</button></div>
+      <div class="table-tools"><input id="master-search" placeholder="메뉴명 입력 후 Enter 또는 조회" value="${escapeHtml(curVal)}"><button class="primary-button" id="master-search-btn">조회</button><button class="secondary-button" id="new-menu">＋ 메뉴</button></div>
       <div class="table-wrap master-list-wrap"><table class="data-table"><thead><tr><th>메뉴명</th><th>역할</th><th>레시피</th><th>상태</th></tr></thead><tbody>${rows.map(r=>`<tr data-menu-master="${r.id}" class="${r.id===state.masterSelectionId?'selected-row':''}"><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.role)}</td><td>${r.recipe_count}개</td><td>${r.active?'사용':'미사용'}</td></tr>`).join('')}</tbody></table></div>
     </section>
     <aside id="master-editor" class="master-editor-panel"></aside>
   </div>`;
   const si=$('#master-search');if(hadFocus&&si){si.focus();if(curCursor!=null)si.setSelectionRange(curCursor,curCursor);if(curScroll!=null)si.scrollTop=curScroll;}
-  $('#master-search').addEventListener('input',e=>{clearTimeout(window.masterTimer);window.masterTimer=setTimeout(()=>renderMenusMaster(root,e.target.value),250)});
+  bindSearchSubmit($('#master-search'),$('#master-search-btn'),value=>renderMenusMaster(root,value.trim()));
   $('#new-menu').addEventListener('click',()=>{state.masterSelectionId=null;state.selectedRecipeId=null;state.masterMenuDetailTab='recipe';renderMenuMasterPanel(null);});
   const menuTable=$('.master-list-wrap table',root); menuTable.addEventListener('click',e=>{ const row=e.target.closest('tr[data-menu-master]'); if(!row)return; state.masterSelectionId=Number(row.dataset.menuMaster); state.selectedRecipeId=null; state.masterMenuDetailTab='recipe'; state.masterMenuHistory={menuId:null,items:[],offset:0,total:0,hasMore:false,loading:false,error:'',snapshotCache:{},expandedSnapshotId:null};state.masterHistoryFilter=''; $$('[data-menu-master]',menuTable).forEach(x=>x.classList.toggle('selected-row',x===row)); renderMenuMasterPanel(state.masterSelectionId); }); const menuWrap=$('.master-list-wrap',root); menuWrap.addEventListener('scroll',()=>{ if(!state.masterMenuHasMore||state.masterMenuLoading)return; if(menuWrap.scrollTop+menuWrap.clientHeight>=menuWrap.scrollHeight-80) loadMoreMasterMenus(); });
   if(state.masterSelectionId && rows.some(r=>r.id===state.masterSelectionId)) renderMenuMasterPanel(state.masterSelectionId);
@@ -2584,7 +1666,7 @@ function renderMasterHistoryCard(item){
   const mealLabel=escapeHtml({LUNCH:'중식',DINNER:'석식'}[item.meal_type]||item.meal_type);
   const actualCount=item.actual_count==null?'-':`${numberText(item.actual_count)}명`;
   const recipeName=item.target_recipe?.name?recipeNameWithoutVersion(item.target_recipe.name):'';
-  return `<article class="master-history-card"><header><strong>${date} · ${mealLabel} · 실제 ${actualCount}</strong>${recipeName?`<span class="master-history-recipe">${escapeHtml(recipeName)}</span>`:''}</header><div class="master-history-menus">${item.menus.map(menu=>`<button type="button" class="master-history-menu ${menu.meal_service_menu_id===targetId?'target':''}" data-history-menu="${menu.meal_service_menu_id}">${menu.is_representative?'<span class="representative-mark" title="대표 메뉴">★</span>':''}${escapeHtml(menu.name)}</button>`).join('')}</div><div class="master-history-snapshot" data-snapshot-for="${item.meal_service_id}"></div></article>`;
+  return `<article class="master-history-card"><header><strong>${date} · ${mealLabel} · 실제 ${actualCount}</strong>${recipeName?`<span class="master-history-recipe">${escapeHtml(recipeName)}</span>`:''}</header><div class="master-history-menus">${item.menus.map(menu=>`<button type="button" class="master-history-menu ${menu.meal_service_menu_id===targetId?'target':''}" data-history-menu="${menu.meal_service_menu_id}">${menu.is_representative?'<span class="representative-mark" title="메인 메뉴">★</span>':''}${escapeHtml(menu.name)}</button>`).join('')}</div><div class="master-history-snapshot" data-snapshot-for="${item.meal_service_id}"></div></article>`;
 }
 async function loadMasterSnapshot(menuId,card){
   const history=state.masterMenuHistory;history.expandedSnapshotId=menuId;
@@ -2671,10 +1753,10 @@ async function renderIngredientsMaster(root,q=''){const token=++_ingredientRende
   if(token!==_ingredientRenderToken)return;
   const oldInput=$('#master-search');const hadFocus=document.activeElement===oldInput;const curVal=oldInput?.value??q;const curCursor=oldInput?.selectionStart;const curScroll=oldInput?.scrollTop;
   root.innerHTML=`<div class="master-split">
-    <section class="master-list-panel"><div class="table-tools"><input id="master-search" placeholder="재료 검색" value="${escapeHtml(curVal)}"><button class="secondary-button" id="new-ingredient">＋ 재료</button></div><div class="table-wrap master-list-wrap"><table class="data-table"><thead><tr><th>재료명</th><th>통계분석군</th><th>단위</th><th>상태</th></tr></thead><tbody>${rows.map(r=>`<tr data-ingredient-master="${r.id}" class="${r.id===state.masterSelectionId?'selected-row':''}"><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.stat_group)}</td><td>${escapeHtml(r.default_unit||'')}</td><td>${r.active?'사용':'미사용'}</td></tr>`).join('')}</tbody></table></div></section>
+    <section class="master-list-panel"><div class="table-tools"><input id="master-search" placeholder="재료명 입력 후 Enter 또는 조회" value="${escapeHtml(curVal)}"><button class="primary-button" id="master-search-btn">조회</button><button class="secondary-button" id="new-ingredient">＋ 재료</button></div><div class="table-wrap master-list-wrap"><table class="data-table"><thead><tr><th>재료명</th><th>통계분석군</th><th>단위</th><th>상태</th></tr></thead><tbody>${rows.map(r=>`<tr data-ingredient-master="${r.id}" class="${r.id===state.masterSelectionId?'selected-row':''}"><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.stat_group)}</td><td>${escapeHtml(r.default_unit||'')}</td><td>${r.active?'사용':'미사용'}</td></tr>`).join('')}</tbody></table></div></section>
     <aside id="master-editor" class="master-editor-panel"></aside></div>`;
   const si=$('#master-search');if(hadFocus&&si){si.focus();if(curCursor!=null)si.setSelectionRange(curCursor,curCursor);if(curScroll!=null)si.scrollTop=curScroll;}
-  $('#master-search').addEventListener('input',e=>{clearTimeout(window.masterTimer);window.masterTimer=setTimeout(()=>renderIngredientsMaster(root,e.target.value),250)});
+  bindSearchSubmit($('#master-search'),$('#master-search-btn'),value=>renderIngredientsMaster(root,value.trim()));
   $('#new-ingredient').addEventListener('click',()=>{state.masterSelectionId=null;state.masterIngredientDetailTab='info';state.masterIngredientUsageQuery='';state.masterIngredientUsage={ingredientId:null,items:[],offset:0,total:0,hasMore:false,loading:false,error:''};renderIngredientMasterPanel();});
   const ingredientTable=$('.master-list-wrap table',root); ingredientTable.addEventListener('click',e=>{ const row=e.target.closest('tr[data-ingredient-master]'); if(!row)return; state.masterSelectionId=Number(row.dataset.ingredientMaster); state.masterIngredientDetailTab='info';state.masterIngredientUsageQuery='';state.masterIngredientUsage={ingredientId:null,items:[],offset:0,total:0,hasMore:false,loading:false,error:''}; $$('[data-ingredient-master]',ingredientTable).forEach(x=>x.classList.toggle('selected-row',x===row)); renderIngredientMasterPanel(state.masterSelectionId); }); const ingredientWrap=$('.master-list-wrap',root); ingredientWrap.addEventListener('scroll',()=>{ if(!state.masterIngredientHasMore||state.masterIngredientLoading)return; if(ingredientWrap.scrollTop+ingredientWrap.clientHeight>=ingredientWrap.scrollHeight-80) loadMoreMasterIngredients(); });
   if(state.masterSelectionId&&rows.some(r=>r.id===state.masterSelectionId))renderIngredientMasterPanel(state.masterSelectionId);else $('#master-editor').innerHTML='<div class="empty-editor">왼쪽에서 재료를 선택하거나 새 재료를 등록하세요.</div>';
@@ -2707,13 +1789,13 @@ async function loadIngredientUsage(ingredientId,append=false){
 function renderIngredientUsage(){
   const root=$('#master-ingredient-usage-root'),usage=state.masterIngredientUsage;if(!root)return;
   if(usage.error){root.innerHTML=`<div class="master-history-error">사용 메뉴를 불러오지 못했습니다.<small>${escapeHtml(usage.error)}</small><button class="secondary-button" id="ingredient-usage-retry">다시 시도</button></div>`;$('#ingredient-usage-retry').addEventListener('click',()=>loadIngredientUsage(usage.ingredientId));return;}
-  const toolbar=`<div class="ingredient-usage-toolbar"><strong>사용 메뉴 ${usage.total}개</strong><input id="ingredient-usage-search" placeholder="메뉴 검색" value="${escapeHtml(state.masterIngredientUsageQuery)}"></div>`;
+  const toolbar=`<div class="ingredient-usage-toolbar"><strong>사용 메뉴 ${usage.total}개</strong><span class="search-submit-row"><input id="ingredient-usage-search" placeholder="메뉴 검색 후 Enter" value="${escapeHtml(state.masterIngredientUsageQuery)}"><button type="button" class="secondary-button" id="ingredient-usage-search-btn">조회</button></span></div>`;
   if(usage.loading&&!usage.items.length){root.innerHTML=toolbar+'<div class="master-ingredient-loading">사용 메뉴를 불러오는 중...</div>';bindIngredientUsageSearch();return;}
   if(!usage.items.length){root.innerHTML=toolbar+'<div class="master-history-empty">사용 메뉴가 없습니다.<small>현재 기준 레시피나 과거 식단에서 이 재료가 사용된 기록이 없습니다.</small></div>';bindIngredientUsageSearch();return;}
   root.innerHTML=toolbar+`<div class="ingredient-usage-list">${usage.items.map(item=>{const recent=item.has_historical_usage?`최근 ${item.last_used.date.replaceAll('-','.')} · ${escapeHtml({LUNCH:'중식',DINNER:'석식'}[item.last_used.meal_type]||item.last_used.meal_type)} · 실제 식수 ${item.last_used.actual_count==null?'-':`${numberText(item.last_used.actual_count)}명`} · ${item.historical_usage_count}회`:'최근 사용 없음';const badges=[item.menu_role,item.menu_canonical_name?`집계: ${item.menu_canonical_name}`:null].filter(Boolean);return `<article class="ingredient-usage-card"><div class="ingredient-usage-card-content"><div class="ingredient-usage-card-title"><strong>${escapeHtml(item.menu_name)}</strong><span class="ingredient-usage-badges">${badges.map(badge=>`<span>${escapeHtml(badge)}</span>`).join('')}</span></div><div class="ingredient-usage-card-meta">${recent}</div></div></article>`;}).join('')}</div>${usage.hasMore?'<button class="secondary-button master-history-more" id="ingredient-usage-more">더 보기</button>':''}`;
   bindIngredientUsageSearch();$('#ingredient-usage-more')?.addEventListener('click',()=>loadIngredientUsage(usage.ingredientId,true));
 }
-function bindIngredientUsageSearch(){const input=$('#ingredient-usage-search');if(input)input.addEventListener('input',()=>{state.masterIngredientUsageQuery=input.value;clearTimeout(window.ingredientUsageTimer);window.ingredientUsageTimer=setTimeout(()=>loadIngredientUsage(state.masterIngredientUsage.ingredientId),250);});}
+function bindIngredientUsageSearch(){bindSearchSubmit($('#ingredient-usage-search'),$('#ingredient-usage-search-btn'),value=>{state.masterIngredientUsageQuery=value.trim();loadIngredientUsage(state.masterIngredientUsage.ingredientId);});}
 async function loadMoreMasterMenus(){ if(state.masterMenuHasMore && !state.masterMenuLoading){ state.masterMenuLoading=true; const PAGE=50; const q=state.masterMenuQuery; const offset=state.masterMenuOffset+PAGE; try{ const data=await api(`/api/master/menus?q=${encodeURIComponent(q)}&offset=${offset}&limit=${PAGE}`); if(state.masterMenuQuery!==q)return; const tbody=$('#master-content .master-list-wrap tbody'); if(!tbody)return; state.masterMenuOffset=offset; state.masterMenuHasMore=data.has_more; tbody.insertAdjacentHTML('beforeend', data.items.map(r=>`<tr data-menu-master='${r.id}' class='${r.id===state.masterSelectionId?'selected-row':''}'><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.role)}</td><td>${r.recipe_count}개</td><td>${r.active?'사용':'미사용'}</td></tr>`).join('')); }catch(e){ toast(e.message,true); } finally{ state.masterMenuLoading=false; } } } async function loadMoreMasterIngredients(){ if(state.masterIngredientHasMore && !state.masterIngredientLoading){ state.masterIngredientLoading=true; const PAGE=50; const q=state.masterIngredientQuery; const offset=state.masterIngredientOffset+PAGE; try{ const data=await api(`/api/master/ingredients?q=${encodeURIComponent(q)}&offset=${offset}&limit=${PAGE}`); if(state.masterIngredientQuery!==q)return; const tbody=$('#master-content .master-list-wrap tbody'); if(!tbody)return; state.masterIngredientOffset=offset; state.masterIngredientHasMore=data.has_more; tbody.insertAdjacentHTML('beforeend', data.items.map(r=>`<tr data-ingredient-master='${r.id}' class='${r.id===state.masterSelectionId?'selected-row':''}'><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.stat_group)}</td><td>${escapeHtml(r.default_unit||'')}</td><td>${r.active?'사용':'미사용'}</td></tr>`).join('')); }catch(e){ toast(e.message,true); } finally{ state.masterIngredientLoading=false; } } }
 
 // ==================== 사용자 관리 ====================
@@ -2735,14 +1817,15 @@ async function initUsers() {
   }
 }
 
-let _usersSearchTimer = null;
 async function loadUsersList(q) {
   const root = $('#users-root');
   if (!root) return;
+  state.usersQuery = q || '';
   const data = await api(`/api/users?q=${encodeURIComponent(q)}`);
   const rows = data.items;
   root.innerHTML = `<div class="table-tools">
-    <input id="users-search" placeholder="사용자 ID 또는 이름 검색" value="${escapeHtml(q)}">
+    <input id="users-search" placeholder="사용자 ID 또는 이름 입력 후 Enter 또는 조회" value="${escapeHtml(q)}">
+    <button class="primary-button" id="users-search-btn">조회</button>
     <button class="secondary-button" id="new-user">＋ 사용자 등록</button>
   </div>
   <div class="table-wrap"><table class="data-table"><thead><tr>
@@ -2763,10 +1846,7 @@ async function loadUsersList(q) {
   </tr>`).join('')}</tbody></table></div>`;
 
   const si = $('#users-search', root);
-  let composing = false;
-  si.addEventListener('compositionstart', () => { composing = true; });
-  si.addEventListener('compositionend', e => { composing = false; clearTimeout(_usersSearchTimer); _usersSearchTimer = setTimeout(() => loadUsersList(e.target.value), 200); });
-  si.addEventListener('input', e => { if (composing) return; clearTimeout(_usersSearchTimer); _usersSearchTimer = setTimeout(() => loadUsersList(e.target.value), 200); });
+  bindSearchSubmit(si, $('#users-search-btn', root), value => loadUsersList(value.trim()));
   $('#new-user', root).addEventListener('click', () => openUserCreateModal());
   $$('.user-actions-cell button', root).forEach(btn => btn.addEventListener('click', () => {
     const act = btn.dataset.act;
@@ -2805,7 +1885,7 @@ function openUserCreateModal() {
       await api('/api/users', json('POST', body));
       closeModal();
       toast('사용자가 등록되었습니다.');
-      await loadUsersList($('#users-search')?.value || '');
+      await loadUsersList(state.usersQuery || '');
     } catch (ex) { err.textContent = ex.message; }
   });
 }
@@ -2832,7 +1912,7 @@ function openUserEditModal(user) {
       await api(`/api/users/${user.id}`, json('PUT', body));
       closeModal();
       toast('사용자 정보가 수정되었습니다.');
-      await loadUsersList($('#users-search')?.value || '');
+      await loadUsersList(state.usersQuery || '');
     } catch (ex) { err.textContent = ex.message; }
   });
 }
@@ -2860,7 +1940,7 @@ function openResetPasswordModal(user) {
       await api(`/api/users/${user.id}/reset-password`, json('POST', body));
       closeModal();
       toast('비밀번호가 초기화되었습니다.');
-      await loadUsersList($('#users-search')?.value || '');
+      await loadUsersList(state.usersQuery || '');
     } catch (ex) { err.textContent = ex.message; }
   });
 }
@@ -2876,7 +1956,7 @@ async function confirmDeactivate(user) {
       await api(`/api/users/${user.id}`, json('PUT', { active: false }));
       closeModal();
       toast('사용자 계정이 사용중지되었습니다.');
-      await loadUsersList($('#users-search')?.value || '');
+      await loadUsersList(state.usersQuery || '');
     } catch (ex) { closeModal(); toast(ex.message, true); }
   });
 }
@@ -2885,7 +1965,7 @@ async function confirmActivate(user) {
   try {
     await api(`/api/users/${user.id}`, json('PUT', { active: true }));
     toast('사용자 계정이 사용 재개되었습니다.');
-    await loadUsersList($('#users-search')?.value || '');
+    await loadUsersList(state.usersQuery || '');
   } catch (ex) { toast(ex.message, true); }
 }
 
@@ -2974,6 +2054,7 @@ async function loadBackupList() {
 async function createBackup() {
   const btn = $('#create-backup-btn');
   if (btn) { btn.disabled = true; btn.textContent = '백업 생성 중...'; }
+  const lock = lockUI('시스템 데이터 백업을 만들고 있습니다.');
   try {
     await api('/api/admin/backups', { method: 'POST' });
     toast('시스템 데이터 백업이 생성되었습니다.');
@@ -2981,6 +2062,7 @@ async function createBackup() {
   } catch (e) {
     toast(e.message, true);
   } finally {
+    lock.release();
     if (btn) { btn.disabled = false; btn.textContent = '지금 백업'; }
   }
 }
@@ -3050,6 +2132,7 @@ async function createArchive() {
   const dateFrom = $('#archive-date-from')?.value || '';
   const dateTo = $('#archive-date-to')?.value || '';
   if (btn) { btn.disabled = true; btn.textContent = 'Excel 생성 중...'; }
+  const lock = lockUI('Excel 데이터 아카이브를 만들고 있습니다.');
   try {
     let url = '/api/admin/archives';
     const params = [];
@@ -3057,6 +2140,7 @@ async function createArchive() {
     if (dateTo) params.push(`date_to=${dateTo}`);
     if (params.length) url += '?' + params.join('&');
     const result = await api(url, { method: 'POST' });
+    lock.release();
     toast('Excel 데이터 아카이브가 생성되었습니다.');
     await loadArchiveList();
     modal(`<h3>Excel 아카이브 생성 완료</h3>
@@ -3071,6 +2155,7 @@ async function createArchive() {
   } catch (e) {
     toast(e.message, true);
   } finally {
+    lock.release();
     if (btn) { btn.disabled = false; btn.textContent = 'Excel 아카이브 생성'; }
   }
 }
@@ -3166,7 +2251,7 @@ function renderOrders() {
   if (!root) return;
   const view = state.ordersView || 'ingredient';
   const statusFilter = $('#orders-status-filter')?.value || '';
-  const q = ($('#orders-search')?.value || '').trim().toLowerCase();
+  const q = (state.ordersSearchQuery || '').trim().toLowerCase();
   let items = state.ordersItems.filter(r => {
     if (statusFilter && r.status !== statusFilter) return false;
     if (q && !r.ingredient_name.toLowerCase().includes(q)) return false;
@@ -3424,6 +2509,463 @@ function applyBulkStatus(status) {
       await loadOrders();
     } catch (e) { closeModal(); toast(e.message, true); }
   });
+}
+
+/* ==================== 화면 잠금 (긴 작업 중 조작 차단) ==================== */
+const UILock = { handles: [], el: null };
+function uiLockElement(){
+  if(UILock.el) return UILock.el;
+  const el=document.createElement('div');
+  el.id='ui-lock';el.className='ui-lock hidden';
+  el.setAttribute('role','alertdialog');el.setAttribute('aria-modal','true');el.setAttribute('aria-live','assertive');
+  el.innerHTML='<div class="ui-lock-box"><div class="ui-lock-spinner" aria-hidden="true"></div><strong class="ui-lock-message"></strong><div class="ui-lock-bar"><span></span></div><small class="ui-lock-percent"></small><p class="ui-lock-hint">작업이 끝날 때까지 기다려 주세요. 다른 화면으로 이동하거나 창을 닫지 마세요.</p></div>';
+  ['click','mousedown','pointerdown','wheel','contextmenu'].forEach(type=>el.addEventListener(type,e=>{e.preventDefault();e.stopPropagation();},true));
+  document.body.appendChild(el);UILock.el=el;return el;
+}
+function isUILocked(){ return UILock.handles.length>0; }
+function renderUILock(){
+  const el=uiLockElement();const top=UILock.handles[UILock.handles.length-1];
+  const locked=!!top;
+  el.classList.toggle('hidden',!locked);
+  ['#app-shell','#modal-root','#analysis-drawer-root'].forEach(sel=>{const node=$(sel);if(node){if(locked)node.setAttribute('inert','');else node.removeAttribute('inert');}});
+  document.body.classList.toggle('ui-locked',locked);
+  if(!locked)return;
+  $('.ui-lock-message',el).textContent=top.message;
+  const determinate=typeof top.percent==='number';
+  el.classList.toggle('determinate',determinate);
+  $('.ui-lock-bar span',el).style.width=determinate?`${Math.max(2,Math.min(100,top.percent))}%`:'';
+  $('.ui-lock-percent',el).textContent=determinate?`${Math.round(top.percent)}%`:'';
+  if(document.activeElement && document.activeElement!==document.body) document.activeElement.blur();
+}
+function lockUI(message='처리하고 있습니다.', percent=null){
+  const handle={message,percent:typeof percent==='number'?percent:null,released:false,
+    update(nextMessage,nextPercent){if(handle.released)return;if(nextMessage)handle.message=nextMessage;handle.percent=typeof nextPercent==='number'?nextPercent:null;renderUILock();},
+    release(){if(handle.released)return;handle.released=true;UILock.handles=UILock.handles.filter(h=>h!==handle);renderUILock();}};
+  UILock.handles.push(handle);renderUILock();return handle;
+}
+async function withUILock(message, task){
+  const lock=lockUI(message);
+  try{ return await task(lock); }
+  finally{ lock.release(); }
+}
+document.addEventListener('keydown',e=>{if(isUILocked()){e.preventDefault();e.stopPropagation();}},true);
+window.addEventListener('beforeunload',e=>{if(isUILocked()){e.preventDefault();e.returnValue='';return '';}});
+
+/* ==================== 식수 분석 ==================== */
+const ANALYSIS_TABS = {daily:'날짜별 식수', popular:'인기 메뉴', menu:'메뉴별 식수', ingredient:'재료별 식수', weather:'날씨별 식수'};
+const ANALYSIS_MIN_DAYS = {LUNCH:5, DINNER:4};
+const ANALYSIS_MENU_MODES = {name:'메뉴 이름', group:'통계집계명'};
+const ANALYSIS_MAX_MENUS = 5;
+const ANALYSIS_ING_MODES = {name:'재료 이름', group:'통계집계명(분석군)'};
+// 메뉴별/재료별 탭의 비교 선택 설정
+function analysisPicker(a){
+  if(a.tab==='ingredient') return {modeKey:'ingMode', itemsKey:'ingItems', modes:ANALYSIS_ING_MODES, noun:'재료', served:'들어간 날',
+    placeholder:{name:'재료 이름 입력 후 Enter 또는 검색 (예: 두부)', group:'통계집계명(분석군) 입력 후 Enter 또는 검색 (예: 돼지고기)'}, searchUrl:(mode,q)=>`/api/analysis/ingredient-keys/search?mode=${mode}&q=${encodeURIComponent(q)}`};
+  return {modeKey:'menuMode', itemsKey:'menuItems', modes:ANALYSIS_MENU_MODES, noun:'메뉴', served:'나온 날',
+    placeholder:{name:'정확한 메뉴 이름 입력 후 Enter 또는 검색 (예: LA갈비찜)', group:'통계집계명 입력 후 Enter 또는 검색 (예: 갈비찜)'}, searchUrl:(mode,q)=>`/api/analysis/menus/search?mode=${mode}&q=${encodeURIComponent(q)}`};
+}
+const ANALYSIS_COLORS = ['#1d5f9a','#d9480f','#2b8a3e','#7048e8','#c2255c'];
+const ANALYSIS_WEATHER_FILTERS = {all:'전체', rain:'비 오는 날', hot:'더운 날(28℃ 이상)', cold:'추운 날(영하)'};
+function analysisDefaults(){
+  const end=new Date();end.setHours(12,0,0,0);
+  return {tab:'daily', start:isoDate(analysisMonthsBack(end,3)), end:isoDate(end), mealType:'LUNCH', showWeather:false, menuMode:'group', menuItems:[], ingMode:'name', ingItems:[], popBasis:'name', popOrder:'top', popLimit:10, popMinDays:ANALYSIS_MIN_DAYS.LUNCH, popMainOnly:false, weatherFilter:'all', result:null, query:null, band:null};
+}
+function analysisMonthsBack(end, months){ const d=new Date(end); d.setMonth(d.getMonth()-months); d.setDate(d.getDate()+1); return d; }
+function analysisState(){ if(!state.analysis) state.analysis=analysisDefaults(); return state.analysis; }
+
+function initAnalysis(){
+  const a=analysisState();
+  const tabs=$('#analysis-tabs');
+  if(tabs && !tabs.dataset.bound){
+    tabs.dataset.bound='1';
+    $$('button[data-analysis-tab]',tabs).forEach(button=>button.addEventListener('click',()=>switchAnalysisTab(button.dataset.analysisTab)));
+  }
+  renderAnalysisConditions();
+  renderAnalysisResult();
+}
+
+function switchAnalysisTab(tab){
+  const a=analysisState();a.tab=tab;a.result=null;a.query=null;a.band=null;a.weatherFilter='all';
+  $$('#analysis-tabs button[data-analysis-tab]').forEach(x=>x.classList.toggle('active',x.dataset.analysisTab===tab));
+  renderAnalysisConditions();renderAnalysisResult();
+}
+
+function renderAnalysisConditions(){
+  const a=analysisState();const root=$('#analysis-conditions');if(!root)return;
+  const seg=(key,options,current)=>`<div class="an-seg">${options.map(([k,v])=>`<button type="button" data-${key}="${k}" class="${String(current)===String(k)?'active':''}">${v}</button>`).join('')}</div>`;
+  const pk=(a.tab==='menu'||a.tab==='ingredient')?analysisPicker(a):null;
+  const selector = pk
+    ? `<div class="an-field"><span>조회 기준</span>${seg('pick-mode',Object.entries(pk.modes),a[pk.modeKey])}</div>
+       <div class="an-field an-search-field"><span>${escapeHtml(pk.modes[a[pk.modeKey]])} (최대 ${ANALYSIS_MAX_MENUS}개 비교)</span><div class="an-search"><div class="search-submit-row"><input id="an-search-input" autocomplete="off" placeholder="${escapeHtml(pk.placeholder[a[pk.modeKey]])}"><button type="button" class="secondary-button" id="an-search-btn">검색</button></div><div class="an-search-list hidden" id="an-search-list"></div></div>
+       <div class="an-chips" id="an-chips">${a[pk.itemsKey].map((name,i)=>`<span class="an-chip" style="--chip:${ANALYSIS_COLORS[i%ANALYSIS_COLORS.length]}">${escapeHtml(name)}<button type="button" data-remove-chip="${i}" aria-label="${escapeHtml(name)} 빼기">×</button></span>`).join('')||`<span class="muted">${pk.noun}를 검색한 뒤 목록에서 고르세요.</span>`}</div></div>`
+    : a.tab==='popular'
+    ? `<div class="an-field"><span>기준</span>${seg('pop-basis',Object.entries(ANALYSIS_MENU_MODES),a.popBasis)}</div>
+       <div class="an-field"><span>순서</span>${seg('pop-order',[['top','상위'],['bottom','하위']],a.popOrder)}</div>
+       <div class="an-field"><span>개수</span>${seg('pop-limit',[[10,'10개'],[20,'20개']],a.popLimit)}</div>
+       <label class="an-field"><span>최소 등장 횟수</span><input type="number" id="an-min-days" min="1" max="365" value="${a.popMinDays}" style="width:90px"></label>
+       <label class="an-check"><input type="checkbox" id="an-main-only" ${a.popMainOnly?'checked':''}> 메인 메뉴로 나온 날만</label>`
+    : '';
+  const weatherFilter = (a.tab==='menu'||a.tab==='ingredient')
+    ? `<label class="an-field"><span>날씨</span><select id="an-weather-filter">${Object.entries(ANALYSIS_WEATHER_FILTERS).map(([k,v])=>`<option value="${k}" ${a.weatherFilter===k?'selected':''}>${v}</option>`).join('')}</select></label>` : '';
+  const weatherToggle = a.tab!=='weather'&&a.tab!=='popular'
+    ? `<label class="an-check"><input type="checkbox" id="an-show-weather" ${a.showWeather?'checked':''}> 날씨 함께 보기</label>` : '';
+  root.innerHTML=`<div class="an-row">
+      <div class="an-field"><span>기간</span><div class="an-period"><input type="date" id="an-start" value="${a.start}"><span>~</span><input type="date" id="an-end" value="${a.end}"></div></div>
+      <div class="an-field"><span>빠른 선택</span><div class="an-quick">${[1,3,6,12].map(m=>`<button type="button" class="ghost-button" data-months="${m}">${m}개월</button>`).join('')}</div></div>
+      <div class="an-field"><span>배식</span><div class="an-seg">${[['LUNCH','중식'],['DINNER','석식']].map(([k,v])=>`<button type="button" data-meal="${k}" class="${a.mealType===k?'active':''}">${v}</button>`).join('')}</div></div>
+    </div>
+    <div class="an-row">${selector}${weatherFilter}${weatherToggle}<button type="button" class="primary-button an-query" id="an-query">조회</button></div>`;
+  $('#an-start').addEventListener('change',e=>{a.start=e.target.value;});
+  $('#an-end').addEventListener('change',e=>{a.end=e.target.value;});
+  $$('[data-months]',root).forEach(b=>b.addEventListener('click',()=>{const end=new Date();end.setHours(12,0,0,0);a.end=isoDate(end);a.start=isoDate(analysisMonthsBack(end,Number(b.dataset.months)));$('#an-start').value=a.start;$('#an-end').value=a.end;}));
+  $$('[data-meal]',root).forEach(b=>b.addEventListener('click',()=>{a.mealType=b.dataset.meal;a.popMinDays=ANALYSIS_MIN_DAYS[a.mealType];$$('[data-meal]',root).forEach(x=>x.classList.toggle('active',x===b));const md=$('#an-min-days');if(md)md.value=a.popMinDays;}));
+  const segBind=(key,apply)=>$$(`[data-${key}]`,root).forEach(b=>b.addEventListener('click',()=>{apply(b.getAttribute(`data-${key}`));$$(`[data-${key}]`,root).forEach(x=>x.classList.toggle('active',x===b));}));
+  segBind('pop-basis',v=>{a.popBasis=v;});segBind('pop-order',v=>{a.popOrder=v;});segBind('pop-limit',v=>{a.popLimit=Number(v);});
+  if(pk) segBind('pick-mode',v=>{if(a[pk.modeKey]!==v){a[pk.modeKey]=v;a[pk.itemsKey]=[];renderAnalysisConditions();}});
+  $('#an-min-days')?.addEventListener('change',e=>{a.popMinDays=Number(e.target.value)||ANALYSIS_MIN_DAYS[a.mealType];});
+  $('#an-main-only')?.addEventListener('change',e=>{a.popMainOnly=e.target.checked;});
+  $$('[data-remove-chip]',root).forEach(b=>b.addEventListener('click',()=>{a[pk.itemsKey].splice(Number(b.dataset.removeChip),1);renderAnalysisConditions();}));
+  $('#an-weather-filter')?.addEventListener('change',e=>{a.weatherFilter=e.target.value;});
+  $('#an-show-weather')?.addEventListener('change',e=>{a.showWeather=e.target.checked;if(a.result)renderAnalysisResult();});
+  $('#an-query').addEventListener('click',runAnalysisQuery);
+  if(a.tab==='menu'||a.tab==='ingredient') bindAnalysisSearch();
+}
+
+function bindAnalysisSearch(){
+  const a=analysisState();const input=$('#an-search-input');const list=$('#an-search-list');if(!input||!list)return;
+  const pk=analysisPicker(a);
+  const search=async value=>{
+    try{
+      const data=await api(pk.searchUrl(a[pk.modeKey],value.trim()));
+      list.innerHTML=data.items.length?`<div class="an-search-hint">${data.items.length}개 찾음 · 눌러서 추가</div>`+data.items.map((item,i)=>`<button type="button" data-index="${i}"><span>${escapeHtml(item.name)}</span><small>${numberText(item.served)}회 제공</small></button>`).join(''):'<div class="an-search-empty">찾는 이름이 없습니다.</div>';
+      list.classList.remove('hidden');
+      $$('button[data-index]',list).forEach(b=>b.addEventListener('mousedown',e=>{e.preventDefault();pick(data.items[Number(b.dataset.index)]);}));
+    }catch(e){toast(e.message,true);}
+  };
+  const pick=item=>{
+    if(!item)return;
+    const items=a[pk.itemsKey];
+    if(items.includes(item.name)){toast(`이미 고른 ${pk.noun}입니다.`);return;}
+    if(items.length>=ANALYSIS_MAX_MENUS){toast(`${pk.noun}는 최대 ${ANALYSIS_MAX_MENUS}개까지 비교할 수 있습니다.`,true);return;}
+    items.push(item.name);renderAnalysisConditions();
+  };
+  bindSearchSubmit(input,$('#an-search-btn'),search);
+  input.addEventListener('keydown',e=>{ if(e.key==='Escape') list.classList.add('hidden'); });
+  if(!document.body.dataset.anSearchOutside){
+    document.body.dataset.anSearchOutside='1';
+    document.addEventListener('mousedown',e=>{ const box=$('#an-search-list'); if(box && !e.target.closest('.an-search')) box.classList.add('hidden'); });
+  }
+}
+
+function analysisQueryParams(){
+  const a=analysisState();
+  if(!a.start||!a.end) throw new Error('조회 기간을 선택해 주세요.');
+  if(a.start>a.end) throw new Error('시작일이 종료일보다 늦습니다.');
+  const params={start:a.start,end:a.end,meal_type:a.mealType};
+  if(a.tab==='menu'){ if(!a.menuItems.length) throw new Error('목록에서 메뉴를 하나 이상 골라 주세요.'); params.mode=a.menuMode; params.names=[...a.menuItems]; params.weather=a.weatherFilter; }
+  if(a.tab==='popular'){ const md=Number(a.popMinDays); if(!Number.isInteger(md)||md<1||md>365) throw new Error('최소 등장 횟수는 1~365 사이로 입력해 주세요.'); Object.assign(params,{basis:a.popBasis,order:a.popOrder,limit:a.popLimit,min_days:md,main_only:a.popMainOnly}); }
+  if(a.tab==='ingredient'){ if(!a.ingItems.length) throw new Error('목록에서 재료를 하나 이상 골라 주세요.'); params.mode=a.ingMode; params.names=[...a.ingItems]; params.weather=a.weatherFilter; }
+  return params;
+}
+function analysisSearchParams(params){ const sp=new URLSearchParams(); Object.entries(params).forEach(([k,v])=>{ if(Array.isArray(v)) v.forEach(x=>sp.append(k,x)); else sp.append(k,v); }); return sp; }
+const ANALYSIS_ENDPOINTS={daily:'/api/analysis/daily',popular:'/api/analysis/popular-menus',menu:'/api/analysis/menus',ingredient:'/api/analysis/ingredients',weather:'/api/analysis/weather'};
+
+async function runAnalysisQuery(){
+  const a=analysisState();
+  let params;
+  try{ params=analysisQueryParams(); }catch(e){ toast(e.message,true); return; }
+  const tab=a.tab;
+  await withUILock(`${ANALYSIS_TABS[tab]}를 조회하고 있습니다.`, async()=>{
+    try{
+      const result=await api(`${ANALYSIS_ENDPOINTS[tab]}?${analysisSearchParams(params)}`);
+      if(a.tab!==tab) return;
+      a.result=result;a.query={tab,params};a.band=null;
+      renderAnalysisResult();
+    }catch(e){ toast(e.message,true); }
+  });
+}
+
+function analysisDiffText(diff){ if(diff===null||diff===undefined) return '—'; if(diff>0) return `${numberText(diff)}명 많음`; if(diff<0) return `${numberText(-diff)}명 적음`; return '같음'; }
+function analysisDiffClass(diff){ return diff>0?'an-more':diff<0?'an-less':''; }
+function analysisWeatherIcon(w){ if(!w) return ''; if(w.is_rain) return (w.temp!==null&&w.temp<=1)?'🌨':'🌧'; return ''; }
+function analysisTempClass(t){ if(t===null||t===undefined) return ''; if(t>=28) return 'an-hot'; if(t<0) return 'an-cold'; return ''; }
+function analysisNum(v){ return v===null||v===undefined?'—':numberText(v); }
+
+function renderAnalysisResult(){
+  const a=analysisState();const root=$('#analysis-result');if(!root)return;
+  if(!a.result){ root.innerHTML=`<div class="an-empty">조건을 정한 뒤 <strong>조회</strong> 버튼을 눌러 주세요.</div>`; return; }
+  if(a.query.tab==='weather'){ renderAnalysisWeather(root,a.result); return; }
+  if(a.query.tab==='popular'){ renderAnalysisPopular(root,a.result); return; }
+  if(a.query.tab==='menu'||a.query.tab==='ingredient'){ renderAnalysisMenus(root,a.result); return; }
+  const r=a.result;
+  const titleBits=[r.meal_type_name, `${r.start} ~ ${r.end}`];
+  if(r.menu_group) titleBits.unshift(`메뉴: ${r.menu_group}`);
+  if(r.ingredient) titleBits.unshift(`재료: ${r.ingredient.name}`);
+  if(r.weather_filter && r.weather_filter!=='all') titleBits.push(r.weather_filter_name);
+  const note=r.low_sample_note?`<div class="an-note">${escapeHtml(r.low_sample_note)}</div>`:'';
+  if(!r.points.length){ root.innerHTML=`<div class="an-card"><h3>${escapeHtml(titleBits.join(' · '))}</h3><div class="an-empty">조건에 맞는 식단(실제 식수 입력된 날)이 없습니다.</div></div>`; return; }
+  const weatherNote=a.showWeather?`<p class="an-sub">날씨는 ${escapeHtml(r.meal_type_name)} 배식시간(${escapeHtml(r.weather_window)}) 관측값입니다. 기온은 평균, 비는 합계예요.</p>`:'';
+  root.innerHTML=`<div class="an-card">
+      <div class="an-card-head"><h3>${escapeHtml(titleBits.join(' · '))}</h3><span class="an-days">${numberText(r.points.length)}일</span></div>
+      ${note}${weatherNote}
+      <div class="an-legend"><span class="an-lg-actual"></span>실제 식수<span class="an-lg-usual"></span>평소 식수 (지난 1년 ${escapeHtml(r.meal_type_name)} 평균)</div>
+      <div class="an-chart" id="an-chart"></div>
+      <p class="an-sub">점이나 표의 날짜를 누르면 그날 식단을 볼 수 있어요.</p>
+    </div>
+    <div class="an-card">${analysisTableHtml(r.points,a.showWeather,true)}</div>`;
+  drawAnalysisLineChart($('#an-chart'),r.points,{showWeather:a.showWeather,onClick:p=>openAnalysisDetail(p.date)});
+  bindAnalysisTable(root);
+}
+
+function analysisTableHtml(points, showWeather, withDownload){
+  return `<div class="an-table-head"><h4>날짜별 표</h4>${withDownload?'<button type="button" class="secondary-button" data-an-download>Excel 내려받기</button>':''}</div>
+  <div class="table-wrap an-table-wrap"><table class="data-table an-table"><thead><tr><th>날짜</th><th class="num">실제</th><th class="num">평소</th><th class="num">차이(명)</th>${showWeather?'<th>배식시간 날씨</th>':''}</tr></thead><tbody>
+  ${points.map(p=>`<tr data-an-date="${p.date}" tabindex="0"><td>${p.date} (${p.weekday})</td><td class="num">${numberText(p.actual)}명</td><td class="num">${p.usual===null?'—':numberText(p.usual)+'명'}</td><td class="num ${analysisDiffClass(p.diff)}">${analysisDiffText(p.diff)}</td>${showWeather?`<td>${p.weather?escapeHtml(p.weather.text):'<span class="muted">날씨 자료 없음</span>'}</td>`:''}</tr>`).join('')}
+  </tbody></table></div>`;
+}
+function bindAnalysisTable(root){
+  $$('tr[data-an-date]',root).forEach(tr=>{const open=()=>openAnalysisDetail(tr.dataset.anDate);tr.addEventListener('click',open);tr.addEventListener('keydown',e=>{if(e.key==='Enter')open();});});
+  $$('[data-an-download]',root).forEach(b=>b.addEventListener('click',downloadAnalysisExcel));
+}
+
+async function downloadAnalysisExcel(){
+  const a=analysisState();if(!a.query)return;
+  const tabKey={daily:'daily',popular:'popular',menu:'menus',ingredient:'ingredients',weather:'weather'}[a.query.tab];
+  await withUILock('Excel 파일을 만들고 있습니다.', async()=>{
+    try{
+      const response=await requestBinary(`/api/analysis/export.xlsx?${analysisSearchParams({...a.query.params,tab:tabKey})}`);
+      const blob=await response.blob();
+      triggerDownload(blob,parseContentDispositionFilename(response.headers.get('content-disposition'),'식수분석.xlsx'));
+    }catch(e){toast(e.message,true);}
+  });
+}
+
+function analysisNiceTicks(min,max,count=5){
+  if(min===max){min-=10;max+=10;}
+  const raw=(max-min)/count;const mag=Math.pow(10,Math.floor(Math.log10(raw)));
+  const step=[1,2,5,10].map(m=>m*mag).find(s=>s>=raw)||raw;
+  const lo=Math.floor(min/step)*step, hi=Math.ceil(max/step)*step;
+  const ticks=[];for(let v=lo;v<=hi+step/2;v+=step)ticks.push(Math.round(v));
+  return {lo,hi,ticks};
+}
+
+function drawAnalysisLineChart(container, points, {showWeather=false, onClick}={}){
+  if(!container)return;
+  const width=Math.max(560,container.clientWidth||960), dense=points.length>1&&(width-76)/(points.length-1)<22;
+  const top=showWeather?(dense?34:52):18, bottom=46, left=56, right=20, height=320+top;
+  const values=points.flatMap(p=>[p.actual,p.usual]).filter(v=>v!==null&&v!==undefined);
+  const pad=Math.max(5,(Math.max(...values)-Math.min(...values))*0.12);
+  const {lo,hi,ticks}=analysisNiceTicks(Math.max(0,Math.min(...values)-pad),Math.max(...values)+pad);
+  const plotW=width-left-right, plotH=height-top-bottom;
+  const step=points.length>1?plotW/(points.length-1):0;
+  const x=i=>points.length>1?left+i*step:left+plotW/2;
+  const y=v=>top+plotH-(v-lo)/(hi-lo||1)*plotH;
+  const path=(key)=>{let d='',open=false;points.forEach((p,i)=>{const v=p[key];if(v===null||v===undefined){open=false;return;}d+=`${open?'L':'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`;open=true;});return d;};
+  const labelEvery=Math.max(1,Math.ceil(points.length/Math.max(4,Math.floor(plotW/80))));
+  const grid=ticks.map(t=>`<line x1="${left}" x2="${width-right}" y1="${y(t)}" y2="${y(t)}" class="an-grid"/><text x="${left-8}" y="${y(t)+4}" class="an-axis" text-anchor="end">${numberText(t)}</text>`).join('');
+  let lastYear=null;
+  const xLabels=points.map((p,i)=>{if(!(i%labelEvery===0||(i===points.length-1&&points.length<=12)))return '';const year=p.date.slice(0,4);const showYear=year!==lastYear;lastYear=year;
+    return `<text x="${x(i)}" y="${height-bottom+18}" class="an-axis" text-anchor="middle">${escapeHtml(p.label.replace(/\(.\)$/,''))}</text>${showYear?`<text x="${x(i)}" y="${height-bottom+32}" class="an-axis an-axis-year" text-anchor="middle">${year}년</text>`:''}`;}).join('');
+  const r=points.length>120?2:3.5;
+  const dots=points.map((p,i)=>`<circle cx="${x(i)}" cy="${y(p.actual)}" r="${r}" class="an-dot-actual"/>${p.usual!==null&&p.usual!==undefined?`<circle cx="${x(i)}" cy="${y(p.usual)}" r="${Math.max(1.5,r-1)}" class="an-dot-usual"/>`:''}`).join('');
+  let weatherMarks='';
+  if(showWeather){
+    weatherMarks=points.map((p,i)=>{const w=p.weather;if(!w)return '';const icon=analysisWeatherIcon(w);
+      if(dense){return icon?`<text x="${x(i)}" y="${top-12}" text-anchor="middle" class="an-wicon-sm">${icon}</text>`:`<circle cx="${x(i)}" cy="${top-16}" r="2.2" class="an-tempdot ${analysisTempClass(w.temp)}"/>`;}
+      return `<text x="${x(i)}" y="${top-30}" text-anchor="middle" class="an-wicon">${icon||'·'}</text><text x="${x(i)}" y="${top-12}" text-anchor="middle" class="an-wtemp ${analysisTempClass(w.temp)}">${w.temp===null?'':Math.round(w.temp)+'°'}</text>`;}).join('');
+  }
+  const hits=points.map((p,i)=>`<rect x="${x(i)-Math.max(step,8)/2}" y="${top}" width="${Math.max(step,8)}" height="${plotH}" class="an-hit" data-i="${i}"/>`).join('');
+  container.innerHTML=`<svg class="an-svg" viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="실제 식수와 평소 식수 선그래프">
+      ${grid}<line x1="${left}" x2="${width-right}" y1="${top+plotH}" y2="${top+plotH}" class="an-baseline"/>
+      <text x="${left-44}" y="${top-4}" class="an-axis">(명)</text>
+      <path d="${path('usual')}" class="an-line-usual"/><path d="${path('actual')}" class="an-line-actual"/>
+      ${dots}${weatherMarks}<line class="an-cursor hidden" y1="${top}" y2="${top+plotH}"/>${xLabels}${hits}
+    </svg><div class="an-tip hidden"></div>${showWeather&&dense?'<p class="an-sub">점이 많아 비 온 날만 🌧로 표시했어요(빨간 점은 28℃ 이상, 파란 점은 영하). 점에 마우스를 올리면 날씨가 보여요.</p>':''}`;
+  const tip=$('.an-tip',container), cursor=$('.an-cursor',container), svg=$('svg',container);
+  const show=(i,evt)=>{const p=points[i];if(!p)return;
+    tip.innerHTML=`<strong>${escapeHtml(p.sentence)}</strong>${showWeather&&p.weather?`<span>${escapeHtml(p.weather.text)}</span>`:showWeather?'<span>날씨 자료 없음</span>':''}<em>눌러서 식단 보기</em>`;
+    tip.classList.remove('hidden');
+    const box=container.getBoundingClientRect();const scale=box.width/width;const px=x(i)*scale;
+    tip.style.left=`${Math.min(Math.max(px,120),box.width-120)}px`;tip.style.top=`${Math.max(0,y(p.actual)*scale-12)}px`;
+    cursor.setAttribute('x1',x(i));cursor.setAttribute('x2',x(i));cursor.classList.remove('hidden');};
+  $$('.an-hit',svg).forEach(rect=>{const i=Number(rect.dataset.i);
+    rect.addEventListener('mouseenter',e=>show(i,e));
+    rect.addEventListener('mouseleave',()=>{tip.classList.add('hidden');cursor.classList.add('hidden');});
+    rect.addEventListener('click',()=>onClick&&onClick(points[i]));});
+}
+
+function analysisSignedText(v){ if(v===null||v===undefined) return '—'; if(v>0) return `+${numberText(v)}명`; if(v<0) return `-${numberText(-v)}명`; return '0명'; }
+
+function renderAnalysisPopular(root, r){
+  const a=analysisState();
+  const title=[`${r.order==='top'?'상위':'하위'} 인기 메뉴 ${r.limit}개`, r.basis_name+' 기준', r.meal_type_name, `${r.start} ~ ${r.end}`];
+  if(r.main_only) title.push('메인 메뉴로 나온 날만');
+  const explain=`그 메뉴가 나온 날 실제 식수가 평소 식수보다 평균 몇 명 많았는지(+), 적었는지(−)로 순서를 매겼어요. ${r.min_days}번보다 적게 나온 메뉴${r.excluded_too_few?` ${numberText(r.excluded_too_few)}개`:''}는 뺐어요.`;
+  if(!r.items.length){ root.innerHTML=`<div class="an-card"><h3>${escapeHtml(title.join(' · '))}</h3><p class="an-sub">${escapeHtml(explain)}</p><div class="an-empty">조건에 맞는 메뉴가 없습니다. 최소 등장 횟수를 줄이거나 기간을 늘려 보세요.</div></div>`; return; }
+  const maxAbs=Math.max(1,...r.items.map(i=>Math.abs(i.avg_diff||0)));
+  const bars=r.items.map((item,i)=>{const v=item.avg_diff||0;const w=Math.abs(v)/maxAbs*50;
+    return `<button type="button" class="an-pop-row" data-pop="${i}" title="${escapeHtml(item.name)} — 눌러서 메뉴별 식수 보기">
+      <span class="an-pop-rank">${item.rank}</span><span class="an-pop-name">${escapeHtml(item.name)}</span>
+      <span class="an-pop-track"><span class="an-pop-zero"></span><span class="an-pop-bar ${v>=0?'an-pop-pos':'an-pop-neg'}" style="${v>=0?`left:50%;width:${w}%`:`right:50%;width:${w}%`}"></span></span>
+      <span class="an-pop-val ${analysisDiffClass(v)}">${analysisSignedText(item.avg_diff)}</span></button>`;}).join('');
+  root.innerHTML=`<div class="an-card">
+      <div class="an-card-head"><h3>${escapeHtml(title.join(' · '))}</h3><span class="an-days">후보 ${numberText(r.candidates)}개</span></div>
+      <p class="an-explain">${escapeHtml(explain)}</p>
+      <div class="an-pop-chart">${bars}</div>
+      <p class="an-sub">막대나 표의 메뉴를 누르면 메뉴별 식수에서 그 메뉴를 날짜별로 볼 수 있어요.</p>
+    </div>
+    <div class="an-card"><div class="an-table-head"><h4>인기 메뉴 표</h4><button type="button" class="secondary-button" data-an-download>Excel 내려받기</button></div>
+      <div class="table-wrap an-table-wrap"><table class="data-table an-table"><thead><tr><th class="num">순위</th><th>메뉴</th><th class="num">나온 날 수</th><th class="num">평균 실제</th><th class="num">평균 평소</th><th class="num">평균 차이(명)</th></tr></thead><tbody>
+      ${r.items.map((item,i)=>`<tr data-pop="${i}" tabindex="0"><td class="num">${item.rank}</td><td>${escapeHtml(item.name)}</td><td class="num">${numberText(item.days)}일</td><td class="num">${analysisNum(item.avg_actual)}명</td><td class="num">${analysisNum(item.avg_usual)}명</td><td class="num ${analysisDiffClass(item.avg_diff)}">${analysisSignedText(item.avg_diff)}</td></tr>`).join('')}
+      </tbody></table></div></div>`;
+  $$('[data-pop]',root).forEach(el=>{const go=()=>openPopularMenu(r.basis,r.items[Number(el.dataset.pop)].name);el.addEventListener('click',go);el.addEventListener('keydown',e=>{if(e.key==='Enter')go();});});
+  $$('[data-an-download]',root).forEach(b=>b.addEventListener('click',downloadAnalysisExcel));
+}
+
+function openPopularMenu(basis, name){
+  const a=analysisState();
+  switchAnalysisTab('menu');
+  a.menuMode=basis;a.menuItems=[name];
+  renderAnalysisConditions();
+  runAnalysisQuery();
+}
+
+function renderAnalysisMenus(root, r){
+  const a=analysisState();
+  const isIng=a.query.tab==='ingredient';const noun=isIng?'재료':'메뉴';const served=isIng?'들어간 날':'나온 날';
+  const color=i=>ANALYSIS_COLORS[i%ANALYSIS_COLORS.length];
+  const title=[`${r.mode_name} 기준`, r.meal_type_name, `${r.start} ~ ${r.end}`];
+  if(r.weather_filter&&r.weather_filter!=='all') title.push(r.weather_filter_name);
+  const notes=r.items.filter(i=>i.low_sample_note).map(i=>`<div class="an-note">${escapeHtml(i.name)}: ${escapeHtml(i.low_sample_note)}</div>`).join('');
+  if(!r.dates.length){ root.innerHTML=`<div class="an-card"><h3>${escapeHtml(title.join(' · '))}</h3><div class="an-empty">조건에 맞는 식단(실제 식수 입력된 날)이 없습니다.</div></div>`; return; }
+  const weatherNote=a.showWeather?`<p class="an-sub">날씨는 ${escapeHtml(r.meal_type_name)} 배식시간(${escapeHtml(r.weather_window)}) 관측값입니다. 기온은 평균, 비는 합계예요.</p>`:'';
+  const legend=r.items.map((item,i)=>`<span class="an-lg-item"><span class="an-lg-swatch" style="background:${color(i)}"></span>${escapeHtml(item.name)}</span>`).join('')+`<span class="an-lg-item"><span class="an-lg-usual"></span>평소 식수 (지난 1년 ${escapeHtml(r.meal_type_name)} 평균)</span>`;
+  const summary=`<table class="data-table an-table"><thead><tr><th>${noun}</th><th class="num">${served} 수</th><th class="num">평균 실제</th><th class="num">평균 평소</th><th class="num">평균 차이(명)</th></tr></thead><tbody>
+    ${r.items.map((item,i)=>`<tr><td><span class="an-lg-swatch" style="background:${color(i)}"></span>${escapeHtml(item.name)}</td><td class="num">${numberText(item.days)}일</td><td class="num">${analysisNum(item.avg_actual)}${item.avg_actual===null?'':'명'}</td><td class="num">${analysisNum(item.avg_usual)}${item.avg_usual===null?'':'명'}</td><td class="num ${analysisDiffClass(item.avg_diff)}">${analysisSignedText(item.avg_diff)}</td></tr>`).join('')}</tbody></table>`;
+  const rows=r.items.flatMap((item,i)=>item.points.map(p=>({item,i,p}))).sort((x,y)=>x.p.date.localeCompare(y.p.date)||x.i-y.i);
+  const table=`<div class="table-wrap an-table-wrap"><table class="data-table an-table"><thead><tr><th>날짜</th><th>${noun}</th><th class="num">실제</th><th class="num">평소</th><th class="num">차이(명)</th>${a.showWeather?'<th>배식시간 날씨</th>':''}</tr></thead><tbody>
+    ${rows.map(({item,i,p})=>`<tr data-an-date="${p.date}" tabindex="0"><td>${p.date} (${p.weekday})</td><td><span class="an-lg-swatch" style="background:${color(i)}"></span>${escapeHtml(item.name)}</td><td class="num">${numberText(p.actual)}명</td><td class="num">${p.usual===null?'—':numberText(p.usual)+'명'}</td><td class="num ${analysisDiffClass(p.diff)}">${analysisDiffText(p.diff)}</td>${a.showWeather?`<td>${p.weather?escapeHtml(p.weather.text):'<span class="muted">날씨 자료 없음</span>'}</td>`:''}</tr>`).join('')}
+    </tbody></table></div>`;
+  root.innerHTML=`<div class="an-card">
+      <div class="an-card-head"><h3>${escapeHtml(title.join(' · '))}</h3><span class="an-days">${numberText(r.dates.length)}일</span></div>
+      ${notes}${weatherNote}
+      <div class="an-legend an-legend-multi">${legend}</div>
+      <div class="an-chart" id="an-chart"></div>
+      <p class="an-sub">${isIng?'재료가 들어간 날에만 점이 찍혀요. 날짜를 누르면 고른 재료가 들어간 메뉴를 표시해요.':'메뉴가 나온 날에만 점이 찍혀요.'} 점이나 표의 날짜를 누르면 그날 식단을 볼 수 있어요.</p>
+    </div>
+    <div class="an-card"><div class="an-table-head"><h4>${noun}별 요약</h4><button type="button" class="secondary-button" data-an-download>Excel 내려받기</button></div>${summary}</div>
+    <div class="an-card"><div class="an-table-head"><h4>날짜별 표</h4></div>${table}</div>`;
+  drawAnalysisMultiChart($('#an-chart'),r,{showWeather:a.showWeather,onClick:d=>openAnalysisDetail(d)});
+  bindAnalysisTable(root);
+}
+
+function drawAnalysisMultiChart(container, r, {showWeather=false, onClick}={}){
+  if(!container)return;
+  const days=r.usual_line;const n=days.length;
+  const idx=new Map(days.map((d,i)=>[d.date,i]));
+  const series=r.items.map((item,si)=>({name:item.name,color:ANALYSIS_COLORS[si%ANALYSIS_COLORS.length],byDate:new Map(item.points.map(p=>[p.date,p]))}));
+  const weatherByDate=new Map();r.items.forEach(item=>item.points.forEach(p=>{if(p.weather&&!weatherByDate.has(p.date))weatherByDate.set(p.date,p.weather);}));
+  const width=Math.max(560,container.clientWidth||960), dense=n>1&&(width-76)/(n-1)<22;
+  const top=showWeather?(dense?34:52):18, bottom=46, left=56, right=20, height=340+top;
+  const values=[...days.map(d=>d.usual),...r.items.flatMap(i=>i.points.map(p=>p.actual))].filter(v=>v!==null&&v!==undefined);
+  const pad=Math.max(5,(Math.max(...values)-Math.min(...values))*0.12);
+  const {lo,hi,ticks}=analysisNiceTicks(Math.max(0,Math.min(...values)-pad),Math.max(...values)+pad);
+  const plotW=width-left-right, plotH=height-top-bottom;
+  const step=n>1?plotW/(n-1):0;
+  const x=i=>n>1?left+i*step:left+plotW/2;
+  const y=v=>top+plotH-(v-lo)/(hi-lo||1)*plotH;
+  let usualPath='',open=false;days.forEach((d,i)=>{if(d.usual===null||d.usual===undefined){open=false;return;}usualPath+=`${open?'L':'M'}${x(i).toFixed(1)},${y(d.usual).toFixed(1)}`;open=true;});
+  const r0=n>120?2.2:3.8;
+  const lines=series.map(s=>{const pts=[...s.byDate.values()].sort((a,b)=>a.date.localeCompare(b.date));
+    const d=pts.map((p,k)=>`${k?'L':'M'}${x(idx.get(p.date)).toFixed(1)},${y(p.actual).toFixed(1)}`).join('');
+    return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2.2"/>${pts.map(p=>`<circle cx="${x(idx.get(p.date))}" cy="${y(p.actual)}" r="${r0}" fill="${s.color}" stroke="#fff" stroke-width="1"/>`).join('')}`;}).join('');
+  const labelEvery=Math.max(1,Math.ceil(n/Math.max(4,Math.floor(plotW/80))));
+  const grid=ticks.map(t=>`<line x1="${left}" x2="${width-right}" y1="${y(t)}" y2="${y(t)}" class="an-grid"/><text x="${left-8}" y="${y(t)+4}" class="an-axis" text-anchor="end">${numberText(t)}</text>`).join('');
+  let lastYear=null;
+  const xLabels=days.map((d,i)=>{if(!(i%labelEvery===0||(i===n-1&&n<=12)))return '';const year=d.date.slice(0,4);const showYear=year!==lastYear;lastYear=year;
+    return `<text x="${x(i)}" y="${height-bottom+18}" class="an-axis" text-anchor="middle">${escapeHtml(d.label.replace(/\(.\)$/,''))}</text>${showYear?`<text x="${x(i)}" y="${height-bottom+32}" class="an-axis an-axis-year" text-anchor="middle">${year}년</text>`:''}`;}).join('');
+  let weatherMarks='';
+  if(showWeather){
+    weatherMarks=days.map((d,i)=>{const w=weatherByDate.get(d.date);if(!w)return '';const icon=analysisWeatherIcon(w);
+      if(dense){return icon?`<text x="${x(i)}" y="${top-12}" text-anchor="middle" class="an-wicon-sm">${icon}</text>`:`<circle cx="${x(i)}" cy="${top-16}" r="2.2" class="an-tempdot ${analysisTempClass(w.temp)}"/>`;}
+      return `<text x="${x(i)}" y="${top-30}" text-anchor="middle" class="an-wicon">${icon||'·'}</text><text x="${x(i)}" y="${top-12}" text-anchor="middle" class="an-wtemp ${analysisTempClass(w.temp)}">${w.temp===null?'':Math.round(w.temp)+'°'}</text>`;}).join('');
+  }
+  const hits=days.map((d,i)=>`<rect x="${x(i)-Math.max(step,8)/2}" y="${top}" width="${Math.max(step,8)}" height="${plotH}" class="an-hit" data-i="${i}"/>`).join('');
+  container.innerHTML=`<svg class="an-svg" viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="실제 식수와 평소 식수 비교 선그래프">
+      ${grid}<line x1="${left}" x2="${width-right}" y1="${top+plotH}" y2="${top+plotH}" class="an-baseline"/>
+      <text x="${left-44}" y="${top-4}" class="an-axis">(명)</text>
+      <path d="${usualPath}" class="an-line-usual"/>${lines}
+      ${weatherMarks}<line class="an-cursor hidden" y1="${top}" y2="${top+plotH}"/>${xLabels}${hits}
+    </svg><div class="an-tip hidden"></div>`;
+  const tip=$('.an-tip',container), cursor=$('.an-cursor',container), svg=$('svg',container);
+  const show=i=>{const d=days[i];if(!d)return;
+    const served=series.filter(s=>s.byDate.has(d.date)).map(s=>{const p=s.byDate.get(d.date);return `<span><b style="color:${s.color}">●</b> ${escapeHtml(s.name)}: 실제 ${numberText(p.actual)}명 (${analysisDiffText(p.diff)})</span>`;}).join('');
+    const w=weatherByDate.get(d.date);
+    tip.innerHTML=`<strong>${escapeHtml(d.date)} ${escapeHtml(r.meal_type_name)} · 평소 ${d.usual===null?'—':numberText(d.usual)+'명'}</strong>${served}${showWeather?`<span>${w?escapeHtml(w.text):'날씨 자료 없음'}</span>`:''}<em>눌러서 식단 보기</em>`;
+    tip.classList.remove('hidden');
+    const box=container.getBoundingClientRect();const scale=box.width/width;const px=x(i)*scale;
+    const ys=series.filter(s=>s.byDate.has(d.date)).map(s=>y(s.byDate.get(d.date).actual));
+    tip.style.left=`${Math.min(Math.max(px,140),box.width-140)}px`;tip.style.top=`${Math.max(0,Math.min(...ys,y(d.usual??lo))*scale-12)}px`;
+    cursor.setAttribute('x1',x(i));cursor.setAttribute('x2',x(i));cursor.classList.remove('hidden');};
+  $$('.an-hit',svg).forEach(rect=>{const i=Number(rect.dataset.i);
+    rect.addEventListener('mouseenter',()=>show(i));
+    rect.addEventListener('mouseleave',()=>{tip.classList.add('hidden');cursor.classList.add('hidden');});
+    rect.addEventListener('click',()=>onClick&&onClick(days[i].date));});
+}
+
+function renderAnalysisWeather(root, r){
+  const a=analysisState();
+  const section=(key,title,bands)=>{
+    const maxAbs=Math.max(5,...bands.map(b=>Math.abs(b.avg_diff||0)));
+    const bars=bands.map(b=>{const has=b.days>0&&b.avg_diff!==null;const pct=has?Math.abs(b.avg_diff)/maxAbs*50:0;
+      return `<button type="button" class="an-bar-row ${a.band===`${key}:${b.key}`?'active':''}" data-band="${key}:${b.key}" ${b.days?'':'disabled'}>
+        <span class="an-bar-label">${escapeHtml(b.label)}<small>${numberText(b.days)}일</small></span>
+        <span class="an-bar-track"><span class="an-bar-zero"></span>${has?`<span class="an-bar ${b.avg_diff>=0?'pos':'neg'}" style="${b.avg_diff>=0?`left:50%;width:${pct}%`:`right:50%;width:${pct}%`}"></span>`:''}</span>
+        <span class="an-bar-value ${analysisDiffClass(b.avg_diff)}">${has?(b.avg_diff===0?'평소와 같음':`평소보다 ${analysisDiffText(b.avg_diff)}`):'자료 없음'}</span></button>`;}).join('');
+    const rows=bands.map(b=>`<tr data-band="${key}:${b.key}" class="${b.days?'':'an-row-empty'}"><td>${escapeHtml(b.label)}</td><td class="num">${numberText(b.days)}일</td><td class="num">${b.days?analysisNum(b.avg_actual)+'명':'—'}</td><td class="num">${b.days?analysisNum(b.avg_usual)+'명':'—'}</td><td class="num ${analysisDiffClass(b.avg_diff)}">${b.days?analysisDiffText(b.avg_diff):'—'}</td><td>${b.low_sample_note?`<span class="an-note-inline">${escapeHtml(b.low_sample_note)}</span>`:''}</td></tr>`).join('');
+    return `<div class="an-card"><div class="an-card-head"><h3>${title}</h3></div>
+      <div class="an-bars">${bars}</div>
+      <div class="table-wrap"><table class="data-table an-table"><thead><tr><th>날씨</th><th class="num">일수</th><th class="num">평균 실제</th><th class="num">평균 평소</th><th class="num">평균 차이(명)</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+  };
+  const selected=a.band?[...r.rain.map(b=>({...b,group:'rain'})),...r.temperature.map(b=>({...b,group:'temp'}))].find(b=>`${b.group}:${b.key}`===a.band):null;
+  root.innerHTML=`<div class="an-card an-card-plain"><div class="an-card-head"><h3>날씨별 식수 · ${escapeHtml(r.meal_type_name)} · ${escapeHtml(r.start)} ~ ${escapeHtml(r.end)}</h3><button type="button" class="secondary-button" data-an-download>Excel 내려받기</button></div>
+      <p class="an-sub">${escapeHtml(r.meal_type_name)} 배식시간(${escapeHtml(r.weather_window)}) 날씨 기준입니다. 비는 그 시간 강수량 합계, 기온은 평균이에요. 날씨 자료와 평소 식수가 모두 있는 ${numberText(r.days)}일만 셉니다. 막대나 표를 누르면 해당 날짜가 보여요.</p></div>
+    <div class="an-weather-grid">${section('rain','비 오는 날과 안 오는 날',r.rain)}${section('temp','기온별',r.temperature)}</div>
+    <div id="an-band-dates">${selected?`<div class="an-card"><div class="an-card-head"><h3>${escapeHtml(selected.label)} · ${numberText(selected.days)}일</h3></div>${selected.low_sample_note?`<div class="an-note">${escapeHtml(selected.low_sample_note)}</div>`:''}${analysisTableHtml(selected.points,true,false)}</div>`:''}</div>`;
+  $$('[data-band]',root).forEach(el=>el.addEventListener('click',()=>{a.band=el.dataset.band;renderAnalysisWeather(root,r);$('#an-band-dates')?.scrollIntoView({behavior:'smooth',block:'start'});}));
+  bindAnalysisTable(root);
+}
+
+async function openAnalysisDetail(dateIso){
+  const a=analysisState();if(!a.query)return;
+  const mealType=a.query.params.meal_type;
+  const ingNames=a.query.tab==='ingredient'?(a.query.params.names||[]):[];
+  let root=$('#analysis-drawer-root');
+  if(!root){root=document.createElement('div');root.id='analysis-drawer-root';document.body.appendChild(root);}
+  root.innerHTML=`<div class="an-drawer-backdrop"><aside class="an-drawer" role="dialog" aria-modal="true" aria-label="식단 상세"><div class="an-drawer-head"><h3>식단 불러오는 중…</h3><button type="button" class="ghost-button" data-an-close>닫기</button></div><div class="an-drawer-body"><div class="empty-editor">불러오는 중입니다.</div></div></aside></div>`;
+  const close=()=>{root.innerHTML='';document.removeEventListener('keydown',escClose);};
+  const escClose=e=>{if(e.key==='Escape')close();};
+  document.addEventListener('keydown',escClose);
+  $('.an-drawer-backdrop',root).addEventListener('click',e=>{if(e.target.classList.contains('an-drawer-backdrop'))close();});
+  $('[data-an-close]',root).addEventListener('click',close);
+  try{
+    const params=analysisSearchParams({date:dateIso,meal_type:mealType,...(ingNames.length?{ing_mode:a.query.params.mode,ing_names:ingNames}:{})});
+    const d=await api(`/api/analysis/date-detail?${params}`);
+    const ingredientName=ingNames.map(n=>`‘${n}’`).join(', ');
+    $('.an-drawer-head h3',root).textContent=`${d.label} ${d.meal_type_name} 식단`;
+    $('.an-drawer-body',root).innerHTML=`<div class="an-detail-figures">
+        <div><span>실제</span><strong>${d.actual===null?'—':numberText(d.actual)+'명'}</strong></div>
+        <div><span>평소</span><strong>${d.usual===null?'—':numberText(d.usual)+'명'}</strong></div>
+        <div><span>차이</span><strong class="${analysisDiffClass(d.diff)}">${escapeHtml(d.diff_text)}</strong></div>
+      </div>
+      <p class="an-sub">평소 식수는 지난 1년 ${escapeHtml(d.meal_type_name)} ${numberText(d.usual_days)}일의 평균이에요.</p>
+      <div class="an-detail-weather">${d.weather?`${analysisWeatherIcon(d.weather)} 배식시간 날씨: ${escapeHtml(d.weather.text)}`:`배식시간(${escapeHtml(d.weather_window)}) 날씨 자료가 없습니다.`}</div>
+      ${ingredientName?`<div class="an-note">${a.query.params.mode==='group'?`고른 분석군(${escapeHtml(ingredientName)})에 속한 재료`:`고른 재료(${escapeHtml(ingredientName)})`}가 들어간 메뉴를 표시했어요.</div>`:''}
+      <ol class="an-menu-list">${d.menus.map(m=>`<li class="${m.has_ingredient?'an-hl':''}">
+        <details ${m.has_ingredient?'open':''}><summary><span class="an-menu-name">${escapeHtml(m.name)}</span>${m.is_main?'<span class="an-main-badge">★ 메인</span>':''}${m.has_ingredient?'<span class="an-ing-badge">재료 포함</span>':''}<small>${m.recipe_name?escapeHtml(m.recipe_name):'레시피 정보 없음'}</small></summary>
+        ${m.ingredients.length?`<table class="data-table an-ing-table"><thead><tr><th>재료</th><th class="num">양</th></tr></thead><tbody>${m.ingredients.map(i=>`<tr class="${i.highlight?'an-hl-row':''}"><td>${escapeHtml(i.name)}</td><td class="num">${i.quantity===null||i.quantity===undefined?'<span class="muted">—</span>':`${numberText(i.quantity)} ${escapeHtml(i.unit||'')}`}</td></tr>`).join('')}</tbody></table>`:'<p class="muted">등록된 재료가 없습니다.</p>'}
+        </details></li>`).join('')}</ol>`;
+  }catch(e){ $('.an-drawer-body',root).innerHTML=`<div class="form-error">${escapeHtml(e.message)}</div>`; }
 }
 
 document.addEventListener('DOMContentLoaded',()=>init().catch(e=>toast(e.message,true)));
