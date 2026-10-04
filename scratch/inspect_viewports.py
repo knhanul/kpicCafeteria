@@ -7,7 +7,7 @@ if hasattr(sys.stdout, 'reconfigure'):
 
 with sync_playwright() as p:
     browser = p.chromium.launch(channel="msedge", headless=True)
-    for width in [1280, 1440, 1920]:
+    for width in [1920, 1440, 1024, 768, 480]:
         page = browser.new_page(viewport={"width": width, "height": 900})
         page.goto("http://127.0.0.1:8089/")
         page.locator("button[data-view='analysis']").click()
@@ -17,7 +17,9 @@ with sync_playwright() as p:
             page.locator(f"button[data-analysis-tab='{tab}']").click()
             time.sleep(0.05)
             box = page.locator("#analysis-conditions").bounding_box()
-            rows = page.locator("#analysis-conditions .an-row").count()
-            detail_open = page.locator("#analysis-conditions .an-detail-panel").is_visible()
-            print(f"  Tab '{tab}': height={box['height']:.1f}px, rows={rows}, detail_open={detail_open}")
+            groups = page.locator("#analysis-conditions .an-group").count()
+            scroll_width = page.evaluate("document.documentElement.scrollWidth")
+            client_width = page.evaluate("document.documentElement.clientWidth")
+            diff = scroll_width - client_width
+            print(f"  Tab '{tab}': height={box['height']:.1f}px, groups={groups}, h-scroll-diff={diff}")
     browser.close()
