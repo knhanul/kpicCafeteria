@@ -388,3 +388,96 @@ def test_menu_compare_weather_filter_and_api(engine):
         for tab, extra in (("menus", [("mode", "name"), ("names", "냉면"), ("names", "국밥")]), ("popular", [("basis", "name"), ("min_days", "1")])):
             response = client.get("/api/analysis/export.xlsx", params=[*params.items(), ("tab", tab), *extra])
             assert response.status_code == 200 and response.content[:2] == b"PK"
+
+
+def _ingredient_fixture(db):
+    """돼지고기 앞다리/삼겹살 share the 통계집계명 '돼지고기'; 맛소금 is in '양념' but marked 통계 분석 제외."""
+    b = Builder(db)
+    b.meal(MONDAY - timedelta(days=1), 400)
+    plan = [
+        (440, ("돼지고기 앞다리", "맛소금"), (30.0, 0.0)),
+        (430, ("삼겹살",), (20.0, 2.0)),
+        (380, ("두부", "맛소금"), (21.0, 0.0)),
+        (420, ("돼지고기 앞다리", "두부"), (29.0, 0.0)),
+    ]
+    for index, (actual, ingredients, weather) in enumerate(plan):
+        b.meal(MONDAY + timedelta(days=index), actual, menus=(("밥", None, ()), (f"반찬{index}", None, ingredients)), weather=weather)
+    groups = {"돼지고기 앞다리": "돼지고기", "삼겹살": "돼지고기", "두부": "콩류", "맛소금": "양념"}
+    for name, group in groups.items():
+        b.ingredients[name].stat_group = group
+    b.ingredients["맛소금"].analysis_excluded = True
+    db.commit()
+    return b
+
+
+def test_ingredient_compare_name_vs_group_and_excluded_flag(engine):
+    with Session(engine) as db:
+        b = _ingredient_fixture(db)
+        start, end = MONDAY, MONDAY + timedelta(days=10)
+        by_name = analysis.ingredient_compare(db, "LUNCH", start, end, "name", ["돼지고기 앞다리", "두부", "삼겹살", "두부"])
+        by_group = analysis.ingredient_compare(db, "LUNCH", start, end, "group", ["돼지고기", "콩류", "양념"])
+        hot = analysis.ingredient_compare(db, "LUNCH", start, end, "group", ["돼지고기"], "hot")
+        name_salt = analysis.ingredient_compare(db, "LUNCH", start, end, "name", ["맛소금"])
+        groups = analysis.search_ingredient_keys(db, "group", "")
+        names = analysis.search_ingredient_keys(db, "name", "돼지")
+        pork_ids = analysis.ingredient_ids_for(db, "group", ["돼지고기"])
+        salt_ids = analysis.ingredient_ids_for(db, "group", ["양념"])
+        with pytest.raises(analysis.AnalysisError):
+            analysis.ingredient_compare(db, "LUNCH", start, end, "group", [])
+        with pytest.raises(analysis.AnalysisError):
+            analysis.ingredient_compare(db, "LUNCH", start, end, "group", [f"군{i}" for i in range(6)])
+        with pytest.raises(analysis.AnalysisError):
+            analysis.ingredient_compare(db, "LUNCH", start, end, "stat", ["돼지고기"])
+        expected_pork_ids = {b.ingredients["돼지고기 앞다리"].id, b.ingredients["삼겹살"].id}
+    assert [i["name"] for i in by_name["items"]] == ["돼지고기 앞다리", "두부", "삼겹살"]
+    assert [i["days"] for i in by_name["items"]] == [2, 2, 1]
+    assert by_name["mode_name"] == "재료 이름"
+    # 통계집계명: both pork ingredients count as one series; the excluded 양념 ingredient yields nothing
+    assert [i["days"] for i in by_group["items"]] == [3, 2, 0]
+    assert [p["actual"] for p in by_group["items"][0]["points"]] == [440, 430, 420]
+    assert by_group["mode_name"] == "통계집계명(분석군)"
+    assert len(by_group["usual_line"]) == 4 and by_group["dates"] == sorted(by_group["dates"])
+    assert by_group["usual_line"][1]["usual"] == 420  # (400 + 440) / 2: the shared baseline of that day
+    assert [p["actual"] for p in hot["items"][0]["points"]] == [440, 420]
+    assert name_salt["items"][0]["days"] == 2  # picked by exact name, the ingredient is still shown
+    assert {g["name"] for g in groups} == {"돼지고기", "콩류"}
+    assert next(g for g in groups if g["name"] == "돼지고기")["served"] == 3
+    assert [n["name"] for n in names] == ["돼지고기 앞다리"]
+    assert pork_ids == expected_pork_ids and salt_ids == set()
+
+
+def test_ingredient_compare_api_detail_highlight_and_excel(engine):
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    with sessions() as db:
+        _ingredient_fixture(db)
+    app = FastAPI()
+    app.include_router(analysis_router.router)
+
+    def override_db():
+        with sessions() as db:
+            yield db
+
+    app.dependency_overrides[analysis_router.get_db] = override_db
+    app.dependency_overrides[analysis_router.current_user] = lambda: SimpleNamespace(id=1)
+    params = [("start", MONDAY.isoformat()), ("end", (MONDAY + timedelta(days=10)).isoformat()), ("meal_type", "LUNCH")]
+    with TestClient(app) as client:
+        response = client.get("/api/analysis/ingredients", params=[*params, ("mode", "group"), ("names", "돼지고기"), ("names", "콩류")])
+        assert response.status_code == 200
+        assert [i["days"] for i in response.json()["items"]] == [3, 2]
+        assert client.get("/api/analysis/ingredients", params=[*params, ("mode", "x"), ("names", "돼지고기")]).status_code == 400
+        found = client.get("/api/analysis/ingredient-keys/search", params={"mode": "group", "q": "돼"}).json()["items"]
+        assert found == [{"name": "돼지고기", "served": 3}]
+        detail = client.get("/api/analysis/date-detail", params=[
+            ("date", (MONDAY + timedelta(days=3)).isoformat()), ("meal_type", "LUNCH"),
+            ("ing_mode", "name"), ("ing_names", "돼지고기 앞다리"), ("ing_names", "두부"),
+        ]).json()
+        assert [m["has_ingredient"] for m in detail["menus"]] == [False, True]
+        assert [i["highlight"] for i in detail["menus"][1]["ingredients"]] == [True, True]
+        excel = client.get("/api/analysis/export.xlsx", params=[*params, ("tab", "ingredients"), ("mode", "group"), ("names", "돼지고기"), ("names", "콩류")])
+        assert excel.status_code == 200 and excel.content[:2] == b"PK"
+    import io
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(excel.content))
+    assert wb.sheetnames == ["재료별식수", "재료별 요약"]
+    assert wb["재료별식수"].max_row == 1 + 3 + 2
+    assert [row[0].value for row in wb["재료별 요약"].iter_rows(min_row=2)] == ["돼지고기", "콩류"]

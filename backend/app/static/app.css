@@ -460,3 +460,9 @@ body.ui-locked{overflow:hidden}
 .an-legend-multi{gap:14px}
 .an-lg-item{display:inline-flex;align-items:center;gap:6px}
 .an-lg-swatch{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+/* 검색창 + 조회 버튼 (입력 즉시 조회하지 않음) */
+.search-submit-row{display:flex;gap:6px;align-items:center}
+.search-submit-row input{flex:1;min-width:0}
+.search-submit-row button{white-space:nowrap;padding:7px 12px}
+.table-tools>button{white-space:nowrap}
+.an-search-hint{padding:6px 12px;font-size:11px;color:#6b8196;border-bottom:1px solid #edf1f4}

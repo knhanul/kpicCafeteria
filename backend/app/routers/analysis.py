@@ -71,6 +71,19 @@ def ingredients_search(q: str = "", db: Session = Depends(get_db), user: User = 
     return {"items": analysis.search_ingredients(db, q)}
 
 
+@router.get("/ingredient-keys/search")
+def ingredient_keys_search(q: str = "", mode: str = "name", db: Session = Depends(get_db), user: User = Depends(current_user)):
+    return {"items": _run(analysis.search_ingredient_keys, db, mode, q)}
+
+
+@router.get("/ingredients")
+def ingredients_compare(
+    start: date, end: date, mode: str = "name", names: list[str] = Query(default=[]), meal_type: str = "LUNCH",
+    weather: str = "all", db: Session = Depends(get_db), user: User = Depends(current_user),
+):
+    return _run(analysis.ingredient_compare, db, meal_type, start, end, mode, names, weather)
+
+
 @router.get("/ingredient")
 def ingredient(
     start: date, end: date, ingredient_id: int, meal_type: str = "LUNCH", weather: str = "all",
@@ -87,9 +100,11 @@ def weather(start: date, end: date, meal_type: str = "LUNCH", db: Session = Depe
 @router.get("/date-detail")
 def date_detail(
     service_date: date = Query(alias="date"), meal_type: str = "LUNCH", ingredient_id: int | None = None,
+    ing_mode: str = "name", ing_names: list[str] = Query(default=[]),
     db: Session = Depends(get_db), user: User = Depends(current_user),
 ):
-    return _run(analysis.date_detail, db, meal_type, service_date, ingredient_id)
+    ids = _run(analysis.ingredient_ids_for, db, ing_mode, ing_names) if ing_names else None
+    return _run(analysis.date_detail, db, meal_type, service_date, ingredient_id, ids)
 
 
 def _point_rows(points: list[dict[str, Any]], meal_name: str) -> list[list[Any]]:
@@ -142,6 +157,13 @@ def export_xlsx(
         _sheet(wb, "메뉴별식수", [data["mode_name"], *POINT_HEADERS], rows, first=True)
         summary = [[item["name"], item["days"], item["avg_actual"], item["avg_usual"], item["avg_diff"]] for item in data["items"]]
         _sheet(wb, "메뉴별 요약", [data["mode_name"], "나온 날 수", "평균 실제(명)", "평균 평소(명)", "평균 차이(명)"], summary)
+    elif tab == "ingredients":
+        data = _run(analysis.ingredient_compare, db, meal_type, start, end, mode, names, weather)
+        label = "재료비교_" + "_".join(item["name"] for item in data["items"])[:60]
+        rows = [[item["name"], *row] for item in data["items"] for row in _point_rows(item["points"], meal_name)]
+        _sheet(wb, "재료별식수", [data["mode_name"], *POINT_HEADERS], rows, first=True)
+        summary = [[item["name"], item["days"], item["avg_actual"], item["avg_usual"], item["avg_diff"]] for item in data["items"]]
+        _sheet(wb, "재료별 요약", [data["mode_name"], "들어간 날 수", "평균 실제(명)", "평균 평소(명)", "평균 차이(명)"], summary)
     elif tab == "popular":
         data = _run(analysis.popular_menus, db, meal_type, start, end, basis, order, limit, min_days, main_only)
         label = f"인기메뉴_{'상위' if order == 'top' else '하위'}{limit}"
