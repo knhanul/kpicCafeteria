@@ -478,3 +478,6 @@ body.ui-locked{overflow:hidden}
 .an-pop-compare .primary-button{padding:7px 14px}
 .an-pop-compare .primary-button:disabled{opacity:.45;cursor:not-allowed}
 .an-col-check{width:44px;text-align:center}
+.an-chip-scope{font-size:10.5px;font-weight:600;color:#5c7286;background:#eef3f8;border-radius:6px;padding:0 5px;margin-left:4px}
+.an-note-strong{background:#fdecea;border-color:#f3b9b2;color:#8f2d22}
+.an-lg-empty{color:#98a6b3;text-decoration:line-through}

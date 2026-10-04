@@ -586,7 +586,7 @@ def popular_menus(
 
 def menu_compare(
     db: Session, meal_type: str, start: date, end: date, mode: str, names: list[str], weather_filter: str = "all",
-    scope: str = "all",
+    scope: str = "all", scopes: list[str] | None = None,
 ) -> dict[str, Any]:
     """One series per selected menu (by exact name or 통계집계명) plus the shared 평소 식수 line."""
     check_meal_type(meal_type)
@@ -595,8 +595,26 @@ def menu_compare(
     clean = _clean_compare_names(names, "메뉴")
     if weather_filter not in WEATHER_FILTERS:
         raise AnalysisError("날씨 조건이 올바르지 않습니다.")
-    by_key = _service_menu_keys(db, meal_type, start, end, mode, keys=clean, scope=check_menu_scope(scope))
+    check_menu_scope(scope)
+    # 메뉴마다 범위를 따로 줄 수 있습니다(인기 메뉴에서 서로 다른 범위로 고른 메뉴를 그 범위 그대로 비교).
+    item_scope: dict[str, str] = {}
+    if scopes:
+        if len(scopes) != len(names):
+            raise AnalysisError("메뉴와 범위 개수가 맞지 않습니다.")
+        for name, item in zip(names, scopes):
+            item_scope.setdefault((name or "").strip(), check_menu_scope(item or scope))
+    by_scope: dict[str, list[str]] = defaultdict(list)
+    for name in clean:
+        by_scope[item_scope.get(name, scope)].append(name)
+    by_key: dict[str, set[int]] = {}
+    for one_scope, group in by_scope.items():
+        by_key.update(_service_menu_keys(db, meal_type, start, end, mode, keys=group, scope=one_scope))
     items, used, usual_line = _compare_series(db, meal_type, start, end, by_key, clean, weather_filter)
+    for item in items:
+        item["scope"] = item_scope.get(item["name"], scope)
+        item["scope_name"] = MENU_SCOPES[item["scope"]]
+        if not item["days"]:
+            item["no_data_note"] = f"{item['name']}: 이 기간·조건({item['scope_name']})에 실제 식수가 있는 날이 없어 그래프에 선이 없어요."
     return {
         "scope": scope,
         "scope_name": MENU_SCOPES[scope],

@@ -566,3 +566,49 @@ def test_menu_search_and_compare_respect_scope(engine):
         assert menus["items"][0]["days"] == 2 and menus["scope_name"] == "메인 메뉴만"
         excel = client.get("/api/analysis/export.xlsx", params=[*params, ("tab", "popular"), ("scope", "main_dish"), ("min_days", "1")])
         assert excel.status_code == 200 and excel.content[:2] == b"PK"
+
+
+def test_menu_compare_per_item_scope_matches_popular_selection(engine):
+    """Menus picked from different 인기 메뉴 scopes keep their own scope in the compare (production bug 2026-10-04)."""
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    with sessions() as db:
+        _scope_fixture(db)
+        start, end = MONDAY, MONDAY + timedelta(days=10)
+        side = analysis.popular_menus(db, "LUNCH", start, end, basis="name", min_days=1, scope="with_side")
+        dish = analysis.popular_menus(db, "LUNCH", start, end, basis="name", min_days=1, scope="main_dish")
+        side_days = {i["name"]: i["days"] for i in side["items"]}
+        dish_days = {i["name"]: i["days"] for i in dish["items"]}
+        # old behaviour: one scope for every menu -> 계란말이(부찬) silently had no line under 주찬만
+        uniform = analysis.menu_compare(db, "LUNCH", start, end, "name", ["계란말이", "제육볶음"], scope="main_dish")
+        mixed = analysis.menu_compare(db, "LUNCH", start, end, "name", ["계란말이", "제육볶음"], scope="main_dish", scopes=["with_side", "main_dish"])
+        with pytest.raises(analysis.AnalysisError):
+            analysis.menu_compare(db, "LUNCH", start, end, "name", ["계란말이", "제육볶음"], scopes=["with_side"])
+        with pytest.raises(analysis.AnalysisError):
+            analysis.menu_compare(db, "LUNCH", start, end, "name", ["계란말이"], scopes=["bogus"])
+    assert [i["days"] for i in uniform["items"]] == [0, 3]
+    assert uniform["items"][0]["no_data_note"].startswith("계란말이:") and "주찬만" in uniform["items"][0]["no_data_note"]
+    # identical matching: every compared menu has the same day count as in its 인기 메뉴 list
+    assert {i["name"]: i["days"] for i in mixed["items"]} == {"계란말이": side_days["계란말이"], "제육볶음": dish_days["제육볶음"]}
+    assert [i["scope_name"] for i in mixed["items"]] == ["부찬 포함", "주찬만"]
+    assert all(i["points"] for i in mixed["items"]) and "no_data_note" not in mixed["items"][0]
+    assert len(mixed["usual_line"]) == len({p["date"] for i in mixed["items"] for p in i["points"]})
+    app = FastAPI()
+    app.include_router(analysis_router.router)
+
+    def override_db():
+        with sessions() as db:
+            yield db
+
+    app.dependency_overrides[analysis_router.get_db] = override_db
+    app.dependency_overrides[analysis_router.current_user] = lambda: SimpleNamespace(id=1)
+    params = [("start", MONDAY.isoformat()), ("end", (MONDAY + timedelta(days=10)).isoformat()), ("meal_type", "LUNCH"), ("mode", "name"),
+              ("names", "계란말이"), ("names", "제육볶음"), ("scope", "main_dish"), ("scopes", "with_side"), ("scopes", "main_dish")]
+    with TestClient(app) as client:
+        response = client.get("/api/analysis/menus", params=params).json()
+        assert [i["days"] for i in response["items"]] == [3, 3]
+        excel = client.get("/api/analysis/export.xlsx", params=[*params, ("tab", "menus")])
+        assert excel.status_code == 200
+    import io
+    from openpyxl import load_workbook
+    summary = load_workbook(io.BytesIO(excel.content))["메뉴별 요약"]
+    assert [[c.value for c in row][:3] for row in summary.iter_rows(min_row=2)] == [["계란말이", "부찬 포함", 3], ["제육볶음", "주찬만", 3]]

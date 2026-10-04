@@ -52,9 +52,10 @@ def menus_search(q: str = "", mode: str = "group", scope: str = "all", db: Sessi
 @router.get("/menus")
 def menus_compare(
     start: date, end: date, mode: str = "group", names: list[str] = Query(default=[]), meal_type: str = "LUNCH",
-    weather: str = "all", scope: str = "all", db: Session = Depends(get_db), user: User = Depends(current_user),
+    weather: str = "all", scope: str = "all", scopes: list[str] = Query(default=[]),
+    db: Session = Depends(get_db), user: User = Depends(current_user),
 ):
-    return _run(analysis.menu_compare, db, meal_type, start, end, mode, names, weather, scope)
+    return _run(analysis.menu_compare, db, meal_type, start, end, mode, names, weather, scope, scopes or None)
 
 
 @router.get("/popular-menus")
@@ -138,7 +139,7 @@ def export_xlsx(
     tab: str, start: date, end: date, meal_type: str = "LUNCH", name: str = "", ingredient_id: int | None = None,
     weather: str = "all", mode: str = "group", names: list[str] = Query(default=[]),
     basis: str = "name", order: str = "top", limit: int = 10, min_days: int | None = None, main_only: bool = False,
-    scope: str | None = None,
+    scope: str | None = None, scopes: list[str] = Query(default=[]),
     db: Session = Depends(get_db), user: User = Depends(current_user),
 ):
     wb = Workbook()
@@ -152,12 +153,12 @@ def export_xlsx(
         label = f"메뉴별식수_{data['menu_group']}"
         _sheet(wb, "메뉴별식수", POINT_HEADERS, _point_rows(data["points"], meal_name), first=True)
     elif tab == "menus":
-        data = _run(analysis.menu_compare, db, meal_type, start, end, mode, names, weather, scope or "all")
+        data = _run(analysis.menu_compare, db, meal_type, start, end, mode, names, weather, scope or "all", scopes or None)
         label = "메뉴비교_" + "_".join(item["name"] for item in data["items"])[:60]
         rows = [[item["name"], *row] for item in data["items"] for row in _point_rows(item["points"], meal_name)]
         _sheet(wb, "메뉴별식수", [data["mode_name"], *POINT_HEADERS], rows, first=True)
-        summary = [[item["name"], item["days"], item["avg_actual"], item["avg_usual"], item["avg_diff"]] for item in data["items"]]
-        _sheet(wb, "메뉴별 요약", [data["mode_name"], "나온 날 수", "평균 실제(명)", "평균 평소(명)", "평균 차이(명)"], summary)
+        summary = [[item["name"], item["scope_name"], item["days"], item["avg_actual"], item["avg_usual"], item["avg_diff"]] for item in data["items"]]
+        _sheet(wb, "메뉴별 요약", [data["mode_name"], "메뉴 범위", "나온 날 수", "평균 실제(명)", "평균 평소(명)", "평균 차이(명)"], summary)
     elif tab == "ingredients":
         data = _run(analysis.ingredient_compare, db, meal_type, start, end, mode, names, weather)
         label = "재료비교_" + "_".join(item["name"] for item in data["items"])[:60]
