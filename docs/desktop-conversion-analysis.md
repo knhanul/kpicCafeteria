@@ -111,13 +111,13 @@ Alembic은 없다. Schema 변경 이력은 `schema_upgrade.py`의 조건부 직�
 | `/api/workspace` | `routers/workspace.py` | 주간 식단, 메뉴/재료 편집, 조리 비고, 보존식, 실제 식수 |
 | `/api/master` | `routers/master.py` | 메뉴, Recipe, 재료, 이력/Snapshot |
 | `/api/orders` | `routers/orders.py` | 필요량 집계, 발주 item/group |
-| `/api/statistics` | `routers/statistics.py` | 운영·식수·메뉴·재료 통계 |
-| `/api/stats` | `routers/stats.py` | 구형/별도 대시보드 통계 경로 |
 | `/api/documents` | `routers/documents.py` | Preview, HWPX, PDF 출력 |
 | `/api/master-data` | `routers/master_data.py` | HWPX 양식 및 배식 기본값 |
 | `/api/templates` | `routers/templates.py` | 별도 HWPX template API |
 | `/api/setup` | `routers/setup.py` | XLSX migration Preview/Apply |
 | `/api/admin` | `routers/admin.py` | PostgreSQL backup, Excel archive |
+
+> 2026-10-04: `/api/statistics`, `/api/stats`와 통계 화면은 제거되었다. 아래 통계 관련 서술은 당시 분석 기록이다.
 
 `/api/templates`와 `/api/master-data/document-templates`, `/api/stats`와 `/api/statistics`는 역할이 겹친다. 현재 프런트엔드는 HWPX 관리에 `/api/master-data/document-templates`, 주요 분석 화면에 `/api/statistics`를 사용하지만 `/api/stats/dashboard` 참조도 일부 남아 있다. 제거 가능 여부는 이번 범위에서 확정하지 않고 `확인 필요`로 둔다.
 

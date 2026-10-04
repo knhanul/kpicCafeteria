@@ -15,7 +15,7 @@ from .config import settings
 from .db import Base, SessionLocal, engine
 from .desktop_schema import ensure_desktop_schema_version
 from .models import MealTypeSetting, User
-from .routers import admin, auth, documents, master, master_data, orders, setup, statistics, stats, templates, users, weather, workspace
+from .routers import admin, auth, documents, master, master_data, orders, setup, templates, users, weather, workspace
 from .security import hash_password
 from .schema_upgrade import upgrade_existing_schema
 
@@ -31,8 +31,6 @@ if not settings.desktop_mode:
 app.include_router(setup.router)
 app.include_router(master.router)
 app.include_router(workspace.router)
-app.include_router(stats.router)
-app.include_router(statistics.router)
 app.include_router(templates.router)
 app.include_router(master_data.router)
 app.include_router(documents.router)
