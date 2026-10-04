@@ -2742,13 +2742,17 @@ function updateAnalysisConditionSummary(root){
   }
 }
 
+const ANALYSIS_SCOPES_SHORT = {main_dish:'주찬', main_menu:'메인', with_side:'부찬', all:'전체'};
+const ANALYSIS_MENU_MODES_SHORT = {name:'메뉴', group:'대표'};
+const ANALYSIS_ING_MODES_SHORT = {name:'재료', group:'대표'};
+
 function renderAnalysisConditions(){
   const a=analysisState();const root=$('#analysis-conditions');if(!root)return;
-  const seg=(key,options,current)=>`<div class="an-seg">${options.map(([k,v])=>`<button type="button" data-${key}="${k}" class="${String(current)===String(k)?'active':''}">${v}</button>`).join('')}</div>`;
+  const seg=(key,options,current)=>`<div class="an-seg">${options.map(([k,v,t])=>`<button type="button" data-${key}="${k}" class="${String(current)===String(k)?'active':''}" ${t?`title="${escapeHtml(t)}"`:''}>${v}</button>`).join('')}</div>`;
   const pk=(a.tab==='menu'||a.tab==='ingredient')?analysisPicker(a):null;
 
   const activeOpt = ANALYSIS_PERIOD_OPTIONS.find(opt => opt.key === a.quickKey);
-  const dropdownLabel = activeOpt ? `${activeOpt.label} ▾` : '기간 선택 ▾';
+  const dropdownLabel = activeOpt ? `${activeOpt.label} ▾` : '기간 ▾';
   const isDropdownActive = Boolean(activeOpt);
   const quickHtml = `<div class="an-quick" id="an-quick-container">
     ${ANALYSIS_QUICK_BUTTONS.map(btn => `<button type="button" class="ghost-button an-quick-btn ${a.quickKey === btn.key ? 'active' : ''}" data-quick="${btn.key}" data-months="${btn.months}">${escapeHtml(btn.label)}</button>`).join('')}
@@ -2762,258 +2766,140 @@ function renderAnalysisConditions(){
     </div>
   </div>`;
 
-  const periodRow = `<div class="an-field-row">
-    <span class="an-label">기간</span>
-    <div class="an-control">
-      <div class="an-period">
-        <input type="date" id="an-start" value="${a.start}">
-        <span>~</span>
-        <input type="date" id="an-end" value="${a.end}">
-      </div>
-    </div>
-  </div>`;
+  const periodField = `<div class="an-field"><span class="an-label">기간</span><div class="an-period"><input type="date" id="an-start" value="${a.start}"><span>~</span><input type="date" id="an-end" value="${a.end}"></div></div>`;
+  const quickField = `<div class="an-field"><span class="an-label">빠른 선택</span>${quickHtml}</div>`;
+  const mealField = `<div class="an-field"><span class="an-label">배식</span><div class="an-seg">${seg('meal',[['LUNCH','중식','중식 식수'],['DINNER','석식','석식 식수']],a.mealType)}</div></div>`;
+  const summaryText = getAnalysisConditionSummary(a);
+  const summaryHtml = `<div class="an-summary" title="${escapeHtml(summaryText)}"><span class="an-summary-text">${escapeHtml(summaryText)}</span></div>`;
+  const queryBtn = `<button type="button" class="primary-button an-query" id="an-query" title="${escapeHtml(summaryText)}">조회</button>`;
 
-  const quickRow = `<div class="an-field-row">
-    <span class="an-label">빠른 선택</span>
-    <div class="an-control">${quickHtml}</div>
-  </div>`;
-
-  const mealRow = `<div class="an-field-row">
-    <span class="an-label">배식</span>
-    <div class="an-control">${seg('meal',[['LUNCH','중식'],['DINNER','석식']],a.mealType)}</div>
-  </div>`;
-
-  let mainGridHtml = '';
-  let detailHtml = '';
-  let hasDetail = false;
+  let contentHtml = '';
 
   if (a.tab === 'daily') {
-    mainGridHtml = `
-      ${periodRow}
-      ${quickRow}
-      ${mealRow}
-      <div class="an-field-row"></div>
+    contentHtml = `
+      <div class="an-row">
+        ${periodField}
+        ${quickField}
+        ${mealField}
+        ${summaryHtml}
+        ${queryBtn}
+      </div>
     `;
   } else if (a.tab === 'popular') {
-    hasDetail = true;
-    const scopeRow = `<div class="an-field-row">
-      <span class="an-label">메뉴 범위</span>
-      <div class="an-control">${seg('pop-scope',Object.entries(ANALYSIS_SCOPES),a.popScope)}</div>
-    </div>`;
-    const basisRow = `<div class="an-field-row">
-      <span class="an-label">기준</span>
-      <div class="an-control">${seg('pop-basis',Object.entries(ANALYSIS_MENU_MODES),a.popBasis)}</div>
-    </div>`;
-    const orderRow = `<div class="an-field-row">
-      <span class="an-label">순서</span>
-      <div class="an-control">${seg('pop-order',[['top','상위'],['bottom','하위']],a.popOrder)}</div>
-    </div>`;
+    const scopeOptions = Object.entries(ANALYSIS_SCOPES).map(([k,v])=>[k, ANALYSIS_SCOPES_SHORT[k]||v, v]);
+    const basisOptions = Object.entries(ANALYSIS_MENU_MODES).map(([k,v])=>[k, ANALYSIS_MENU_MODES_SHORT[k]||v, v]);
+    const scopeField = `<div class="an-field"><span class="an-label">메뉴 범위</span><div class="an-seg">${seg('pop-scope',scopeOptions,a.popScope)}</div></div>`;
+    const basisField = `<div class="an-field"><span class="an-label">기준</span><div class="an-seg">${seg('pop-basis',basisOptions,a.popBasis)}</div></div>`;
+    const orderField = `<div class="an-field"><span class="an-label">순서</span><div class="an-seg">${seg('pop-order',[['top','상위','상위 순'],['bottom','하위','하위 순']],a.popOrder)}</div></div>`;
+    const detailBtn = `<button type="button" class="ghost-button an-detail-toggle ${a.showDetail ? 'active' : ''}" id="an-detail-toggle" aria-expanded="${Boolean(a.showDetail)}"><span class="an-toggle-icon">${a.showDetail ? '−' : '＋'}</span> 상세조건</button>`;
 
-    mainGridHtml = `
-      ${periodRow}
-      ${quickRow}
-      ${mealRow}
-      ${scopeRow}
-      ${basisRow}
-      ${orderRow}
-    `;
-
-    const limitRow = `<div class="an-field-row">
-      <span class="an-label">표시 개수</span>
-      <div class="an-control">${seg('pop-limit',[[10,'10개'],[20,'20개'],[50,'50개']],a.popLimit)}</div>
-    </div>`;
-    const minDaysRow = `<div class="an-field-row">
-      <span class="an-label">최소 등장</span>
-      <div class="an-control">
-        <input type="number" id="an-min-days" min="1" max="365" value="${a.popMinDays}" class="an-input-num">
-        <span class="an-unit">회 이상</span>
+    contentHtml = `
+      <div class="an-row">
+        ${periodField}
+        ${quickField}
+        ${mealField}
       </div>
-    </div>`;
-
-    detailHtml = `
+      <div class="an-row">
+        ${scopeField}
+        ${basisField}
+        ${orderField}
+        ${detailBtn}
+        ${summaryHtml}
+        ${queryBtn}
+      </div>
       <div class="an-detail-panel ${a.showDetail ? '' : 'hidden'}" id="an-detail-panel">
-        <div class="an-detail-header"><span class="an-detail-title">상세 조건</span></div>
-        <div class="an-detail-grid">
-          ${limitRow}
-          ${minDaysRow}
-        </div>
+        <div class="an-field"><span class="an-label">표시 개수</span><div class="an-seg">${seg('pop-limit',[[10,'10','10개 표시'],[20,'20','20개 표시'],[50,'50','50개 표시']],a.popLimit)}</div></div>
+        <div class="an-field"><span class="an-label">최소 등장</span><input type="number" id="an-min-days" min="1" max="365" value="${a.popMinDays}" class="an-input-num"> <span class="an-unit">회 이상</span></div>
       </div>
     `;
   } else if (a.tab === 'menu') {
-    hasDetail = true;
-    const scopeRow = `<div class="an-field-row">
-      <span class="an-label">메뉴 범위</span>
-      <div class="an-control">${seg('menu-scope',Object.entries(ANALYSIS_SCOPES),a.menuScope)}</div>
-    </div>`;
-    const basisRow = `<div class="an-field-row">
-      <span class="an-label">조회 기준</span>
-      <div class="an-control">${seg('pick-mode',Object.entries(pk.modes),a[pk.modeKey])}</div>
-    </div>`;
-    const searchRow = `<div class="an-field-row">
-      <span class="an-label">메뉴 검색</span>
-      <div class="an-control an-search-control">
-        <div class="an-search-wrap">
-          <div class="search-submit-row">
-            <input id="an-search-input" autocomplete="off" placeholder="${escapeHtml(pk.placeholder[a[pk.modeKey]])}">
-            <button type="button" class="secondary-button" id="an-search-btn">검색</button>
+    const scopeOptions = Object.entries(ANALYSIS_SCOPES).map(([k,v])=>[k, ANALYSIS_SCOPES_SHORT[k]||v, v]);
+    const basisOptions = Object.entries(pk.modes).map(([k,v])=>[k, ANALYSIS_MENU_MODES_SHORT[k]||v, v]);
+    const scopeField = `<div class="an-field"><span class="an-label">메뉴 범위</span><div class="an-seg">${seg('menu-scope',scopeOptions,a.menuScope)}</div></div>`;
+    const basisField = `<div class="an-field"><span class="an-label">기준</span><div class="an-seg">${seg('pick-mode',basisOptions,a[pk.modeKey])}</div></div>`;
+    const detailBtn = `<button type="button" class="ghost-button an-detail-toggle ${a.showDetail ? 'active' : ''}" id="an-detail-toggle" aria-expanded="${Boolean(a.showDetail)}"><span class="an-toggle-icon">${a.showDetail ? '−' : '＋'}</span> 상세조건</button>`;
+
+    contentHtml = `
+      <div class="an-row">
+        ${periodField}
+        ${quickField}
+        ${mealField}
+      </div>
+      <div class="an-row">
+        ${scopeField}
+        ${basisField}
+      </div>
+      <div class="an-row">
+        <div class="an-field an-search-field">
+          <span class="an-label">메뉴</span>
+          <div class="an-search-wrap">
+            <div class="search-submit-row">
+              <input id="an-search-input" autocomplete="off" placeholder="${escapeHtml(pk.placeholder[a[pk.modeKey]])}">
+              <button type="button" class="secondary-button" id="an-search-btn">검색</button>
+            </div>
+            <div class="an-search-list hidden" id="an-search-list"></div>
           </div>
-          <div class="an-search-list hidden" id="an-search-list"></div>
         </div>
-        <span class="an-hint-text" title="최대 ${ANALYSIS_MAX_MENUS}개까지 비교 가능">ⓘ 최대 ${ANALYSIS_MAX_MENUS}개</span>
-      </div>
-    </div>`;
-
-    const chipsRow = `<div class="an-field-row an-col-span-2 an-chips-row">
-      <span class="an-label">선택 메뉴</span>
-      <div class="an-control">
         <div class="an-chips" id="an-chips">
-          ${a[pk.itemsKey].map((name,i)=>`<span class="an-chip" style="--chip:${ANALYSIS_COLORS[i%ANALYSIS_COLORS.length]}">${escapeHtml(name)}${analysisScopeTag((a.menuItemScopes||{})[name],a.menuScope)}<button type="button" data-remove-chip="${i}" aria-label="${escapeHtml(name)} 빼기">×</button></span>`).join('')||`<span class="muted">${pk.noun}를 검색한 뒤 목록에서 고르세요. (최대 ${ANALYSIS_MAX_MENUS}개)</span>`}
+          ${a[pk.itemsKey].map((name,i)=>`<span class="an-chip" style="--chip:${ANALYSIS_COLORS[i%ANALYSIS_COLORS.length]}">${escapeHtml(name)}${analysisScopeTag((a.menuItemScopes||{})[name],a.menuScope)}<button type="button" data-remove-chip="${i}" aria-label="${escapeHtml(name)} 빼기">×</button></span>`).join('')||`<span class="muted" style="font-size:10.5px">${pk.noun} 검색 추가 (최대 ${ANALYSIS_MAX_MENUS}개)</span>`}
         </div>
+        ${detailBtn}
+        ${summaryHtml}
+        ${queryBtn}
       </div>
-    </div>`;
-
-    mainGridHtml = `
-      ${periodRow}
-      ${quickRow}
-      ${mealRow}
-      ${scopeRow}
-      ${basisRow}
-      ${searchRow}
-      ${chipsRow}
-    `;
-
-    const weatherFilterRow = `<div class="an-field-row">
-      <span class="an-label">날씨 조건</span>
-      <div class="an-control">
-        <select id="an-weather-filter">
-          ${Object.entries(ANALYSIS_WEATHER_FILTERS).map(([k,v])=>`<option value="${k}" ${a.weatherFilter===k?'selected':''}>${v}</option>`).join('')}
-        </select>
-      </div>
-    </div>`;
-    const weatherToggleRow = `<div class="an-field-row">
-      <span class="an-label">표시 옵션</span>
-      <div class="an-control">
-        <label class="an-check"><input type="checkbox" id="an-show-weather" ${a.showWeather?'checked':''}> 날씨 함께 보기</label>
-      </div>
-    </div>`;
-
-    detailHtml = `
       <div class="an-detail-panel ${a.showDetail ? '' : 'hidden'}" id="an-detail-panel">
-        <div class="an-detail-header"><span class="an-detail-title">상세 조건</span></div>
-        <div class="an-detail-grid">
-          ${weatherFilterRow}
-          ${weatherToggleRow}
-        </div>
+        <div class="an-field"><span class="an-label">날씨</span><select id="an-weather-filter">${Object.entries(ANALYSIS_WEATHER_FILTERS).map(([k,v])=>`<option value="${k}" ${a.weatherFilter===k?'selected':''}>${v}</option>`).join('')}</select></div>
+        <label class="an-check"><input type="checkbox" id="an-show-weather" ${a.showWeather?'checked':''}> 날씨 함께 보기</label>
       </div>
     `;
   } else if (a.tab === 'ingredient') {
-    hasDetail = true;
-    const basisRow = `<div class="an-field-row">
-      <span class="an-label">조회 기준</span>
-      <div class="an-control">${seg('pick-mode',Object.entries(pk.modes),a[pk.modeKey])}</div>
-    </div>`;
-    const searchRow = `<div class="an-field-row">
-      <span class="an-label">재료 검색</span>
-      <div class="an-control an-search-control">
-        <div class="an-search-wrap">
-          <div class="search-submit-row">
-            <input id="an-search-input" autocomplete="off" placeholder="${escapeHtml(pk.placeholder[a[pk.modeKey]])}">
-            <button type="button" class="secondary-button" id="an-search-btn">검색</button>
+    const basisOptions = Object.entries(pk.modes).map(([k,v])=>[k, ANALYSIS_ING_MODES_SHORT[k]||v, v]);
+    const basisField = `<div class="an-field"><span class="an-label">기준</span><div class="an-seg">${seg('pick-mode',basisOptions,a[pk.modeKey])}</div></div>`;
+    const detailBtn = `<button type="button" class="ghost-button an-detail-toggle ${a.showDetail ? 'active' : ''}" id="an-detail-toggle" aria-expanded="${Boolean(a.showDetail)}"><span class="an-toggle-icon">${a.showDetail ? '−' : '＋'}</span> 상세조건</button>`;
+
+    contentHtml = `
+      <div class="an-row">
+        ${periodField}
+        ${quickField}
+        ${mealField}
+      </div>
+      <div class="an-row">
+        ${basisField}
+        <div class="an-field an-search-field">
+          <span class="an-label">재료</span>
+          <div class="an-search-wrap">
+            <div class="search-submit-row">
+              <input id="an-search-input" autocomplete="off" placeholder="${escapeHtml(pk.placeholder[a[pk.modeKey]])}">
+              <button type="button" class="secondary-button" id="an-search-btn">검색</button>
+            </div>
+            <div class="an-search-list hidden" id="an-search-list"></div>
           </div>
-          <div class="an-search-list hidden" id="an-search-list"></div>
         </div>
-        <span class="an-hint-text" title="최대 ${ANALYSIS_MAX_MENUS}개까지 비교 가능">ⓘ 최대 ${ANALYSIS_MAX_MENUS}개</span>
-      </div>
-    </div>`;
-
-    const chipsRow = `<div class="an-field-row an-col-span-2 an-chips-row">
-      <span class="an-label">선택 재료</span>
-      <div class="an-control">
         <div class="an-chips" id="an-chips">
-          ${a[pk.itemsKey].map((name,i)=>`<span class="an-chip" style="--chip:${ANALYSIS_COLORS[i%ANALYSIS_COLORS.length]}">${escapeHtml(name)}<button type="button" data-remove-chip="${i}" aria-label="${escapeHtml(name)} 빼기">×</button></span>`).join('')||`<span class="muted">${pk.noun}를 검색한 뒤 목록에서 고르세요. (최대 ${ANALYSIS_MAX_MENUS}개)</span>`}
+          ${a[pk.itemsKey].map((name,i)=>`<span class="an-chip" style="--chip:${ANALYSIS_COLORS[i%ANALYSIS_COLORS.length]}">${escapeHtml(name)}<button type="button" data-remove-chip="${i}" aria-label="${escapeHtml(name)} 빼기">×</button></span>`).join('')||`<span class="muted" style="font-size:10.5px">${pk.noun} 검색 추가 (최대 ${ANALYSIS_MAX_MENUS}개)</span>`}
         </div>
+        ${detailBtn}
+        ${summaryHtml}
+        ${queryBtn}
       </div>
-    </div>`;
-
-    mainGridHtml = `
-      ${periodRow}
-      ${quickRow}
-      ${mealRow}
-      ${basisRow}
-      ${searchRow}
-      <div class="an-field-row"></div>
-      ${chipsRow}
-    `;
-
-    const weatherFilterRow = `<div class="an-field-row">
-      <span class="an-label">날씨 조건</span>
-      <div class="an-control">
-        <select id="an-weather-filter">
-          ${Object.entries(ANALYSIS_WEATHER_FILTERS).map(([k,v])=>`<option value="${k}" ${a.weatherFilter===k?'selected':''}>${v}</option>`).join('')}
-        </select>
-      </div>
-    </div>`;
-    const weatherToggleRow = `<div class="an-field-row">
-      <span class="an-label">표시 옵션</span>
-      <div class="an-control">
-        <label class="an-check"><input type="checkbox" id="an-show-weather" ${a.showWeather?'checked':''}> 날씨 함께 보기</label>
-      </div>
-    </div>`;
-
-    detailHtml = `
       <div class="an-detail-panel ${a.showDetail ? '' : 'hidden'}" id="an-detail-panel">
-        <div class="an-detail-header"><span class="an-detail-title">상세 조건</span></div>
-        <div class="an-detail-grid">
-          ${weatherFilterRow}
-          ${weatherToggleRow}
-        </div>
+        <div class="an-field"><span class="an-label">날씨</span><select id="an-weather-filter">${Object.entries(ANALYSIS_WEATHER_FILTERS).map(([k,v])=>`<option value="${k}" ${a.weatherFilter===k?'selected':''}>${v}</option>`).join('')}</select></div>
+        <label class="an-check"><input type="checkbox" id="an-show-weather" ${a.showWeather?'checked':''}> 날씨 함께 보기</label>
       </div>
     `;
   } else if (a.tab === 'weather') {
-    const weatherRow = `<div class="an-field-row">
-      <span class="an-label">날씨 조건</span>
-      <div class="an-control">
-        <select id="an-weather-condition" disabled style="background:#f1f5f9;cursor:not-allowed">
-          <option value="all">전체</option>
-        </select>
-        <span class="an-hint-text">전체 날씨 기준 집계</span>
+    contentHtml = `
+      <div class="an-row">
+        ${periodField}
+        ${quickField}
+        ${mealField}
+        ${summaryHtml}
+        ${queryBtn}
       </div>
-    </div>`;
-
-    mainGridHtml = `
-      ${periodRow}
-      ${quickRow}
-      ${mealRow}
-      ${weatherRow}
     `;
   }
 
-  const summaryText = getAnalysisConditionSummary(a);
-
-  const actionBarHtml = `
-    <div class="an-action-bar">
-      <div class="an-action-left">
-        ${hasDetail ? `
-          <button type="button" class="ghost-button an-detail-toggle ${a.showDetail ? 'active' : ''}" id="an-detail-toggle" aria-expanded="${Boolean(a.showDetail)}">
-            <span class="an-toggle-icon">${a.showDetail ? '−' : '＋'}</span> 상세 조건
-          </button>
-        ` : ''}
-        <div class="an-summary" title="${escapeHtml(summaryText)}">
-          <span class="an-summary-label">현재 조건:</span>
-          <span class="an-summary-text">${escapeHtml(summaryText)}</span>
-        </div>
-      </div>
-      <button type="button" class="primary-button an-query" id="an-query">조회</button>
-    </div>
-  `;
-
-  root.innerHTML = `
-    <div class="an-filter-grid">
-      ${mainGridHtml}
-    </div>
-    ${detailHtml}
-    ${actionBarHtml}
-  `;
+  root.innerHTML = contentHtml;
 
   const clearQuickSelection = () => {
     a.quickKey = null;
