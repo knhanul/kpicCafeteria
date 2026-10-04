@@ -2644,7 +2644,7 @@ function analysisMonthsBack(end, months) {
 
 function analysisDefaults(){
   const end=new Date();end.setHours(12,0,0,0);
-  return {tab:'daily', start:isoDate(analysisMonthsBack(end,3)), end:isoDate(end), quickKey:'3m', mealType:'LUNCH', showWeather:false, menuMode:'group', menuItems:[], menuItemScopes:{}, menuScope:'main_dish', popScope:'main_dish', popSel:{basis:null, items:[], scopes:{}, version:0, carried:0}, ingMode:'name', ingItems:[], popBasis:'name', popOrder:'top', popLimit:10, popMinDays:ANALYSIS_MIN_DAYS.LUNCH, weatherFilter:'all', result:null, query:null, band:null};
+  return {tab:'daily', start:isoDate(analysisMonthsBack(end,3)), end:isoDate(end), quickKey:'3m', mealType:'LUNCH', showWeather:false, menuMode:'group', menuItems:[], menuItemScopes:{}, menuScope:'main_dish', popScope:'main_dish', popSel:{basis:null, items:[], scopes:{}, version:0, carried:0}, ingMode:'name', ingItems:[], popBasis:'name', popOrder:'top', popLimit:10, popMinDays:ANALYSIS_MIN_DAYS.LUNCH, weatherFilter:'all', showDetail:false, result:null, query:null, band:null};
 }
 
 function analysisState(){ if(!state.analysis) state.analysis=analysisDefaults(); return state.analysis; }
@@ -2661,7 +2661,7 @@ function initAnalysis(){
 }
 
 // 탭마다 조회 조건과 결과를 따로 보관해서, 다른 탭에 다녀와도 다시 조회하지 않고 그대로 보여줍니다.
-const ANALYSIS_TAB_KEYS=['start','end','mealType','showWeather','weatherFilter','result','query','band','popMinDays','quickKey'];
+const ANALYSIS_TAB_KEYS=['start','end','mealType','showWeather','weatherFilter','result','query','band','popMinDays','quickKey','showDetail'];
 function switchAnalysisTab(tab){
   const a=analysisState();
   if(a.tab===tab) return;
@@ -2676,32 +2676,81 @@ function switchAnalysisTab(tab){
   renderAnalysisConditions();renderAnalysisResult();
 }
 
+function getAnalysisConditionSummary(a){
+  const parts = [];
+
+  // 기간
+  let periodText = '';
+  if (a.quickKey) {
+    const qBtn = ANALYSIS_QUICK_BUTTONS.find(b => b.key === a.quickKey);
+    if (qBtn) periodText = qBtn.label;
+    else {
+      const pOpt = ANALYSIS_PERIOD_OPTIONS.find(o => o.key === a.quickKey);
+      if (pOpt) periodText = pOpt.label;
+    }
+  }
+  if (!periodText) {
+    periodText = (a.start && a.end) ? `${a.start} ~ ${a.end}` : '';
+  }
+  if (periodText) parts.push(periodText);
+
+  // 배식
+  parts.push(a.mealType === 'DINNER' ? '석식' : '중식');
+
+  // 탭별
+  if (a.tab === 'popular') {
+    if (ANALYSIS_SCOPES[a.popScope]) parts.push(ANALYSIS_SCOPES[a.popScope]);
+    if (ANALYSIS_MENU_MODES[a.popBasis]) parts.push(ANALYSIS_MENU_MODES[a.popBasis]);
+    parts.push(a.popOrder === 'bottom' ? '하위' : '상위');
+    if (a.popLimit) parts.push(`${a.popLimit}개`);
+    if (a.popMinDays && a.popMinDays > 1) parts.push(`최소 ${a.popMinDays}회`);
+  } else if (a.tab === 'menu') {
+    if (ANALYSIS_SCOPES[a.menuScope]) parts.push(ANALYSIS_SCOPES[a.menuScope]);
+    if (ANALYSIS_MENU_MODES[a.menuMode]) parts.push(ANALYSIS_MENU_MODES[a.menuMode]);
+    if (a.menuItems && a.menuItems.length) {
+      if (a.menuItems.length === 1) parts.push(a.menuItems[0]);
+      else parts.push(`${a.menuItems[0]} 외 ${a.menuItems.length - 1}개`);
+    }
+    if (a.weatherFilter && a.weatherFilter !== 'all') {
+      parts.push(ANALYSIS_WEATHER_FILTERS[a.weatherFilter] || a.weatherFilter);
+    }
+    if (a.showWeather) parts.push('날씨 포함');
+  } else if (a.tab === 'ingredient') {
+    if (ANALYSIS_ING_MODES[a.ingMode]) parts.push(ANALYSIS_ING_MODES[a.ingMode]);
+    if (a.ingItems && a.ingItems.length) {
+      if (a.ingItems.length === 1) parts.push(a.ingItems[0]);
+      else parts.push(`${a.ingItems[0]} 외 ${a.ingItems.length - 1}개`);
+    }
+    if (a.weatherFilter && a.weatherFilter !== 'all') {
+      parts.push(ANALYSIS_WEATHER_FILTERS[a.weatherFilter] || a.weatherFilter);
+    }
+    if (a.showWeather) parts.push('날씨 포함');
+  }
+
+  return parts.filter(Boolean).join(' · ');
+}
+
+function updateAnalysisConditionSummary(root){
+  if (!root) root = $('#analysis-conditions');
+  if (!root) return;
+  const summaryEl = $('.an-summary-text', root);
+  const summaryWrap = $('.an-summary', root);
+  if (summaryEl) {
+    const summary = getAnalysisConditionSummary(analysisState());
+    summaryEl.textContent = summary;
+    if (summaryWrap) summaryWrap.setAttribute('title', summary);
+  }
+}
+
 function renderAnalysisConditions(){
   const a=analysisState();const root=$('#analysis-conditions');if(!root)return;
   const seg=(key,options,current)=>`<div class="an-seg">${options.map(([k,v])=>`<button type="button" data-${key}="${k}" class="${String(current)===String(k)?'active':''}">${v}</button>`).join('')}</div>`;
   const pk=(a.tab==='menu'||a.tab==='ingredient')?analysisPicker(a):null;
-  const selector = pk
-    ? `${a.tab==='menu'?`<div class="an-field"><span>메뉴 범위</span>${seg('menu-scope',Object.entries(ANALYSIS_SCOPES),a.menuScope)}</div>`:''}
-       <div class="an-field"><span>조회 기준</span>${seg('pick-mode',Object.entries(pk.modes),a[pk.modeKey])}</div>
-       <div class="an-field an-search-field"><span>${escapeHtml(pk.modes[a[pk.modeKey]])} (최대 ${ANALYSIS_MAX_MENUS}개 비교)</span><div class="an-search"><div class="search-submit-row"><input id="an-search-input" autocomplete="off" placeholder="${escapeHtml(pk.placeholder[a[pk.modeKey]])}"><button type="button" class="secondary-button" id="an-search-btn">검색</button></div><div class="an-search-list hidden" id="an-search-list"></div></div>
-       <div class="an-chips" id="an-chips">${a[pk.itemsKey].map((name,i)=>`<span class="an-chip" style="--chip:${ANALYSIS_COLORS[i%ANALYSIS_COLORS.length]}">${escapeHtml(name)}${a.tab==='menu'?analysisScopeTag((a.menuItemScopes||{})[name],a.menuScope):''}<button type="button" data-remove-chip="${i}" aria-label="${escapeHtml(name)} 빼기">×</button></span>`).join('')||`<span class="muted">${pk.noun}를 검색한 뒤 목록에서 고르세요.</span>`}</div></div>`
-    : a.tab==='popular'
-    ? `<div class="an-field"><span>메뉴 범위</span>${seg('pop-scope',Object.entries(ANALYSIS_SCOPES),a.popScope)}</div>
-       <div class="an-field"><span>기준</span>${seg('pop-basis',Object.entries(ANALYSIS_MENU_MODES),a.popBasis)}</div>
-       <div class="an-field"><span>순서</span>${seg('pop-order',[['top','상위'],['bottom','하위']],a.popOrder)}</div>
-       <div class="an-field"><span>개수</span>${seg('pop-limit',[[10,'10개'],[20,'20개']],a.popLimit)}</div>
-       <label class="an-field"><span>최소 등장 횟수</span><input type="number" id="an-min-days" min="1" max="365" value="${a.popMinDays}" style="width:90px"></label>
-`
-    : '';
-  const weatherFilter = (a.tab==='menu'||a.tab==='ingredient')
-    ? `<label class="an-field"><span>날씨</span><select id="an-weather-filter">${Object.entries(ANALYSIS_WEATHER_FILTERS).map(([k,v])=>`<option value="${k}" ${a.weatherFilter===k?'selected':''}>${v}</option>`).join('')}</select></label>` : '';
-  const weatherToggle = a.tab!=='weather'&&a.tab!=='popular'
-    ? `<label class="an-check"><input type="checkbox" id="an-show-weather" ${a.showWeather?'checked':''}> 날씨 함께 보기</label>` : '';
 
   const activeOpt = ANALYSIS_PERIOD_OPTIONS.find(opt => opt.key === a.quickKey);
   const dropdownLabel = activeOpt ? `${activeOpt.label} ▾` : '기간 선택 ▾';
   const isDropdownActive = Boolean(activeOpt);
-  const quickHtml = `<div class="an-field"><span>빠른 선택</span><div class="an-quick" id="an-quick-container">
+  const quickHtml = `<div class="an-quick" id="an-quick-container">
     ${ANALYSIS_QUICK_BUTTONS.map(btn => `<button type="button" class="ghost-button an-quick-btn ${a.quickKey === btn.key ? 'active' : ''}" data-quick="${btn.key}" data-months="${btn.months}">${escapeHtml(btn.label)}</button>`).join('')}
     <div class="an-dropdown-wrap">
       <button type="button" class="ghost-button an-quick-dropdown-btn ${isDropdownActive ? 'active' : ''}" id="an-period-dropdown-btn" aria-haspopup="true" aria-expanded="false">
@@ -2711,14 +2760,260 @@ function renderAnalysisConditions(){
         ${ANALYSIS_PERIOD_OPTIONS.map(opt => `<button type="button" class="an-dropdown-item ${a.quickKey === opt.key ? 'selected' : ''}" data-period-opt="${opt.key}" role="menuitem">${escapeHtml(opt.label)}</button>`).join('')}
       </div>
     </div>
-  </div></div>`;
+  </div>`;
 
-  root.innerHTML=`<div class="an-row">
-      <div class="an-field"><span>기간</span><div class="an-period"><input type="date" id="an-start" value="${a.start}"><span>~</span><input type="date" id="an-end" value="${a.end}"></div></div>
-      ${quickHtml}
-      <div class="an-field"><span>배식</span><div class="an-seg">${[['LUNCH','중식'],['DINNER','석식']].map(([k,v])=>`<button type="button" data-meal="${k}" class="${a.mealType===k?'active':''}">${v}</button>`).join('')}</div></div>
+  const periodRow = `<div class="an-field-row">
+    <span class="an-label">기간</span>
+    <div class="an-control">
+      <div class="an-period">
+        <input type="date" id="an-start" value="${a.start}">
+        <span>~</span>
+        <input type="date" id="an-end" value="${a.end}">
+      </div>
     </div>
-    <div class="an-row">${selector}${weatherFilter}${weatherToggle}<button type="button" class="primary-button an-query" id="an-query">조회</button></div>`;
+  </div>`;
+
+  const quickRow = `<div class="an-field-row">
+    <span class="an-label">빠른 선택</span>
+    <div class="an-control">${quickHtml}</div>
+  </div>`;
+
+  const mealRow = `<div class="an-field-row">
+    <span class="an-label">배식</span>
+    <div class="an-control">${seg('meal',[['LUNCH','중식'],['DINNER','석식']],a.mealType)}</div>
+  </div>`;
+
+  let mainGridHtml = '';
+  let detailHtml = '';
+  let hasDetail = false;
+
+  if (a.tab === 'daily') {
+    mainGridHtml = `
+      ${periodRow}
+      ${quickRow}
+      ${mealRow}
+      <div class="an-field-row"></div>
+    `;
+  } else if (a.tab === 'popular') {
+    hasDetail = true;
+    const scopeRow = `<div class="an-field-row">
+      <span class="an-label">메뉴 범위</span>
+      <div class="an-control">${seg('pop-scope',Object.entries(ANALYSIS_SCOPES),a.popScope)}</div>
+    </div>`;
+    const basisRow = `<div class="an-field-row">
+      <span class="an-label">기준</span>
+      <div class="an-control">${seg('pop-basis',Object.entries(ANALYSIS_MENU_MODES),a.popBasis)}</div>
+    </div>`;
+    const orderRow = `<div class="an-field-row">
+      <span class="an-label">순서</span>
+      <div class="an-control">${seg('pop-order',[['top','상위'],['bottom','하위']],a.popOrder)}</div>
+    </div>`;
+
+    mainGridHtml = `
+      ${periodRow}
+      ${quickRow}
+      ${mealRow}
+      ${scopeRow}
+      ${basisRow}
+      ${orderRow}
+    `;
+
+    const limitRow = `<div class="an-field-row">
+      <span class="an-label">표시 개수</span>
+      <div class="an-control">${seg('pop-limit',[[10,'10개'],[20,'20개'],[50,'50개']],a.popLimit)}</div>
+    </div>`;
+    const minDaysRow = `<div class="an-field-row">
+      <span class="an-label">최소 등장</span>
+      <div class="an-control">
+        <input type="number" id="an-min-days" min="1" max="365" value="${a.popMinDays}" class="an-input-num">
+        <span class="an-unit">회 이상</span>
+      </div>
+    </div>`;
+
+    detailHtml = `
+      <div class="an-detail-panel ${a.showDetail ? '' : 'hidden'}" id="an-detail-panel">
+        <div class="an-detail-header"><span class="an-detail-title">상세 조건</span></div>
+        <div class="an-detail-grid">
+          ${limitRow}
+          ${minDaysRow}
+        </div>
+      </div>
+    `;
+  } else if (a.tab === 'menu') {
+    hasDetail = true;
+    const scopeRow = `<div class="an-field-row">
+      <span class="an-label">메뉴 범위</span>
+      <div class="an-control">${seg('menu-scope',Object.entries(ANALYSIS_SCOPES),a.menuScope)}</div>
+    </div>`;
+    const basisRow = `<div class="an-field-row">
+      <span class="an-label">조회 기준</span>
+      <div class="an-control">${seg('pick-mode',Object.entries(pk.modes),a[pk.modeKey])}</div>
+    </div>`;
+    const searchRow = `<div class="an-field-row">
+      <span class="an-label">메뉴 검색</span>
+      <div class="an-control an-search-control">
+        <div class="an-search-wrap">
+          <div class="search-submit-row">
+            <input id="an-search-input" autocomplete="off" placeholder="${escapeHtml(pk.placeholder[a[pk.modeKey]])}">
+            <button type="button" class="secondary-button" id="an-search-btn">검색</button>
+          </div>
+          <div class="an-search-list hidden" id="an-search-list"></div>
+        </div>
+        <span class="an-hint-text" title="최대 ${ANALYSIS_MAX_MENUS}개까지 비교 가능">ⓘ 최대 ${ANALYSIS_MAX_MENUS}개</span>
+      </div>
+    </div>`;
+
+    const chipsRow = `<div class="an-field-row an-col-span-2 an-chips-row">
+      <span class="an-label">선택 메뉴</span>
+      <div class="an-control">
+        <div class="an-chips" id="an-chips">
+          ${a[pk.itemsKey].map((name,i)=>`<span class="an-chip" style="--chip:${ANALYSIS_COLORS[i%ANALYSIS_COLORS.length]}">${escapeHtml(name)}${analysisScopeTag((a.menuItemScopes||{})[name],a.menuScope)}<button type="button" data-remove-chip="${i}" aria-label="${escapeHtml(name)} 빼기">×</button></span>`).join('')||`<span class="muted">${pk.noun}를 검색한 뒤 목록에서 고르세요. (최대 ${ANALYSIS_MAX_MENUS}개)</span>`}
+        </div>
+      </div>
+    </div>`;
+
+    mainGridHtml = `
+      ${periodRow}
+      ${quickRow}
+      ${mealRow}
+      ${scopeRow}
+      ${basisRow}
+      ${searchRow}
+      ${chipsRow}
+    `;
+
+    const weatherFilterRow = `<div class="an-field-row">
+      <span class="an-label">날씨 조건</span>
+      <div class="an-control">
+        <select id="an-weather-filter">
+          ${Object.entries(ANALYSIS_WEATHER_FILTERS).map(([k,v])=>`<option value="${k}" ${a.weatherFilter===k?'selected':''}>${v}</option>`).join('')}
+        </select>
+      </div>
+    </div>`;
+    const weatherToggleRow = `<div class="an-field-row">
+      <span class="an-label">표시 옵션</span>
+      <div class="an-control">
+        <label class="an-check"><input type="checkbox" id="an-show-weather" ${a.showWeather?'checked':''}> 날씨 함께 보기</label>
+      </div>
+    </div>`;
+
+    detailHtml = `
+      <div class="an-detail-panel ${a.showDetail ? '' : 'hidden'}" id="an-detail-panel">
+        <div class="an-detail-header"><span class="an-detail-title">상세 조건</span></div>
+        <div class="an-detail-grid">
+          ${weatherFilterRow}
+          ${weatherToggleRow}
+        </div>
+      </div>
+    `;
+  } else if (a.tab === 'ingredient') {
+    hasDetail = true;
+    const basisRow = `<div class="an-field-row">
+      <span class="an-label">조회 기준</span>
+      <div class="an-control">${seg('pick-mode',Object.entries(pk.modes),a[pk.modeKey])}</div>
+    </div>`;
+    const searchRow = `<div class="an-field-row">
+      <span class="an-label">재료 검색</span>
+      <div class="an-control an-search-control">
+        <div class="an-search-wrap">
+          <div class="search-submit-row">
+            <input id="an-search-input" autocomplete="off" placeholder="${escapeHtml(pk.placeholder[a[pk.modeKey]])}">
+            <button type="button" class="secondary-button" id="an-search-btn">검색</button>
+          </div>
+          <div class="an-search-list hidden" id="an-search-list"></div>
+        </div>
+        <span class="an-hint-text" title="최대 ${ANALYSIS_MAX_MENUS}개까지 비교 가능">ⓘ 최대 ${ANALYSIS_MAX_MENUS}개</span>
+      </div>
+    </div>`;
+
+    const chipsRow = `<div class="an-field-row an-col-span-2 an-chips-row">
+      <span class="an-label">선택 재료</span>
+      <div class="an-control">
+        <div class="an-chips" id="an-chips">
+          ${a[pk.itemsKey].map((name,i)=>`<span class="an-chip" style="--chip:${ANALYSIS_COLORS[i%ANALYSIS_COLORS.length]}">${escapeHtml(name)}<button type="button" data-remove-chip="${i}" aria-label="${escapeHtml(name)} 빼기">×</button></span>`).join('')||`<span class="muted">${pk.noun}를 검색한 뒤 목록에서 고르세요. (최대 ${ANALYSIS_MAX_MENUS}개)</span>`}
+        </div>
+      </div>
+    </div>`;
+
+    mainGridHtml = `
+      ${periodRow}
+      ${quickRow}
+      ${mealRow}
+      ${basisRow}
+      ${searchRow}
+      <div class="an-field-row"></div>
+      ${chipsRow}
+    `;
+
+    const weatherFilterRow = `<div class="an-field-row">
+      <span class="an-label">날씨 조건</span>
+      <div class="an-control">
+        <select id="an-weather-filter">
+          ${Object.entries(ANALYSIS_WEATHER_FILTERS).map(([k,v])=>`<option value="${k}" ${a.weatherFilter===k?'selected':''}>${v}</option>`).join('')}
+        </select>
+      </div>
+    </div>`;
+    const weatherToggleRow = `<div class="an-field-row">
+      <span class="an-label">표시 옵션</span>
+      <div class="an-control">
+        <label class="an-check"><input type="checkbox" id="an-show-weather" ${a.showWeather?'checked':''}> 날씨 함께 보기</label>
+      </div>
+    </div>`;
+
+    detailHtml = `
+      <div class="an-detail-panel ${a.showDetail ? '' : 'hidden'}" id="an-detail-panel">
+        <div class="an-detail-header"><span class="an-detail-title">상세 조건</span></div>
+        <div class="an-detail-grid">
+          ${weatherFilterRow}
+          ${weatherToggleRow}
+        </div>
+      </div>
+    `;
+  } else if (a.tab === 'weather') {
+    const weatherRow = `<div class="an-field-row">
+      <span class="an-label">날씨 조건</span>
+      <div class="an-control">
+        <select id="an-weather-condition" disabled style="background:#f1f5f9;cursor:not-allowed">
+          <option value="all">전체</option>
+        </select>
+        <span class="an-hint-text">전체 날씨 기준 집계</span>
+      </div>
+    </div>`;
+
+    mainGridHtml = `
+      ${periodRow}
+      ${quickRow}
+      ${mealRow}
+      ${weatherRow}
+    `;
+  }
+
+  const summaryText = getAnalysisConditionSummary(a);
+
+  const actionBarHtml = `
+    <div class="an-action-bar">
+      <div class="an-action-left">
+        ${hasDetail ? `
+          <button type="button" class="ghost-button an-detail-toggle ${a.showDetail ? 'active' : ''}" id="an-detail-toggle" aria-expanded="${Boolean(a.showDetail)}">
+            <span class="an-toggle-icon">${a.showDetail ? '−' : '＋'}</span> 상세 조건
+          </button>
+        ` : ''}
+        <div class="an-summary" title="${escapeHtml(summaryText)}">
+          <span class="an-summary-label">현재 조건:</span>
+          <span class="an-summary-text">${escapeHtml(summaryText)}</span>
+        </div>
+      </div>
+      <button type="button" class="primary-button an-query" id="an-query">조회</button>
+    </div>
+  `;
+
+  root.innerHTML = `
+    <div class="an-filter-grid">
+      ${mainGridHtml}
+    </div>
+    ${detailHtml}
+    ${actionBarHtml}
+  `;
 
   const clearQuickSelection = () => {
     a.quickKey = null;
@@ -2730,6 +3025,7 @@ function renderAnalysisConditions(){
       if (span) span.textContent = '기간 선택 ▾';
     }
     $$('#an-period-dropdown-menu .an-dropdown-item', root).forEach(it => it.classList.remove('selected'));
+    updateAnalysisConditionSummary(root);
   };
 
   $('#an-start').addEventListener('change',e=>{a.start=e.target.value;clearQuickSelection();});
@@ -2757,6 +3053,7 @@ function renderAnalysisConditions(){
       }
       $('#an-period-dropdown-menu')?.classList.add('hidden');
       $$('#an-period-dropdown-menu .an-dropdown-item', root).forEach(it => it.classList.remove('selected'));
+      updateAnalysisConditionSummary(root);
     });
   });
 
@@ -2792,6 +3089,7 @@ function renderAnalysisConditions(){
         const span = dropBtn.querySelector('span');
         if (span) span.textContent = `${opt.label} ▾`;
         $$('.an-dropdown-item', dropMenu).forEach(it => it.classList.toggle('selected', it === item));
+        updateAnalysisConditionSummary(root);
       });
     });
   }
@@ -2811,16 +3109,45 @@ function renderAnalysisConditions(){
       }
     });
   }
-  $$('[data-meal]',root).forEach(b=>b.addEventListener('click',()=>{a.mealType=b.dataset.meal;a.popMinDays=analysisMinDefault(a.mealType,a.popScope);$$('[data-meal]',root).forEach(x=>x.classList.toggle('active',x===b));const md=$('#an-min-days');if(md)md.value=a.popMinDays;}));
-  const segBind=(key,apply)=>$$(`[data-${key}]`,root).forEach(b=>b.addEventListener('click',()=>{apply(b.getAttribute(`data-${key}`));$$(`[data-${key}]`,root).forEach(x=>x.classList.toggle('active',x===b));}));
+  $$('[data-meal]',root).forEach(b=>b.addEventListener('click',()=>{
+    a.mealType=b.dataset.meal;
+    a.popMinDays=analysisMinDefault(a.mealType,a.popScope);
+    $$('[data-meal]',root).forEach(x=>x.classList.toggle('active',x===b));
+    const md=$('#an-min-days');if(md)md.value=a.popMinDays;
+    updateAnalysisConditionSummary(root);
+  }));
+  const segBind=(key,apply)=>$$(`[data-${key}]`,root).forEach(b=>b.addEventListener('click',()=>{
+    apply(b.getAttribute(`data-${key}`));
+    $$(`[data-${key}]`,root).forEach(x=>x.classList.toggle('active',x===b));
+    updateAnalysisConditionSummary(root);
+  }));
   segBind('pop-basis',v=>{a.popBasis=v;});segBind('pop-order',v=>{a.popOrder=v;});segBind('pop-limit',v=>{a.popLimit=Number(v);});
   if(pk) segBind('pick-mode',v=>{if(a[pk.modeKey]!==v){a[pk.modeKey]=v;a[pk.itemsKey]=[];if(a.tab==='menu')a.menuItemScopes={};renderAnalysisConditions();}});
-  $('#an-min-days')?.addEventListener('change',e=>{a.popMinDays=Number(e.target.value)||analysisMinDefault(a.mealType,a.popScope);});
-  segBind('pop-scope',v=>{a.popScope=v;a.popMinDays=analysisMinDefault(a.mealType,v);const md=$('#an-min-days');if(md)md.value=a.popMinDays;});
+  $('#an-min-days')?.addEventListener('change',e=>{
+    a.popMinDays=Number(e.target.value)||analysisMinDefault(a.mealType,a.popScope);
+    updateAnalysisConditionSummary(root);
+  });
+  segBind('pop-scope',v=>{
+    a.popScope=v;
+    a.popMinDays=analysisMinDefault(a.mealType,v);
+    const md=$('#an-min-days');if(md)md.value=a.popMinDays;
+  });
   segBind('menu-scope',v=>{a.menuScope=v;a.menuItemScopes=Object.fromEntries(a.menuItems.map(n=>[n,v]));$('#an-search-list')?.classList.add('hidden');renderAnalysisConditions();});
   $$('[data-remove-chip]',root).forEach(b=>b.addEventListener('click',()=>{const [gone]=a[pk.itemsKey].splice(Number(b.dataset.removeChip),1);if(a.tab==='menu'&&a.menuItemScopes)delete a.menuItemScopes[gone];renderAnalysisConditions();}));
-  $('#an-weather-filter')?.addEventListener('change',e=>{a.weatherFilter=e.target.value;});
-  $('#an-show-weather')?.addEventListener('change',e=>{a.showWeather=e.target.checked;if(a.result)renderAnalysisResult();});
+  $('#an-weather-filter')?.addEventListener('change',e=>{a.weatherFilter=e.target.value;updateAnalysisConditionSummary(root);});
+  $('#an-show-weather')?.addEventListener('change',e=>{a.showWeather=e.target.checked;updateAnalysisConditionSummary(root);if(a.result)renderAnalysisResult();});
+  $('#an-detail-toggle')?.addEventListener('click',()=>{
+    a.showDetail = !a.showDetail;
+    const panel = $('#an-detail-panel');
+    const toggleBtn = $('#an-detail-toggle');
+    if (panel) panel.classList.toggle('hidden', !a.showDetail);
+    if (toggleBtn) {
+      toggleBtn.classList.toggle('active', a.showDetail);
+      toggleBtn.setAttribute('aria-expanded', String(a.showDetail));
+      const icon = toggleBtn.querySelector('.an-toggle-icon');
+      if (icon) icon.textContent = a.showDetail ? '−' : '＋';
+    }
+  });
   $('#an-query').addEventListener('click',runAnalysisQuery);
   if(a.tab==='menu'||a.tab==='ingredient') bindAnalysisSearch();
 }
