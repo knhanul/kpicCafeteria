@@ -17,6 +17,7 @@
       <button data-view="workspace" class="active">주간 급식 운영</button>
       <button data-view="master">메뉴·재료 기준정보</button>
       <button data-view="orders">발주 관리</button>
+      <button data-view="analysis">식수 분석</button>
     </nav>
     <div class="side-nav-divider"></div>
     <nav class="side-nav">
@@ -123,6 +124,20 @@
         <div class="section-heading"><div><h2>기본 데이터 관리</h2><p>HWPX 문서 양식과 배식 기본값을 관리합니다.</p></div></div>
         <div class="master-tabs md-tabs" id="master-data-tabs"><button data-md-tab="hwpx-templates" class="active">HWPX 양식 관리</button><button data-md-tab="meal-service-defaults">배식 기본값 관리</button><button data-md-tab="setup-import">기초 데이터 구축</button><button data-md-tab="actual-meal-upload">식수 정보 업로드</button><button data-md-tab="weather">날씨정보 관리</button></div>
         <div id="master-data-content"></div>
+      </div>
+    </main>
+
+    <main id="view-analysis" class="view">
+      <div class="page-card">
+        <div class="section-heading"><div><h2>식수 분석</h2><p>실제 식수를 <strong>평소 식수</strong>(지난 1년 같은 요일·같은 배식의 평균)와 비교해 몇 명 많고 적었는지 보여줍니다. 조건을 정하고 조회를 누르세요.</p></div></div>
+        <div class="analysis-tabs" id="analysis-tabs" role="tablist">
+          <button type="button" data-analysis-tab="daily" class="active">날짜별 식수</button>
+          <button type="button" data-analysis-tab="menu">메뉴별 식수</button>
+          <button type="button" data-analysis-tab="ingredient">재료별 식수</button>
+          <button type="button" data-analysis-tab="weather">날씨별 식수</button>
+        </div>
+        <div id="analysis-conditions" class="analysis-conditions"></div>
+        <div id="analysis-result" class="analysis-result"></div>
       </div>
     </main>
 

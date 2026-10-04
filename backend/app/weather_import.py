@@ -24,6 +24,8 @@ MAX_FILE_SIZE = 20 * 1024 * 1024
 MAX_UNCOMPRESSED_SIZE = 100 * 1024 * 1024
 MAX_ROWS = 100_000
 PREVIEW_TTL = timedelta(minutes=30)
+# Hourly observations that make up each meal's serving-time weather (weather_meal_period).
+MEAL_WEATHER_HOURS: dict[str, tuple[int, ...]] = {"LUNCH": (11, 12), "DINNER": (17, 18)}
 DAILY_MIN_HOURLY_SAMPLES = 20  # hourly -> daily aggregate only for (nearly) complete days
 HOURLY_COMPARE_FIELDS = ("station_name", "temperature", "precipitation", "humidity", "wind_speed", "source_kind")
 NULL_MARKERS = {"", "-", "--", "n/a", "na", "null"}
@@ -456,7 +458,7 @@ def _refresh_meal_period_weather(db: Session, rows: list[dict[str, Any]], batch_
         key = (row.observation_datetime.date(), row.station_id)
         if key not in affected:
             continue
-        meal_type = "LUNCH" if row.observation_datetime.hour in {11, 12} else "DINNER" if row.observation_datetime.hour in {17, 18} else None
+        meal_type = next((code for code, hours in MEAL_WEATHER_HOURS.items() if row.observation_datetime.hour in hours), None)
         if meal_type:
             grouped.setdefault((*key, meal_type), []).append(row)
     values = []

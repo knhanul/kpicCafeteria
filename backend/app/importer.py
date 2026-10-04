@@ -4,7 +4,7 @@ from collections import defaultdict
 from contextlib import nullcontext
 from datetime import datetime, time, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -141,9 +141,25 @@ class MigrationImporter:
         summary["ready"] = not errors
         return summary, errors
 
-    def apply(self, db: Session, mode: str = "replace", user_id: int | None = None) -> dict[str, int]:
+    def apply(
+        self,
+        db: Session,
+        mode: str = "replace",
+        user_id: int | None = None,
+        progress: Callable[[int, str], None] | None = None,
+    ) -> dict[str, int]:
+        """Apply the workbook. ``progress(percent, message)`` is called at each stage (optional, for the UI)."""
         if mode not in {"replace", "merge"}:
             raise ValueError("mode must be replace or merge")
+
+        def report(percent: int, message: str) -> None:
+            if progress is not None:
+                try:
+                    progress(percent, message)
+                except Exception:  # progress reporting must never break the import
+                    pass
+
+        report(2, "파일을 확인하고 있습니다.")
         counters = defaultdict(int)
         # In replace mode every business table is emptied first, so per-row "does it already exist?"
         # queries can only ever match rows created earlier in this same run. Those are tracked in local
@@ -170,6 +186,7 @@ class MigrationImporter:
                 if recipe_name_errors:
                     raise ValueError("\n".join(error["message"] for error in recipe_name_errors))
 
+            report(8, "기존 데이터를 정리하고 있습니다.")
             preserved_records: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
             if mode == "replace":
                 # Actual meal counts and preservation records are operational results that are not part of the
@@ -180,6 +197,7 @@ class MigrationImporter:
             menu_by_code: dict[str, Menu] = {}
             ingredient_by_code: dict[str, Ingredient] = {}
 
+            report(15, "배식 설정을 반영하고 있습니다.")
             for row in reader.sheet_rows("01_배식설정"):
                 name = clean_text(row.get("배식유형"))
                 if not name:
@@ -200,6 +218,7 @@ class MigrationImporter:
             # replace-mode caches mirroring the source_code / name lookups below
             menus_by_source: dict[str, Menu] = {}
             menus_by_name: dict[str, Menu] = {}
+            report(20, "메뉴 기준정보를 반영하고 있습니다.")
             for row in reader.sheet_rows("02_메뉴기준정보"):
                 code = clean_text(row.get("메뉴ID"))
                 name = clean_text(row.get("메뉴명"))
@@ -237,6 +256,7 @@ class MigrationImporter:
 
             ingredients_by_source: dict[str, Ingredient] = {}
             ingredients_by_name: dict[str, Ingredient] = {}
+            report(30, "재료 기준정보를 반영하고 있습니다.")
             for row in reader.sheet_rows("03_재료기준정보"):
                 code = clean_text(row.get("재료ID"))
                 name = clean_text(row.get("표준재료명"))
@@ -289,6 +309,7 @@ class MigrationImporter:
                 counters["aliases"] += 1
 
             recipe_source_rows: list[dict[str, Any]] = []
+            report(40, "메뉴별 레시피를 반영하고 있습니다.")
             for row in reader.sheet_rows("05_메뉴별재료_기준"):
                 menu_code = clean_text(row.get("메뉴ID"))
                 ingredient_code = clean_text(row.get("재료ID"))
@@ -394,6 +415,7 @@ class MigrationImporter:
             explicit_recipe_links: list[tuple[MealServiceMenu, Recipe]] = []
             # replace mode: (service object identity, sort_order, menu_name) -> MealServiceMenu created this run
             service_menu_by_natural_key: dict[tuple[int, int, str], MealServiceMenu] = {}
+            report(55, "과거 식단을 반영하고 있습니다.")
             for row in reader.sheet_rows("06_식단이력_이관"):
                 service_date = excel_serial_to_date(row.get("일자"))
                 meal_name = clean_text(row.get("배식유형"))
@@ -499,6 +521,7 @@ class MigrationImporter:
                 counters,
             )
 
+            report(70, "식단 재료를 반영하고 있습니다.")
             for row in reader.sheet_rows("07_식단재료_이관"):
                 service_date = excel_serial_to_date(row.get("일자"))
                 meal_name = clean_text(row.get("배식유형"))
@@ -563,6 +586,7 @@ class MigrationImporter:
                 service_menu.recipe_version_snapshot = recipe.version
                 counters["recipe_links_by_name"] += 1
 
+            report(90, "실제식수와 보존식 기록을 다시 연결하고 있습니다.")
             if mode == "replace":
                 self._restore_service_records(db, preserved_records, service_map, counters)
                 # origin/main contract name for the same count (kept alongside actuals_restored).
@@ -577,7 +601,9 @@ class MigrationImporter:
                     detail={"mode": mode, **dict(counters)},
                 )
             )
+            report(97, "저장을 마무리하고 있습니다.")
             db.commit()
+        report(100, "완료했습니다.")
         return dict(counters)
 
     @staticmethod

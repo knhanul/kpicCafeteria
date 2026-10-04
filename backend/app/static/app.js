@@ -2,7 +2,7 @@ const state = {
   view: 'workspace', mode: 'meal', focus: false, weeks: 2,
   weekStart: mondayOf(new Date()), workspace: null,
   selectedServiceId: null, selectedService: null, selectedMenuItemId: null,
-  importToken: null, actualMealUpload: null, weatherUpload: null, weatherOffset: 0, weatherMealOffset: 0, weatherHistoryOffset: 0, masterTab: 'menus', masterSelectionId: null, masterMenuDetailTab: 'recipe',
+  analysis: null, importToken: null, actualMealUpload: null, weatherUpload: null, weatherOffset: 0, weatherMealOffset: 0, weatherHistoryOffset: 0, masterTab: 'menus', masterSelectionId: null, masterMenuDetailTab: 'recipe',
   masterDataTab: 'hwpx-templates', masterDataSelectionId: null, mealDefaults: null,
   masterIngredientDetailTab: 'info', masterIngredientUsage: {ingredientId:null,items:[],offset:0,total:0,hasMore:false,loading:false,error:''}, masterIngredientUsageQuery:'',
   masterMenuHistory: {menuId:null,items:[],offset:0,total:0,hasMore:false,loading:false,error:'',snapshotCache:{},expandedSnapshotId:null}, masterHistoryFilter:'',
@@ -202,6 +202,7 @@ async function downloadDocumentPreviewHwpx() {
   if (!preview) return;
   const config = DOCUMENT_PREVIEW_CONFIG[preview.type];
   if (!config) return;
+  const lock = lockUI('HWPX 파일을 만들고 있습니다.');
   try {
     const response = await requestBinary(config.hwpxUrl, json('POST', { start_date: preview.startDate, end_date: preview.endDate }));
     const blob = await response.blob();
@@ -210,6 +211,8 @@ async function downloadDocumentPreviewHwpx() {
     toast('HWPX 파일을 다운로드했습니다.');
   } catch (error) {
     toast(error.message, true);
+  } finally {
+    lock.release();
   }
 }
 
@@ -333,12 +336,13 @@ function bindGlobal() {
 function switchView(view) {
   state.view=view; $$('.view').forEach(x=>x.classList.toggle('active',x.id===`view-${view}`));
   $$('.side-nav button').forEach(x=>x.classList.toggle('active',x.dataset.view===view));
-  const titles={workspace:'',orders:'발주 관리',master:'메뉴·재료 기준정보','master-data':'기본 데이터 관리','users':'사용자 관리','backup':'시스템 데이터 백업','archive':'Excel 데이터 아카이브'};
+  const titles={workspace:'',orders:'발주 관리',master:'메뉴·재료 기준정보',analysis:'식수 분석','master-data':'기본 데이터 관리','users':'사용자 관리','backup':'시스템 데이터 백업','archive':'Excel 데이터 아카이브'};
   $('#page-title').textContent=titles[view]||'';
   $('#top-header').classList.toggle('hidden', view==='workspace');
   if(view==='orders') initOrders();
   if(view==='master') loadMaster();
   if(view==='master-data') loadMasterData();
+  if(view==='analysis') initAnalysis();
   if(view==='users') initUsers();
   if(view==='backup') initBackup();
   if(view==='archive') initArchive();
@@ -1303,8 +1307,8 @@ function showMigrationPreviewResult(result){
   $('#migration-result').innerHTML=`<div class="result-card"><h3>${ok?'업로드 가능':'검증 필요'}</h3><p>배식 ${s.meal_types||0}, 메뉴 ${s.menus||0}, 재료 ${s.ingredients||0}, 레시피 ${s.recipe_rows||0}, 식단이력 ${s.meal_history_rows||0}</p>${ok?'':`<pre>${escapeHtml(JSON.stringify(result.errors,null,2))}</pre>`}<div class="inline-form"><select id="import-mode" ${ok?'':'disabled'}><option value="replace">기존 업무데이터 교체</option><option value="merge">기존 데이터에 병합</option></select><button class="primary-button" id="apply-migration" ${ok?'':'disabled'}>기초데이터 생성</button></div></div>`;
   if(ok)$('#apply-migration').addEventListener('click',applyMigration);
 }
-async function previewMigration(){const file=$('#migration-file').files[0];if(!file){toast('XLSX 파일을 선택해 주세요.',true);return;}const data=new FormData();data.append('file',file);try{$('#migration-result').innerHTML='<div class="result-card">검증 중입니다.</div>';const result=await api('/api/setup/import/preview',{method:'POST',body:data});showMigrationPreviewResult(result);}catch(e){toast(e.message,true);}}
-async function waitForMigrationImport(token){
+async function previewMigration(){const file=$('#migration-file').files[0];if(!file){toast('XLSX 파일을 선택해 주세요.',true);return;}const data=new FormData();data.append('file',file);const lock=lockUI('기초데이터 파일을 올리고 검증하고 있습니다.');try{$('#migration-result').innerHTML='<div class="result-card">검증 중입니다.</div>';const result=await api('/api/setup/import/preview',{method:'POST',body:data});showMigrationPreviewResult(result);}catch(e){$('#migration-result').innerHTML='';toast(e.message,true);}finally{lock.release();}}
+async function waitForMigrationImport(token, lock=null){
   let connectionErrors=0;
   while(true){
     await new Promise(resolve=>setTimeout(resolve,2000));
@@ -1312,10 +1316,12 @@ async function waitForMigrationImport(token){
     try{job=await api(`/api/setup/import/jobs/${encodeURIComponent(token)}`);connectionErrors=0;}
     catch(e){
       connectionErrors++;
+      if(lock) lock.update(`서버 응답을 기다리고 있습니다 (${connectionErrors}회). 작업은 서버에서 계속됩니다.`, null);
       $('#migration-result').innerHTML=`<div class="result-card"><h3>기초데이터 생성 중</h3><p>서버 작업은 계속 진행 중이며 진행 상태를 다시 확인하고 있습니다 (${connectionErrors}회).</p></div>`;
       continue;
     }
     if(job.status==='PROCESSING'){
+      if(lock) lock.update(job.progress?.message?`기초데이터 생성 중 · ${job.progress.message}`:'기초데이터를 생성하고 있습니다.', typeof job.progress?.percent==='number'?job.progress.percent:null);
       $('#migration-result').innerHTML='<div class="result-card"><h3>기초데이터 생성 중</h3><p>대량 데이터를 반영하고 있습니다. 이 화면을 닫지 않아도 서버에서 작업은 계속됩니다.</p></div>';
       continue;
     }
@@ -1327,18 +1333,20 @@ async function waitForMigrationImport(token){
 async function applyMigration(){
   if(!confirm('선택한 방식으로 기초데이터와 과거 식단을 생성할까요?'))return;
   const btn=$('#apply-migration');
+  const lock=lockUI('기초데이터 생성을 시작하고 있습니다.', 0);
   try{
     btn.disabled=true;btn.textContent='생성 중…';
     await api('/api/setup/import/apply',json('POST',{token:state.importToken,mode:$('#import-mode').value}));
     $('#migration-result').innerHTML='<div class="result-card"><h3>기초데이터 생성 중</h3><p>서버에서 반영 작업을 시작했습니다.</p></div>';
-    const result=await waitForMigrationImport(state.importToken);
+    const result=await waitForMigrationImport(state.importToken, lock);
+    lock.update('화면을 새로 고치고 있습니다.', 100);
     $('#migration-result').innerHTML=`<div class="result-card"><h3>생성 완료</h3><pre>${escapeHtml(JSON.stringify(result,null,2))}</pre></div>`;
     state.weekStart=mondayOf(new Date());await loadWorkspace(false);toast('기초데이터 생성을 완료했습니다.');
   }catch(e){
     btn.disabled=false;btn.textContent='기초데이터 생성';
     $('#migration-result').innerHTML=`<div class="result-card"><h3 style="color:#9e2f28">생성 실패</h3><pre>${escapeHtml(e.message)}</pre></div>`;
     toast(e.message,true);
-  }
+  }finally{lock.release();}
 }
 
 async function loadMasterData(){
@@ -1384,8 +1392,8 @@ function renderWeatherPreview(response){
   <div class="save-bar"><span class="save-state">분석만으로는 자료가 저장되지 않습니다.</span><button class="primary-button" id="weather-apply" ${s.valid_rows?'':'disabled'}>DB 반영</button></div></div>`;
   $('#weather-apply')?.addEventListener('click',applyWeatherFile);
 }
-async function previewWeatherFile(){const file=$('#weather-file').files[0];if(!file){toast('날씨자료 파일(weather.nuni.co.kr CSV 또는 기상청 자료)을 선택해 주세요.',true);return;}const fd=new FormData();fd.append('file',file);$('#weather-preview-result').innerHTML='<div class="result-card">파일을 분석하고 있습니다.</div>';try{renderWeatherPreview(await api('/api/weather/preview',{method:'POST',body:fd}));}catch(e){$('#weather-preview-result').innerHTML=`<div class="result-card"><h3 class="form-error">분석 실패</h3><p>${escapeHtml(e.message)}</p></div>`;toast(e.message,true);}}
-async function applyWeatherFile(){const upload=state.weatherUpload;if(!upload?.token)return;if(!confirm(`정상 날씨자료 ${numberText(upload.summary.valid_rows)}건을 반영하시겠습니까? 오류 ${numberText(upload.summary.error_rows)}건은 제외됩니다.`))return;const button=$('#weather-apply');button.disabled=true;button.textContent='반영 중…';try{const response=await api('/api/weather/apply',json('POST',{token:upload.token}));const r=response.result;$('#weather-preview-result').innerHTML=`<div class="result-card"><h3 style="color:var(--ok)">반영 완료</h3><p>반영 일시 ${new Date(response.completed_at).toLocaleString('ko-KR')}</p><div class="stats-mini"><div class="stat-mini-card"><strong>전체</strong><span>${numberText(r.total_rows)}건</span></div><div class="stat-mini-card"><strong>신규 등록</strong><span>${numberText(r.inserted_rows)}건</span></div><div class="stat-mini-card"><strong>기존자료 갱신</strong><span>${numberText(r.updated_rows)}건</span></div><div class="stat-mini-card"><strong>변경 없음</strong><span>${numberText(r.skipped_rows)}건</span></div><div class="stat-mini-card"><strong>오류 제외</strong><span>${numberText(r.error_rows)}건</span></div>${r.duplicate_rows?`<div class="stat-mini-card"><strong>같은 값 중복 제외</strong><span>${numberText(r.duplicate_rows)}건</span></div>`:''}${r.daily_aggregated_days!==undefined?`<div class="stat-mini-card"><strong>일별 자료 생성·갱신</strong><span>${numberText(r.daily_aggregated_days)}일</span></div>`:''}</div></div>`;state.weatherUpload=null;await Promise.all([loadWeatherRecords(),loadMealPeriodWeatherRecords(),loadWeatherUploads()]);toast('날씨자료 반영을 완료했습니다.');}catch(e){button.disabled=false;button.textContent='DB 반영';toast(e.message,true);}}
+async function previewWeatherFile(){const file=$('#weather-file').files[0];if(!file){toast('날씨자료 파일(weather.nuni.co.kr CSV 또는 기상청 자료)을 선택해 주세요.',true);return;}const fd=new FormData();fd.append('file',file);$('#weather-preview-result').innerHTML='<div class="result-card">파일을 분석하고 있습니다.</div>';const lock=lockUI('날씨자료 파일을 올리고 분석하고 있습니다.');try{renderWeatherPreview(await api('/api/weather/preview',{method:'POST',body:fd}));}catch(e){$('#weather-preview-result').innerHTML=`<div class="result-card"><h3 class="form-error">분석 실패</h3><p>${escapeHtml(e.message)}</p></div>`;toast(e.message,true);}finally{lock.release();}}
+async function applyWeatherFile(){const upload=state.weatherUpload;if(!upload?.token)return;if(!confirm(`정상 날씨자료 ${numberText(upload.summary.valid_rows)}건을 반영하시겠습니까? 오류 ${numberText(upload.summary.error_rows)}건은 제외됩니다.`))return;const button=$('#weather-apply');button.disabled=true;button.textContent='반영 중…';const lock=lockUI('날씨자료를 저장하고 있습니다.');try{const response=await api('/api/weather/apply',json('POST',{token:upload.token}));const r=response.result;$('#weather-preview-result').innerHTML=`<div class="result-card"><h3 style="color:var(--ok)">반영 완료</h3><p>반영 일시 ${new Date(response.completed_at).toLocaleString('ko-KR')}</p><div class="stats-mini"><div class="stat-mini-card"><strong>전체</strong><span>${numberText(r.total_rows)}건</span></div><div class="stat-mini-card"><strong>신규 등록</strong><span>${numberText(r.inserted_rows)}건</span></div><div class="stat-mini-card"><strong>기존자료 갱신</strong><span>${numberText(r.updated_rows)}건</span></div><div class="stat-mini-card"><strong>변경 없음</strong><span>${numberText(r.skipped_rows)}건</span></div><div class="stat-mini-card"><strong>오류 제외</strong><span>${numberText(r.error_rows)}건</span></div>${r.duplicate_rows?`<div class="stat-mini-card"><strong>같은 값 중복 제외</strong><span>${numberText(r.duplicate_rows)}건</span></div>`:''}${r.daily_aggregated_days!==undefined?`<div class="stat-mini-card"><strong>일별 자료 생성·갱신</strong><span>${numberText(r.daily_aggregated_days)}일</span></div>`:''}</div></div>`;state.weatherUpload=null;await Promise.all([loadWeatherRecords(),loadMealPeriodWeatherRecords(),loadWeatherUploads()]);toast('날씨자료 반영을 완료했습니다.');}catch(e){button.disabled=false;button.textContent='DB 반영';toast(e.message,true);}finally{lock.release();}}
 async function loadWeatherRecords(){const root=$('#weather-records');if(!root)return;const params=new URLSearchParams({offset:String(state.weatherOffset),limit:'50'});const fields={start_date:'#weather-start',end_date:'#weather-end',station:'#weather-station',min_temp:'#weather-min-temp',max_temp:'#weather-max-temp',precipitation:'#weather-rain'};Object.entries(fields).forEach(([key,selector])=>{const value=$(selector)?.value;if(value)params.set(key,value);});try{const data=await api(`/api/weather/records?${params}`);root.innerHTML=`<div class="table-wrap"><table class="data-table"><thead><tr><th>날짜</th><th>지점</th><th>평균</th><th>최저</th><th>최고</th><th>강수</th><th>습도</th><th>적설</th><th>등록일</th></tr></thead><tbody>${data.items.map(row=>`<tr><td>${row.observation_date}</td><td>${escapeHtml(row.station_name||row.station_id)}<small class="muted"> ${escapeHtml(row.station_id)}</small></td><td>${weatherNumber(row.avg_temp,'℃')}</td><td>${weatherNumber(row.min_temp,'℃')}</td><td>${weatherNumber(row.max_temp,'℃')}</td><td>${weatherNumber(row.precipitation,'mm')}</td><td>${weatherNumber(row.avg_humidity,'%')}</td><td>${weatherNumber(row.snow_depth)}</td><td>${new Date(row.created_at).toLocaleDateString('ko-KR')}</td></tr>`).join('')||'<tr><td colspan="9" class="muted">저장된 날씨자료가 없습니다.</td></tr>'}</tbody></table></div><div class="table-tools"><span class="muted">전체 ${numberText(data.total)}건</span><button class="secondary-button" id="weather-record-prev" ${state.weatherOffset===0?'disabled':''}>이전</button><button class="secondary-button" id="weather-record-next" ${state.weatherOffset+data.limit>=data.total?'disabled':''}>다음</button></div>`;$('#weather-record-prev')?.addEventListener('click',()=>{state.weatherOffset=Math.max(0,state.weatherOffset-50);loadWeatherRecords();});$('#weather-record-next')?.addEventListener('click',()=>{state.weatherOffset+=50;loadWeatherRecords();});}catch(e){root.innerHTML=`<div class="form-error">${escapeHtml(e.message)}</div>`;}}
 async function loadMealPeriodWeatherRecords(){const root=$('#weather-meal-records');if(!root)return;const params=new URLSearchParams({offset:String(state.weatherMealOffset),limit:'50'});const fields={start_date:'#weather-start',end_date:'#weather-end',station:'#weather-station',min_temp:'#weather-min-temp',max_temp:'#weather-max-temp',precipitation:'#weather-rain'};Object.entries(fields).forEach(([key,selector])=>{const value=$(selector)?.value;if(value)params.set(key,value);});try{const data=await api(`/api/weather/meal-period-records?${params}`);root.innerHTML=`<div class="aggregation-note">중식은 11·12시, 석식은 17·18시 관측자료를 사용합니다. 관측 건수는 최대 2건입니다.</div><div class="table-wrap"><table class="data-table"><thead><tr><th>날짜</th><th>배식</th><th>지점</th><th>평균</th><th>최저</th><th>최고</th><th>강수</th><th>습도</th><th>풍속</th><th>관측 건수</th></tr></thead><tbody>${data.items.map(row=>`<tr><td>${row.observation_date}</td><td>${row.meal_type==='LUNCH'?'중식':'석식'}</td><td>${escapeHtml(row.station_name||row.station_id)}<small class="muted"> ${escapeHtml(row.station_id)}</small></td><td>${weatherNumber(row.avg_temp,'℃')}</td><td>${weatherNumber(row.min_temp,'℃')}</td><td>${weatherNumber(row.max_temp,'℃')}</td><td>${weatherNumber(row.precipitation,'mm')}</td><td>${weatherNumber(row.avg_humidity,'%')}</td><td>${weatherNumber(row.avg_wind_speed,'m/s')}</td><td>${numberText(row.sample_count)}/2</td></tr>`).join('')||'<tr><td colspan="10" class="muted">저장된 배식 시간대 날씨자료가 없습니다.</td></tr>'}</tbody></table></div><div class="table-tools"><span class="muted">전체 ${numberText(data.total)}건</span><button class="secondary-button" id="weather-meal-prev" ${state.weatherMealOffset===0?'disabled':''}>이전</button><button class="secondary-button" id="weather-meal-next" ${state.weatherMealOffset+data.limit>=data.total?'disabled':''}>다음</button></div>`;$('#weather-meal-prev')?.addEventListener('click',()=>{state.weatherMealOffset=Math.max(0,state.weatherMealOffset-50);loadMealPeriodWeatherRecords();});$('#weather-meal-next')?.addEventListener('click',()=>{state.weatherMealOffset+=50;loadMealPeriodWeatherRecords();});}catch(e){root.innerHTML=`<div class="form-error">${escapeHtml(e.message)}</div>`;}}
 async function loadWeatherUploads(){const root=$('#weather-uploads');if(!root)return;try{const data=await api(`/api/weather/uploads?offset=${state.weatherHistoryOffset}&limit=20`);root.innerHTML=`<div class="table-wrap"><table class="data-table"><thead><tr><th>업로드 일시</th><th>파일명</th><th>기간</th><th>지점</th><th>전체</th><th>신규</th><th>갱신</th><th>오류</th><th>상태</th></tr></thead><tbody>${data.items.map(row=>`<tr><td>${new Date(row.created_at).toLocaleString('ko-KR')}</td><td>${escapeHtml(row.original_filename)}</td><td>${row.date_from||'—'} ~ ${row.date_to||'—'}</td><td>${numberText(row.stations.length)}개</td><td>${numberText(row.total_rows)}</td><td>${numberText(row.inserted_rows)}</td><td>${numberText(row.updated_rows)}</td><td>${row.error_rows?`<a href="/api/weather/uploads/${row.id}/errors.csv">${numberText(row.error_rows)}건</a>`:'0건'}</td><td>${escapeHtml(row.status)}</td></tr>`).join('')||'<tr><td colspan="9" class="muted">업로드 이력이 없습니다.</td></tr>'}</tbody></table></div><div class="table-tools"><span class="muted">전체 ${numberText(data.total)}건</span><button class="secondary-button" id="weather-upload-prev" ${state.weatherHistoryOffset===0?'disabled':''}>이전</button><button class="secondary-button" id="weather-upload-next" ${state.weatherHistoryOffset+20>=data.total?'disabled':''}>다음</button></div>`;$('#weather-upload-prev')?.addEventListener('click',()=>{state.weatherHistoryOffset=Math.max(0,state.weatherHistoryOffset-20);loadWeatherUploads();});$('#weather-upload-next')?.addEventListener('click',()=>{state.weatherHistoryOffset+=20;loadWeatherUploads();});}catch(e){root.innerHTML=`<div class="form-error">${escapeHtml(e.message)}</div>`;}}
@@ -1433,9 +1441,10 @@ async function previewActualMealUpload(){
   actualMealRequestInFlight=true;
   const previewButton=$('#actual-meal-preview');const previewLabel=previewButton?previewButton.textContent:'';if(previewButton){previewButton.disabled=true;previewButton.textContent='검증 중…';}
   const data=new FormData();data.append('file',file);const result=$('#actual-meal-result');result.innerHTML='<div class="result-card">파일을 검증하고 있습니다.</div>';
+  const lock=lockUI('식수 정보 파일을 올리고 검증하고 있습니다.');
   try{const response=await api('/api/setup/actual-meals/preview',{method:'POST',body:data});state.actualMealUpload={...response,filename:file.name,page:0};renderActualMealRows();}
   catch(e){result.innerHTML=`<div class="result-card"><h3 class="form-error">검증 실패</h3><p>${escapeHtml(e.message)}</p></div>`;toast(e.message,true);}
-  finally{actualMealRequestInFlight=false;const b=$('#actual-meal-preview');if(b){b.disabled=false;b.textContent=previewLabel||'파일 검증';}}
+  finally{lock.release();actualMealRequestInFlight=false;const b=$('#actual-meal-preview');if(b){b.disabled=false;b.textContent=previewLabel||'파일 검증';}}
 }
 
 async function applyActualMealUpload(){
@@ -1445,9 +1454,10 @@ async function applyActualMealUpload(){
   actualMealRequestInFlight=true;
   const previewButton=$('#actual-meal-preview');if(previewButton)previewButton.disabled=true;
   const button=$('#actual-meal-apply');if(button){button.disabled=true;button.textContent='반영 중…';}
+  const lock=lockUI('식수 정보를 저장하고 있습니다.');
   try{const response=await api('/api/setup/actual-meals/apply',json('POST',{token:upload.token}));const result=response.result;const v=response.verification||{};$('#actual-meal-result').innerHTML=`<div class="result-card"><h3 style="color:var(--ok)">✓ 반영 완료</h3><p>반영 일시 ${new Date(response.completed_at).toLocaleString('ko-KR')}</p><div class="stats-mini"><div class="stat-mini-card"><strong>전체 반영 후보</strong><span>${numberText(result.candidate_count)}건</span></div><div class="stat-mini-card"><strong>신규 등록</strong><span>${numberText(result.new_count)}건</span></div><div class="stat-mini-card"><strong>수정</strong><span>${numberText(result.update_count)}건</span></div><div class="stat-mini-card"><strong>변경 없음</strong><span>${numberText(result.unchanged_count)}건</span></div><div class="stat-mini-card"><strong>신규 배식 생성</strong><span>${numberText(result.service_created_count||0)}건</span></div><div class="stat-mini-card"><strong>제외</strong><span>${numberText(result.excluded_count)}건</span></div><div class="stat-mini-card"><strong>실패</strong><span>${numberText(result.failed_count)}건</span></div></div><div class="result-card" style="margin-top:12px;background:#eef8f3;border-color:#cfe8db"><h4>반영 검증</h4><p>DB 전체 실제식수 기록: <strong>${numberText(v.total_actual_records||0)}건</strong> / 전체 배식정보: <strong>${numberText(v.total_services||0)}건</strong></p><p class="muted">주간 식단표에서 반영된 식수를 확인할 수 있습니다.</p></div><div class="inline-form" style="margin-top:12px"><button class="secondary-button" id="actual-meal-goto-workspace">주간 식단표에서 확인</button><button class="secondary-button" id="actual-meal-reupload">추가 업로드</button></div></div>`;toast('식수 정보 반영을 완료했습니다.');$('#actual-meal-goto-workspace')?.addEventListener('click',()=>{switchView('workspace');});$('#actual-meal-reupload')?.addEventListener('click',()=>{state.actualMealUpload=null;renderActualMealUploadView($('#master-data-content'));});}
   catch(e){if(button){button.disabled=false;button.textContent='DB 반영';}toast(e.message,true);}
-  finally{actualMealRequestInFlight=false;const b=$('#actual-meal-preview');if(b)b.disabled=false;}
+  finally{lock.release();actualMealRequestInFlight=false;const b=$('#actual-meal-preview');if(b)b.disabled=false;}
 }
 
 function renderSetupImportView(root){
@@ -2039,6 +2049,7 @@ async function loadBackupList() {
 async function createBackup() {
   const btn = $('#create-backup-btn');
   if (btn) { btn.disabled = true; btn.textContent = '백업 생성 중...'; }
+  const lock = lockUI('시스템 데이터 백업을 만들고 있습니다.');
   try {
     await api('/api/admin/backups', { method: 'POST' });
     toast('시스템 데이터 백업이 생성되었습니다.');
@@ -2046,6 +2057,7 @@ async function createBackup() {
   } catch (e) {
     toast(e.message, true);
   } finally {
+    lock.release();
     if (btn) { btn.disabled = false; btn.textContent = '지금 백업'; }
   }
 }
@@ -2115,6 +2127,7 @@ async function createArchive() {
   const dateFrom = $('#archive-date-from')?.value || '';
   const dateTo = $('#archive-date-to')?.value || '';
   if (btn) { btn.disabled = true; btn.textContent = 'Excel 생성 중...'; }
+  const lock = lockUI('Excel 데이터 아카이브를 만들고 있습니다.');
   try {
     let url = '/api/admin/archives';
     const params = [];
@@ -2122,6 +2135,7 @@ async function createArchive() {
     if (dateTo) params.push(`date_to=${dateTo}`);
     if (params.length) url += '?' + params.join('&');
     const result = await api(url, { method: 'POST' });
+    lock.release();
     toast('Excel 데이터 아카이브가 생성되었습니다.');
     await loadArchiveList();
     modal(`<h3>Excel 아카이브 생성 완료</h3>
@@ -2136,6 +2150,7 @@ async function createArchive() {
   } catch (e) {
     toast(e.message, true);
   } finally {
+    lock.release();
     if (btn) { btn.disabled = false; btn.textContent = 'Excel 아카이브 생성'; }
   }
 }
@@ -2489,6 +2504,311 @@ function applyBulkStatus(status) {
       await loadOrders();
     } catch (e) { closeModal(); toast(e.message, true); }
   });
+}
+
+/* ==================== 화면 잠금 (긴 작업 중 조작 차단) ==================== */
+const UILock = { handles: [], el: null };
+function uiLockElement(){
+  if(UILock.el) return UILock.el;
+  const el=document.createElement('div');
+  el.id='ui-lock';el.className='ui-lock hidden';
+  el.setAttribute('role','alertdialog');el.setAttribute('aria-modal','true');el.setAttribute('aria-live','assertive');
+  el.innerHTML='<div class="ui-lock-box"><div class="ui-lock-spinner" aria-hidden="true"></div><strong class="ui-lock-message"></strong><div class="ui-lock-bar"><span></span></div><small class="ui-lock-percent"></small><p class="ui-lock-hint">작업이 끝날 때까지 기다려 주세요. 다른 화면으로 이동하거나 창을 닫지 마세요.</p></div>';
+  ['click','mousedown','pointerdown','wheel','contextmenu'].forEach(type=>el.addEventListener(type,e=>{e.preventDefault();e.stopPropagation();},true));
+  document.body.appendChild(el);UILock.el=el;return el;
+}
+function isUILocked(){ return UILock.handles.length>0; }
+function renderUILock(){
+  const el=uiLockElement();const top=UILock.handles[UILock.handles.length-1];
+  const locked=!!top;
+  el.classList.toggle('hidden',!locked);
+  ['#app-shell','#modal-root','#analysis-drawer-root'].forEach(sel=>{const node=$(sel);if(node){if(locked)node.setAttribute('inert','');else node.removeAttribute('inert');}});
+  document.body.classList.toggle('ui-locked',locked);
+  if(!locked)return;
+  $('.ui-lock-message',el).textContent=top.message;
+  const determinate=typeof top.percent==='number';
+  el.classList.toggle('determinate',determinate);
+  $('.ui-lock-bar span',el).style.width=determinate?`${Math.max(2,Math.min(100,top.percent))}%`:'';
+  $('.ui-lock-percent',el).textContent=determinate?`${Math.round(top.percent)}%`:'';
+  if(document.activeElement && document.activeElement!==document.body) document.activeElement.blur();
+}
+function lockUI(message='처리하고 있습니다.', percent=null){
+  const handle={message,percent:typeof percent==='number'?percent:null,released:false,
+    update(nextMessage,nextPercent){if(handle.released)return;if(nextMessage)handle.message=nextMessage;handle.percent=typeof nextPercent==='number'?nextPercent:null;renderUILock();},
+    release(){if(handle.released)return;handle.released=true;UILock.handles=UILock.handles.filter(h=>h!==handle);renderUILock();}};
+  UILock.handles.push(handle);renderUILock();return handle;
+}
+async function withUILock(message, task){
+  const lock=lockUI(message);
+  try{ return await task(lock); }
+  finally{ lock.release(); }
+}
+document.addEventListener('keydown',e=>{if(isUILocked()){e.preventDefault();e.stopPropagation();}},true);
+window.addEventListener('beforeunload',e=>{if(isUILocked()){e.preventDefault();e.returnValue='';return '';}});
+
+/* ==================== 식수 분석 ==================== */
+const ANALYSIS_TABS = {daily:'날짜별 식수', menu:'메뉴별 식수', ingredient:'재료별 식수', weather:'날씨별 식수'};
+const ANALYSIS_WEATHER_FILTERS = {all:'전체', rain:'비 오는 날', hot:'더운 날(28℃ 이상)', cold:'추운 날(영하)'};
+function analysisDefaults(){
+  const end=new Date();end.setHours(12,0,0,0);
+  return {tab:'daily', start:isoDate(analysisMonthsBack(end,3)), end:isoDate(end), mealType:'LUNCH', showWeather:false, menuName:'', ingredient:null, weatherFilter:'all', result:null, query:null, band:null};
+}
+function analysisMonthsBack(end, months){ const d=new Date(end); d.setMonth(d.getMonth()-months); d.setDate(d.getDate()+1); return d; }
+function analysisState(){ if(!state.analysis) state.analysis=analysisDefaults(); return state.analysis; }
+
+function initAnalysis(){
+  const a=analysisState();
+  const tabs=$('#analysis-tabs');
+  if(tabs && !tabs.dataset.bound){
+    tabs.dataset.bound='1';
+    $$('button[data-analysis-tab]',tabs).forEach(button=>button.addEventListener('click',()=>{
+      a.tab=button.dataset.analysisTab;a.result=null;a.query=null;a.band=null;a.weatherFilter='all';
+      $$('button[data-analysis-tab]',tabs).forEach(x=>x.classList.toggle('active',x===button));
+      renderAnalysisConditions();renderAnalysisResult();
+    }));
+  }
+  renderAnalysisConditions();
+  renderAnalysisResult();
+}
+
+function renderAnalysisConditions(){
+  const a=analysisState();const root=$('#analysis-conditions');if(!root)return;
+  const selector = a.tab==='menu'
+    ? `<div class="an-field an-search-field"><span>메뉴(통계 집계명)</span><div class="an-search"><input id="an-search-input" autocomplete="off" placeholder="메뉴 이름으로 찾기 (예: 갈비찜)" value="${escapeHtml(a.menuName)}"><div class="an-search-list hidden" id="an-search-list"></div></div></div>`
+    : a.tab==='ingredient'
+    ? `<div class="an-field an-search-field"><span>재료</span><div class="an-search"><input id="an-search-input" autocomplete="off" placeholder="재료 이름으로 찾기 (예: 두부)" value="${escapeHtml(a.ingredient?.name||'')}"><div class="an-search-list hidden" id="an-search-list"></div></div></div>`
+    : '';
+  const weatherFilter = (a.tab==='menu'||a.tab==='ingredient')
+    ? `<label class="an-field"><span>날씨</span><select id="an-weather-filter">${Object.entries(ANALYSIS_WEATHER_FILTERS).map(([k,v])=>`<option value="${k}" ${a.weatherFilter===k?'selected':''}>${v}</option>`).join('')}</select></label>` : '';
+  const weatherToggle = a.tab!=='weather'
+    ? `<label class="an-check"><input type="checkbox" id="an-show-weather" ${a.showWeather?'checked':''}> 날씨 함께 보기</label>` : '';
+  root.innerHTML=`<div class="an-row">
+      <div class="an-field"><span>기간</span><div class="an-period"><input type="date" id="an-start" value="${a.start}"><span>~</span><input type="date" id="an-end" value="${a.end}"></div></div>
+      <div class="an-field"><span>빠른 선택</span><div class="an-quick">${[1,3,6,12].map(m=>`<button type="button" class="ghost-button" data-months="${m}">${m}개월</button>`).join('')}</div></div>
+      <div class="an-field"><span>배식</span><div class="an-seg">${[['LUNCH','중식'],['DINNER','석식']].map(([k,v])=>`<button type="button" data-meal="${k}" class="${a.mealType===k?'active':''}">${v}</button>`).join('')}</div></div>
+    </div>
+    <div class="an-row">${selector}${weatherFilter}${weatherToggle}<button type="button" class="primary-button an-query" id="an-query">조회</button></div>`;
+  $('#an-start').addEventListener('change',e=>{a.start=e.target.value;});
+  $('#an-end').addEventListener('change',e=>{a.end=e.target.value;});
+  $$('[data-months]',root).forEach(b=>b.addEventListener('click',()=>{const end=new Date();end.setHours(12,0,0,0);a.end=isoDate(end);a.start=isoDate(analysisMonthsBack(end,Number(b.dataset.months)));$('#an-start').value=a.start;$('#an-end').value=a.end;}));
+  $$('[data-meal]',root).forEach(b=>b.addEventListener('click',()=>{a.mealType=b.dataset.meal;$$('[data-meal]',root).forEach(x=>x.classList.toggle('active',x===b));}));
+  $('#an-weather-filter')?.addEventListener('change',e=>{a.weatherFilter=e.target.value;});
+  $('#an-show-weather')?.addEventListener('change',e=>{a.showWeather=e.target.checked;if(a.result)renderAnalysisResult();});
+  $('#an-query').addEventListener('click',runAnalysisQuery);
+  if(a.tab==='menu'||a.tab==='ingredient') bindAnalysisSearch();
+}
+
+let analysisSearchTimer=null;
+function bindAnalysisSearch(){
+  const a=analysisState();const input=$('#an-search-input');const list=$('#an-search-list');if(!input||!list)return;
+  const search=async()=>{
+    const q=input.value.trim();
+    const url=a.tab==='menu'?`/api/analysis/menu-groups/search?q=${encodeURIComponent(q)}`:`/api/analysis/ingredients/search?q=${encodeURIComponent(q)}`;
+    try{
+      const data=await api(url);
+      list.innerHTML=data.items.length?data.items.map((item,i)=>`<button type="button" data-index="${i}"><span>${escapeHtml(item.name)}</span><small>${numberText(item.served)}회 제공</small></button>`).join(''):'<div class="an-search-empty">찾는 이름이 없습니다.</div>';
+      list.classList.remove('hidden');
+      $$('button[data-index]',list).forEach(b=>b.addEventListener('mousedown',e=>{e.preventDefault();pick(data.items[Number(b.dataset.index)]);}));
+      list._items=data.items;
+    }catch(e){toast(e.message,true);}
+  };
+  const pick=item=>{
+    if(!item)return;
+    if(a.tab==='menu') a.menuName=item.name; else a.ingredient={id:item.id,name:item.name};
+    input.value=item.name;list.classList.add('hidden');
+  };
+  input.addEventListener('input',()=>{ if(a.tab==='menu') a.menuName=''; else a.ingredient=null; clearTimeout(analysisSearchTimer); analysisSearchTimer=setTimeout(search,250); });
+  input.addEventListener('focus',search);
+  input.addEventListener('blur',()=>setTimeout(()=>list.classList.add('hidden'),150));
+  input.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); const first=(list._items||[])[0]; if(first) pick(first); } if(e.key==='Escape') list.classList.add('hidden'); });
+}
+
+function analysisQueryParams(){
+  const a=analysisState();
+  if(!a.start||!a.end) throw new Error('조회 기간을 선택해 주세요.');
+  if(a.start>a.end) throw new Error('시작일이 종료일보다 늦습니다.');
+  const params={start:a.start,end:a.end,meal_type:a.mealType};
+  if(a.tab==='menu'){ if(!a.menuName) throw new Error('목록에서 메뉴를 골라 주세요.'); params.name=a.menuName; params.weather=a.weatherFilter; }
+  if(a.tab==='ingredient'){ if(!a.ingredient) throw new Error('목록에서 재료를 골라 주세요.'); params.ingredient_id=a.ingredient.id; params.weather=a.weatherFilter; }
+  return params;
+}
+const ANALYSIS_ENDPOINTS={daily:'/api/analysis/daily',menu:'/api/analysis/menu-group',ingredient:'/api/analysis/ingredient',weather:'/api/analysis/weather'};
+
+async function runAnalysisQuery(){
+  const a=analysisState();
+  let params;
+  try{ params=analysisQueryParams(); }catch(e){ toast(e.message,true); return; }
+  const tab=a.tab;
+  await withUILock(`${ANALYSIS_TABS[tab]}를 조회하고 있습니다.`, async()=>{
+    try{
+      const result=await api(`${ANALYSIS_ENDPOINTS[tab]}?${new URLSearchParams(params)}`);
+      if(a.tab!==tab) return;
+      a.result=result;a.query={tab,params};a.band=null;
+      renderAnalysisResult();
+    }catch(e){ toast(e.message,true); }
+  });
+}
+
+function analysisDiffText(diff){ if(diff===null||diff===undefined) return '—'; if(diff>0) return `${numberText(diff)}명 많음`; if(diff<0) return `${numberText(-diff)}명 적음`; return '같음'; }
+function analysisDiffClass(diff){ return diff>0?'an-more':diff<0?'an-less':''; }
+function analysisWeatherIcon(w){ if(!w) return ''; if(w.is_rain) return (w.temp!==null&&w.temp<=1)?'🌨':'🌧'; return ''; }
+function analysisTempClass(t){ if(t===null||t===undefined) return ''; if(t>=28) return 'an-hot'; if(t<0) return 'an-cold'; return ''; }
+function analysisNum(v){ return v===null||v===undefined?'—':numberText(v); }
+
+function renderAnalysisResult(){
+  const a=analysisState();const root=$('#analysis-result');if(!root)return;
+  if(!a.result){ root.innerHTML=`<div class="an-empty">조건을 정한 뒤 <strong>조회</strong> 버튼을 눌러 주세요.</div>`; return; }
+  if(a.query.tab==='weather'){ renderAnalysisWeather(root,a.result); return; }
+  const r=a.result;
+  const titleBits=[r.meal_type_name, `${r.start} ~ ${r.end}`];
+  if(r.menu_group) titleBits.unshift(`메뉴: ${r.menu_group}`);
+  if(r.ingredient) titleBits.unshift(`재료: ${r.ingredient.name}`);
+  if(r.weather_filter && r.weather_filter!=='all') titleBits.push(r.weather_filter_name);
+  const note=r.low_sample_note?`<div class="an-note">${escapeHtml(r.low_sample_note)}</div>`:'';
+  if(!r.points.length){ root.innerHTML=`<div class="an-card"><h3>${escapeHtml(titleBits.join(' · '))}</h3><div class="an-empty">조건에 맞는 식단(실제 식수 입력된 날)이 없습니다.</div></div>`; return; }
+  const weatherNote=a.showWeather?`<p class="an-sub">날씨는 ${escapeHtml(r.meal_type_name)} 배식시간(${escapeHtml(r.weather_window)}) 관측값입니다. 기온은 평균, 비는 합계예요.</p>`:'';
+  root.innerHTML=`<div class="an-card">
+      <div class="an-card-head"><h3>${escapeHtml(titleBits.join(' · '))}</h3><span class="an-days">${numberText(r.points.length)}일</span></div>
+      ${note}${weatherNote}
+      <div class="an-legend"><span class="an-lg-actual"></span>실제 식수<span class="an-lg-usual"></span>평소 식수 (지난 1년 같은 요일 평균)</div>
+      <div class="an-chart" id="an-chart"></div>
+      <p class="an-sub">점이나 표의 날짜를 누르면 그날 식단을 볼 수 있어요.</p>
+    </div>
+    <div class="an-card">${analysisTableHtml(r.points,a.showWeather,true)}</div>`;
+  drawAnalysisLineChart($('#an-chart'),r.points,{showWeather:a.showWeather,onClick:p=>openAnalysisDetail(p.date)});
+  bindAnalysisTable(root);
+}
+
+function analysisTableHtml(points, showWeather, withDownload){
+  return `<div class="an-table-head"><h4>날짜별 표</h4>${withDownload?'<button type="button" class="secondary-button" data-an-download>Excel 내려받기</button>':''}</div>
+  <div class="table-wrap an-table-wrap"><table class="data-table an-table"><thead><tr><th>날짜</th><th class="num">실제</th><th class="num">평소</th><th class="num">차이(명)</th>${showWeather?'<th>배식시간 날씨</th>':''}</tr></thead><tbody>
+  ${points.map(p=>`<tr data-an-date="${p.date}" tabindex="0"><td>${p.date} (${p.weekday})</td><td class="num">${numberText(p.actual)}명</td><td class="num">${p.usual===null?'—':numberText(p.usual)+'명'}</td><td class="num ${analysisDiffClass(p.diff)}">${analysisDiffText(p.diff)}</td>${showWeather?`<td>${p.weather?escapeHtml(p.weather.text):'<span class="muted">날씨 자료 없음</span>'}</td>`:''}</tr>`).join('')}
+  </tbody></table></div>`;
+}
+function bindAnalysisTable(root){
+  $$('tr[data-an-date]',root).forEach(tr=>{const open=()=>openAnalysisDetail(tr.dataset.anDate);tr.addEventListener('click',open);tr.addEventListener('keydown',e=>{if(e.key==='Enter')open();});});
+  $$('[data-an-download]',root).forEach(b=>b.addEventListener('click',downloadAnalysisExcel));
+}
+
+async function downloadAnalysisExcel(){
+  const a=analysisState();if(!a.query)return;
+  const tabKey={daily:'daily',menu:'menu',ingredient:'ingredient',weather:'weather'}[a.query.tab];
+  await withUILock('Excel 파일을 만들고 있습니다.', async()=>{
+    try{
+      const response=await requestBinary(`/api/analysis/export.xlsx?${new URLSearchParams({...a.query.params,tab:tabKey})}`);
+      const blob=await response.blob();
+      triggerDownload(blob,parseContentDispositionFilename(response.headers.get('content-disposition'),'식수분석.xlsx'));
+    }catch(e){toast(e.message,true);}
+  });
+}
+
+function analysisNiceTicks(min,max,count=5){
+  if(min===max){min-=10;max+=10;}
+  const raw=(max-min)/count;const mag=Math.pow(10,Math.floor(Math.log10(raw)));
+  const step=[1,2,5,10].map(m=>m*mag).find(s=>s>=raw)||raw;
+  const lo=Math.floor(min/step)*step, hi=Math.ceil(max/step)*step;
+  const ticks=[];for(let v=lo;v<=hi+step/2;v+=step)ticks.push(Math.round(v));
+  return {lo,hi,ticks};
+}
+
+function drawAnalysisLineChart(container, points, {showWeather=false, onClick}={}){
+  if(!container)return;
+  const width=Math.max(560,container.clientWidth||960), dense=points.length>1&&(width-76)/(points.length-1)<22;
+  const top=showWeather?(dense?34:52):18, bottom=46, left=56, right=20, height=320+top;
+  const values=points.flatMap(p=>[p.actual,p.usual]).filter(v=>v!==null&&v!==undefined);
+  const pad=Math.max(5,(Math.max(...values)-Math.min(...values))*0.12);
+  const {lo,hi,ticks}=analysisNiceTicks(Math.max(0,Math.min(...values)-pad),Math.max(...values)+pad);
+  const plotW=width-left-right, plotH=height-top-bottom;
+  const step=points.length>1?plotW/(points.length-1):0;
+  const x=i=>points.length>1?left+i*step:left+plotW/2;
+  const y=v=>top+plotH-(v-lo)/(hi-lo||1)*plotH;
+  const path=(key)=>{let d='',open=false;points.forEach((p,i)=>{const v=p[key];if(v===null||v===undefined){open=false;return;}d+=`${open?'L':'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`;open=true;});return d;};
+  const labelEvery=Math.max(1,Math.ceil(points.length/Math.max(4,Math.floor(plotW/80))));
+  const grid=ticks.map(t=>`<line x1="${left}" x2="${width-right}" y1="${y(t)}" y2="${y(t)}" class="an-grid"/><text x="${left-8}" y="${y(t)+4}" class="an-axis" text-anchor="end">${numberText(t)}</text>`).join('');
+  let lastYear=null;
+  const xLabels=points.map((p,i)=>{if(!(i%labelEvery===0||(i===points.length-1&&points.length<=12)))return '';const year=p.date.slice(0,4);const showYear=year!==lastYear;lastYear=year;
+    return `<text x="${x(i)}" y="${height-bottom+18}" class="an-axis" text-anchor="middle">${escapeHtml(p.label.replace(/\(.\)$/,''))}</text>${showYear?`<text x="${x(i)}" y="${height-bottom+32}" class="an-axis an-axis-year" text-anchor="middle">${year}년</text>`:''}`;}).join('');
+  const r=points.length>120?2:3.5;
+  const dots=points.map((p,i)=>`<circle cx="${x(i)}" cy="${y(p.actual)}" r="${r}" class="an-dot-actual"/>${p.usual!==null&&p.usual!==undefined?`<circle cx="${x(i)}" cy="${y(p.usual)}" r="${Math.max(1.5,r-1)}" class="an-dot-usual"/>`:''}`).join('');
+  let weatherMarks='';
+  if(showWeather){
+    weatherMarks=points.map((p,i)=>{const w=p.weather;if(!w)return '';const icon=analysisWeatherIcon(w);
+      if(dense){return icon?`<text x="${x(i)}" y="${top-12}" text-anchor="middle" class="an-wicon-sm">${icon}</text>`:`<circle cx="${x(i)}" cy="${top-16}" r="2.2" class="an-tempdot ${analysisTempClass(w.temp)}"/>`;}
+      return `<text x="${x(i)}" y="${top-30}" text-anchor="middle" class="an-wicon">${icon||'·'}</text><text x="${x(i)}" y="${top-12}" text-anchor="middle" class="an-wtemp ${analysisTempClass(w.temp)}">${w.temp===null?'':Math.round(w.temp)+'°'}</text>`;}).join('');
+  }
+  const hits=points.map((p,i)=>`<rect x="${x(i)-Math.max(step,8)/2}" y="${top}" width="${Math.max(step,8)}" height="${plotH}" class="an-hit" data-i="${i}"/>`).join('');
+  container.innerHTML=`<svg class="an-svg" viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="실제 식수와 평소 식수 선그래프">
+      ${grid}<line x1="${left}" x2="${width-right}" y1="${top+plotH}" y2="${top+plotH}" class="an-baseline"/>
+      <text x="${left-44}" y="${top-4}" class="an-axis">(명)</text>
+      <path d="${path('usual')}" class="an-line-usual"/><path d="${path('actual')}" class="an-line-actual"/>
+      ${dots}${weatherMarks}<line class="an-cursor hidden" y1="${top}" y2="${top+plotH}"/>${xLabels}${hits}
+    </svg><div class="an-tip hidden"></div>${showWeather&&dense?'<p class="an-sub">점이 많아 비 온 날만 🌧로 표시했어요(빨간 점은 28℃ 이상, 파란 점은 영하). 점에 마우스를 올리면 날씨가 보여요.</p>':''}`;
+  const tip=$('.an-tip',container), cursor=$('.an-cursor',container), svg=$('svg',container);
+  const show=(i,evt)=>{const p=points[i];if(!p)return;
+    tip.innerHTML=`<strong>${escapeHtml(p.sentence)}</strong>${showWeather&&p.weather?`<span>${escapeHtml(p.weather.text)}</span>`:showWeather?'<span>날씨 자료 없음</span>':''}<em>눌러서 식단 보기</em>`;
+    tip.classList.remove('hidden');
+    const box=container.getBoundingClientRect();const scale=box.width/width;const px=x(i)*scale;
+    tip.style.left=`${Math.min(Math.max(px,120),box.width-120)}px`;tip.style.top=`${Math.max(0,y(p.actual)*scale-12)}px`;
+    cursor.setAttribute('x1',x(i));cursor.setAttribute('x2',x(i));cursor.classList.remove('hidden');};
+  $$('.an-hit',svg).forEach(rect=>{const i=Number(rect.dataset.i);
+    rect.addEventListener('mouseenter',e=>show(i,e));
+    rect.addEventListener('mouseleave',()=>{tip.classList.add('hidden');cursor.classList.add('hidden');});
+    rect.addEventListener('click',()=>onClick&&onClick(points[i]));});
+}
+
+function renderAnalysisWeather(root, r){
+  const a=analysisState();
+  const section=(key,title,bands)=>{
+    const maxAbs=Math.max(5,...bands.map(b=>Math.abs(b.avg_diff||0)));
+    const bars=bands.map(b=>{const has=b.days>0&&b.avg_diff!==null;const pct=has?Math.abs(b.avg_diff)/maxAbs*50:0;
+      return `<button type="button" class="an-bar-row ${a.band===`${key}:${b.key}`?'active':''}" data-band="${key}:${b.key}" ${b.days?'':'disabled'}>
+        <span class="an-bar-label">${escapeHtml(b.label)}<small>${numberText(b.days)}일</small></span>
+        <span class="an-bar-track"><span class="an-bar-zero"></span>${has?`<span class="an-bar ${b.avg_diff>=0?'pos':'neg'}" style="${b.avg_diff>=0?`left:50%;width:${pct}%`:`right:50%;width:${pct}%`}"></span>`:''}</span>
+        <span class="an-bar-value ${analysisDiffClass(b.avg_diff)}">${has?(b.avg_diff===0?'평소와 같음':`평소보다 ${analysisDiffText(b.avg_diff)}`):'자료 없음'}</span></button>`;}).join('');
+    const rows=bands.map(b=>`<tr data-band="${key}:${b.key}" class="${b.days?'':'an-row-empty'}"><td>${escapeHtml(b.label)}</td><td class="num">${numberText(b.days)}일</td><td class="num">${b.days?analysisNum(b.avg_actual)+'명':'—'}</td><td class="num">${b.days?analysisNum(b.avg_usual)+'명':'—'}</td><td class="num ${analysisDiffClass(b.avg_diff)}">${b.days?analysisDiffText(b.avg_diff):'—'}</td><td>${b.low_sample_note?`<span class="an-note-inline">${escapeHtml(b.low_sample_note)}</span>`:''}</td></tr>`).join('');
+    return `<div class="an-card"><div class="an-card-head"><h3>${title}</h3></div>
+      <div class="an-bars">${bars}</div>
+      <div class="table-wrap"><table class="data-table an-table"><thead><tr><th>날씨</th><th class="num">일수</th><th class="num">평균 실제</th><th class="num">평균 평소</th><th class="num">평균 차이(명)</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+  };
+  const selected=a.band?[...r.rain.map(b=>({...b,group:'rain'})),...r.temperature.map(b=>({...b,group:'temp'}))].find(b=>`${b.group}:${b.key}`===a.band):null;
+  root.innerHTML=`<div class="an-card an-card-plain"><div class="an-card-head"><h3>날씨별 식수 · ${escapeHtml(r.meal_type_name)} · ${escapeHtml(r.start)} ~ ${escapeHtml(r.end)}</h3><button type="button" class="secondary-button" data-an-download>Excel 내려받기</button></div>
+      <p class="an-sub">${escapeHtml(r.meal_type_name)} 배식시간(${escapeHtml(r.weather_window)}) 날씨 기준입니다. 비는 그 시간 강수량 합계, 기온은 평균이에요. 날씨 자료와 평소 식수가 모두 있는 ${numberText(r.days)}일만 셉니다. 막대나 표를 누르면 해당 날짜가 보여요.</p></div>
+    <div class="an-weather-grid">${section('rain','비 오는 날과 안 오는 날',r.rain)}${section('temp','기온별',r.temperature)}</div>
+    <div id="an-band-dates">${selected?`<div class="an-card"><div class="an-card-head"><h3>${escapeHtml(selected.label)} · ${numberText(selected.days)}일</h3></div>${selected.low_sample_note?`<div class="an-note">${escapeHtml(selected.low_sample_note)}</div>`:''}${analysisTableHtml(selected.points,true,false)}</div>`:''}</div>`;
+  $$('[data-band]',root).forEach(el=>el.addEventListener('click',()=>{a.band=el.dataset.band;renderAnalysisWeather(root,r);$('#an-band-dates')?.scrollIntoView({behavior:'smooth',block:'start'});}));
+  bindAnalysisTable(root);
+}
+
+async function openAnalysisDetail(dateIso){
+  const a=analysisState();if(!a.query)return;
+  const mealType=a.query.params.meal_type;
+  const ingredientId=a.query.tab==='ingredient'?a.query.params.ingredient_id:null;
+  let root=$('#analysis-drawer-root');
+  if(!root){root=document.createElement('div');root.id='analysis-drawer-root';document.body.appendChild(root);}
+  root.innerHTML=`<div class="an-drawer-backdrop"><aside class="an-drawer" role="dialog" aria-modal="true" aria-label="식단 상세"><div class="an-drawer-head"><h3>식단 불러오는 중…</h3><button type="button" class="ghost-button" data-an-close>닫기</button></div><div class="an-drawer-body"><div class="empty-editor">불러오는 중입니다.</div></div></aside></div>`;
+  const close=()=>{root.innerHTML='';document.removeEventListener('keydown',escClose);};
+  const escClose=e=>{if(e.key==='Escape')close();};
+  document.addEventListener('keydown',escClose);
+  $('.an-drawer-backdrop',root).addEventListener('click',e=>{if(e.target.classList.contains('an-drawer-backdrop'))close();});
+  $('[data-an-close]',root).addEventListener('click',close);
+  try{
+    const params=new URLSearchParams({date:dateIso,meal_type:mealType});if(ingredientId)params.set('ingredient_id',ingredientId);
+    const d=await api(`/api/analysis/date-detail?${params}`);
+    const ingredientName=a.query.tab==='ingredient'?(a.result?.ingredient?.name||''):'';
+    $('.an-drawer-head h3',root).textContent=`${d.label} ${d.meal_type_name} 식단`;
+    $('.an-drawer-body',root).innerHTML=`<div class="an-detail-figures">
+        <div><span>실제</span><strong>${d.actual===null?'—':numberText(d.actual)+'명'}</strong></div>
+        <div><span>평소</span><strong>${d.usual===null?'—':numberText(d.usual)+'명'}</strong></div>
+        <div><span>차이</span><strong class="${analysisDiffClass(d.diff)}">${escapeHtml(d.diff_text)}</strong></div>
+      </div>
+      <p class="an-sub">평소 식수는 지난 1년 같은 요일 ${escapeHtml(d.meal_type_name)} ${numberText(d.usual_days)}일의 평균이에요.</p>
+      <div class="an-detail-weather">${d.weather?`${analysisWeatherIcon(d.weather)} 배식시간 날씨: ${escapeHtml(d.weather.text)}`:`배식시간(${escapeHtml(d.weather_window)}) 날씨 자료가 없습니다.`}</div>
+      ${ingredientName?`<div class="an-note">‘${escapeHtml(ingredientName)}’이(가) 들어간 메뉴를 표시했어요.</div>`:''}
+      <ol class="an-menu-list">${d.menus.map(m=>`<li class="${m.has_ingredient?'an-hl':''}">
+        <details ${m.has_ingredient?'open':''}><summary><span class="an-menu-name">${escapeHtml(m.name)}</span>${m.is_main?'<span class="an-main-badge">★ 메인</span>':''}${m.has_ingredient?'<span class="an-ing-badge">재료 포함</span>':''}<small>${m.recipe_name?escapeHtml(m.recipe_name):'레시피 정보 없음'}</small></summary>
+        ${m.ingredients.length?`<table class="data-table an-ing-table"><thead><tr><th>재료</th><th class="num">양</th></tr></thead><tbody>${m.ingredients.map(i=>`<tr class="${i.highlight?'an-hl-row':''}"><td>${escapeHtml(i.name)}</td><td class="num">${i.quantity===null||i.quantity===undefined?'<span class="muted">—</span>':`${numberText(i.quantity)} ${escapeHtml(i.unit||'')}`}</td></tr>`).join('')}</tbody></table>`:'<p class="muted">등록된 재료가 없습니다.</p>'}
+        </details></li>`).join('')}</ol>`;
+  }catch(e){ $('.an-drawer-body',root).innerHTML=`<div class="form-error">${escapeHtml(e.message)}</div>`; }
 }
 
 document.addEventListener('DOMContentLoaded',()=>init().catch(e=>toast(e.message,true)));

@@ -61,7 +61,7 @@ def test_apply_import_returns_before_background_import_finishes(tmp_path, monkey
         db.add(ImportJob(token="import-token", filename="upload.xlsx", storage_path=str(tmp_path / "upload.xlsx"), status="PREVIEWED"))
         db.commit()
 
-    def fake_apply(self, db, mode="replace", user_id=None):
+    def fake_apply(self, db, mode="replace", user_id=None, progress=None):
         return {"menus": 3}
 
     monkeypatch.setattr(setup, "SessionLocal", sessions)
@@ -132,7 +132,7 @@ def _setup_client(tmp_path, monkeypatch, status, fake_apply):
 def test_apply_import_rejects_second_apply_with_409(tmp_path, monkeypatch):
     calls = []
 
-    def fake_apply(self, db, mode="replace", user_id=None):
+    def fake_apply(self, db, mode="replace", user_id=None, progress=None):
         calls.append(mode)
         return {"menus": 1}
 
@@ -147,7 +147,7 @@ def test_apply_import_rejects_second_apply_with_409(tmp_path, monkeypatch):
 def test_background_import_failure_marks_failed_and_allows_retry(tmp_path, monkeypatch):
     attempts = []
 
-    def fake_apply(self, db, mode="replace", user_id=None):
+    def fake_apply(self, db, mode="replace", user_id=None, progress=None):
         attempts.append(mode)
         if len(attempts) == 1:
             raise ValueError("boom")
@@ -162,3 +162,30 @@ def test_background_import_failure_marks_failed_and_allows_retry(tmp_path, monke
         done = client.get("/api/setup/import/jobs/import-token").json()
     assert done["status"] == "COMPLETED"
     assert done["result"] == {"menus": 2}
+
+
+def test_import_reports_stage_progress_for_the_ui(tmp_path, monkeypatch):
+    seen = []
+
+    def fake_apply(self, db, mode="replace", user_id=None, progress=None):
+        progress(40, "메뉴별 레시피를 반영하고 있습니다.")
+        seen.append(dict(setup.IMPORT_PROGRESS["import-token"]))
+        return {"menus": 1}
+
+    with _setup_client(tmp_path, monkeypatch, "PREVIEWED", fake_apply) as client:
+        client.post("/api/setup/import/apply", json={"token": "import-token", "mode": "replace"})
+        status = client.get("/api/setup/import/jobs/import-token").json()
+    assert seen == [{"percent": 40, "message": "메뉴별 레시피를 반영하고 있습니다."}]
+    assert status["status"] == "COMPLETED" and status["progress"] is None
+    assert "import-token" not in setup.IMPORT_PROGRESS
+
+
+def test_real_importer_progress_is_increasing_and_ends_at_100():
+    workbook = next((Path(__file__).resolve().parents[2] / "data" / "source").glob("*.xlsx"))
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    steps = []
+    with Session(engine) as db:
+        MigrationImporter(workbook).apply(db, mode="replace", progress=lambda percent, message: steps.append(percent))
+    assert steps == sorted(steps)
+    assert steps[0] < 10 and steps[-1] == 100

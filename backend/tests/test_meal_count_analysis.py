@@ -1,0 +1,271 @@
+from __future__ import annotations
+
+from datetime import date, timedelta
+from types import SimpleNamespace
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session, sessionmaker
+
+from app import meal_count_analysis as analysis
+from app.db import Base, create_database_engine
+from app.models import (
+    Ingredient,
+    MealActual,
+    MealPeriodWeather,
+    MealService,
+    MealServiceMenu,
+    MealServiceMenuIngredient,
+    Menu,
+    Recipe,
+)
+from app.routers import analysis as analysis_router
+
+MONDAY = date(2026, 3, 2)  # a Monday
+
+
+@pytest.fixture()
+def engine(tmp_path):
+    engine = create_database_engine(f"sqlite:///{(tmp_path / 'analysis.db').as_posix()}")
+    Base.metadata.create_all(engine)
+    return engine
+
+
+class Builder:
+    def __init__(self, db: Session):
+        self.db = db
+        self.menus: dict[str, Menu] = {}
+        self.ingredients: dict[str, Ingredient] = {}
+
+    def menu(self, name: str, group: str | None = None) -> Menu:
+        if name not in self.menus:
+            menu = Menu(name=name, canonical_name=group or name)
+            self.db.add(menu)
+            self.db.flush()
+            self.menus[name] = menu
+        return self.menus[name]
+
+    def ingredient(self, name: str) -> Ingredient:
+        if name not in self.ingredients:
+            item = Ingredient(name=name)
+            self.db.add(item)
+            self.db.flush()
+            self.ingredients[name] = item
+        return self.ingredients[name]
+
+    def meal(self, day: date, actual: int | None, meal_type: str = "LUNCH", menus=(("밥", None, ()),), weather=None):
+        service = MealService(service_date=day, meal_type=meal_type, planned_count=400)
+        self.db.add(service)
+        self.db.flush()
+        for order, (name, group, ingredients) in enumerate(menus, start=1):
+            menu = self.menu(name, group)
+            item = MealServiceMenu(meal_service_id=service.id, menu_id=menu.id, sort_order=order, menu_name_snapshot=name)
+            self.db.add(item)
+            self.db.flush()
+            for index, ingredient_name in enumerate(ingredients, start=1):
+                ingredient = self.ingredient(ingredient_name)
+                self.db.add(MealServiceMenuIngredient(
+                    meal_service_menu_id=item.id, ingredient_id=ingredient.id, sort_order=index,
+                    ingredient_name_snapshot=ingredient_name, quantity_total=1.5, unit="kg",
+                ))
+        if actual is not None:
+            self.db.add(MealActual(meal_service_id=service.id, actual_count=actual))
+        if weather is not None:
+            temp, rain = weather
+            self.db.add(MealPeriodWeather(
+                observation_date=day, station_id="156", station_name="광주", meal_type=meal_type,
+                avg_temp=temp, precipitation=rain, sample_count=2,
+            ))
+        self.db.flush()
+        return service
+
+
+def test_usual_count_uses_same_weekday_previous_52_weeks_and_excludes_self(engine):
+    target = MONDAY + timedelta(weeks=60)
+    with Session(engine) as db:
+        b = Builder(db)
+        b.meal(target - timedelta(weeks=53), 900)  # older than 52 weeks: ignored
+        b.meal(target - timedelta(weeks=52), 300)  # exactly 52 weeks before: included
+        b.meal(target - timedelta(weeks=1), 400)
+        b.meal(target - timedelta(days=1), 999)  # Sunday: other weekday, ignored
+        b.meal(target, 500)  # the day itself: never part of its own usual count
+        b.meal(target - timedelta(weeks=2), 800, meal_type="DINNER")  # other meal type: ignored
+        db.commit()
+        result = analysis.daily(db, "LUNCH", target, target)
+    point = result["points"][0]
+    assert point["actual"] == 500
+    assert point["usual"] == 350
+    assert point["usual_days"] == 2
+    assert point["diff"] == 150
+    assert point["diff_text"] == "150명 많음"
+    assert point["sentence"].startswith(f"{target.month}/{target.day}(월) 중식")
+    assert "실제 500명 · 평소 350명 · 150명 많음" in point["sentence"]
+
+
+def test_closed_days_without_menu_or_actual_are_left_out(engine):
+    target = MONDAY + timedelta(weeks=10)
+    with Session(engine) as db:
+        b = Builder(db)
+        b.meal(target - timedelta(weeks=1), 400)
+        b.meal(target - timedelta(weeks=2), None)  # menu but no actual count
+        b.meal(target - timedelta(weeks=3), 0)  # recorded 0: not a served meal
+        no_menu = MealService(service_date=target - timedelta(weeks=4), meal_type="LUNCH", planned_count=400)
+        db.add(no_menu)
+        db.flush()
+        db.add(MealActual(meal_service_id=no_menu.id, actual_count=1000))  # actual but no menu
+        b.meal(target, 420)
+        db.commit()
+        result = analysis.daily(db, "LUNCH", target - timedelta(weeks=5), target)
+    assert [p["date"] for p in result["points"]] == [(target - timedelta(weeks=1)).isoformat(), target.isoformat()]
+    first, last = result["points"]
+    assert first["usual"] is None and first["diff"] is None
+    assert "평소 식수 없음" in first["sentence"]
+    assert last["usual"] == 400 and last["usual_days"] == 1 and last["diff"] == 20
+
+
+def test_lunch_and_dinner_are_always_separate(engine):
+    target = MONDAY + timedelta(weeks=3)
+    with Session(engine) as db:
+        b = Builder(db)
+        b.meal(target - timedelta(weeks=1), 400, "LUNCH")
+        b.meal(target - timedelta(weeks=1), 70, "DINNER")
+        b.meal(target, 380, "LUNCH")
+        b.meal(target, 60, "DINNER")
+        db.commit()
+        lunch = analysis.daily(db, "LUNCH", target, target)["points"][0]
+        dinner = analysis.daily(db, "DINNER", target, target)["points"][0]
+    assert (lunch["usual"], lunch["diff"], lunch["diff_text"]) == (400, -20, "20명 적음")
+    assert (dinner["usual"], dinner["diff"]) == (70, -10)
+    with pytest.raises(analysis.AnalysisError):
+        with Session(engine) as db:
+            analysis.daily(db, "ALL", target, target)
+
+
+def test_menu_group_uses_canonical_name_and_baseline_from_all_meals(engine):
+    with Session(engine) as db:
+        b = Builder(db)
+        for week in range(4):
+            b.meal(MONDAY + timedelta(weeks=week), 400, menus=(("밥", None, ()), ("국", None, ())))
+        b.meal(MONDAY + timedelta(weeks=4), 450, menus=(("밥", None, ()), ("갈비찜 - 매운맛", "갈비찜", ())), weather=(30.0, 0.0))
+        b.meal(MONDAY + timedelta(weeks=5), 420, menus=(("LA갈비찜", "갈비찜", ()),), weather=(12.0, 3.0))
+        db.commit()
+        result = analysis.menu_group(db, "LUNCH", MONDAY, MONDAY + timedelta(weeks=6), "갈비찜")
+        hot = analysis.menu_group(db, "LUNCH", MONDAY, MONDAY + timedelta(weeks=6), "갈비찜", "hot")
+        rain = analysis.menu_group(db, "LUNCH", MONDAY, MONDAY + timedelta(weeks=6), "갈비찜", "rain")
+        cold = analysis.menu_group(db, "LUNCH", MONDAY, MONDAY + timedelta(weeks=6), "갈비찜", "cold")
+        groups = analysis.search_menu_groups(db, "갈비")
+    assert [p["actual"] for p in result["points"]] == [450, 420]
+    # baselines are computed from every counted meal, not only the group's own days
+    assert result["points"][0]["usual"] == 400
+    assert result["points"][1]["usual"] == 410  # (400*4 + 450) / 5
+    assert [p["actual"] for p in hot["points"]] == [450]
+    assert [p["actual"] for p in rain["points"]] == [420]
+    assert cold["points"] == []
+    assert result["low_sample_note"] == "2일뿐이라 참고만 하세요."
+    assert groups == [{"name": "갈비찜", "served": 2}]
+
+
+def test_ingredient_filter_only_counts_meals_with_that_ingredient(engine):
+    with Session(engine) as db:
+        b = Builder(db)
+        b.meal(MONDAY, 400, menus=(("된장국", None, ("두부", "된장")),))
+        b.meal(MONDAY + timedelta(weeks=1), 410, menus=(("미역국", None, ("미역",)),))
+        b.meal(MONDAY + timedelta(weeks=2), 430, menus=(("마파두부", None, ("두부",)),), weather=(-2.0, 0.0))
+        db.commit()
+        tofu = b.ingredients["두부"].id
+        result = analysis.ingredient(db, "LUNCH", MONDAY, MONDAY + timedelta(weeks=3), tofu)
+        cold = analysis.ingredient(db, "LUNCH", MONDAY, MONDAY + timedelta(weeks=3), tofu, "cold")
+        found = analysis.search_ingredients(db, "두")
+    assert [p["actual"] for p in result["points"]] == [400, 430]
+    assert result["points"][1]["usual"] == 405
+    assert [p["actual"] for p in cold["points"]] == [430]
+    assert found[0]["name"] == "두부" and found[0]["served"] == 2
+
+
+def test_weather_bands_rain_and_temperature_boundaries(engine):
+    with Session(engine) as db:
+        b = Builder(db)
+        b.meal(MONDAY - timedelta(weeks=1), 400)  # gives every Monday below a usual count
+        cases = [(-0.1, 0.0, 380), (0.0, 0.0, 390), (10.0, 2.5, 360), (20.0, 0.0, 420), (28.0, 0.0, 440), (27.9, 1.0, 350)]
+        for week, (temp, rain, actual) in enumerate(cases):
+            b.meal(MONDAY + timedelta(weeks=week), actual, weather=(temp, rain))
+        b.meal(MONDAY + timedelta(weeks=10), 999)  # no weather: left out of weather bands
+        db.commit()
+        result = analysis.weather_bands(db, "LUNCH", MONDAY, MONDAY + timedelta(weeks=11))
+    rain = {band["key"]: band for band in result["rain"]}
+    temp = {band["key"]: band for band in result["temperature"]}
+    assert rain["rain"]["days"] == 2 and rain["dry"]["days"] == 4
+    assert rain["rain"]["avg_actual"] == 355
+    assert {k: v["days"] for k, v in temp.items()} == {"below0": 1, "0to10": 1, "10to20": 1, "20to28": 2, "28plus": 1}
+    assert temp["below0"]["low_sample_note"] == "1일뿐이라 참고만 하세요."
+    assert result["days"] == 6
+    band = temp["20to28"]
+    assert band["avg_actual"] == round((420 + 350) / 2)
+    assert band["avg_diff"] == round(sum(p["diff"] for p in band["points"]) / 2)
+    assert result["weather_window"] == "11:00~12:00"
+
+
+def test_weather_text_uses_serving_window():
+    assert analysis.weather_text("11:00~12:00", 3.0, 22.0) == "11:00~12:00 · 비 3mm · 22℃"
+    assert analysis.weather_text("17:00~18:00", 0.0, -1.5) == "17:00~18:00 · 비 안 옴 · -1.5℃"
+    assert analysis.weather_window_label("DINNER") == "17:00~18:00"
+
+
+def test_date_detail_lists_menus_in_order_with_main_recipe_and_highlight(engine):
+    target = MONDAY + timedelta(weeks=1)
+    with Session(engine) as db:
+        b = Builder(db)
+        b.meal(MONDAY, 400)
+        service = b.meal(target, 450, menus=(("쌀밥", None, ("쌀",)), ("제육볶음", None, ("돼지고기", "양파")), ("김치", None, ())), weather=(18.0, 0.0))
+        items = sorted(service.menus, key=lambda m: m.sort_order)
+        items[1].is_representative = True
+        recipe = Recipe(menu_id=items[1].menu_id, name="제육볶음 - 고추장형")
+        db.add(recipe)
+        db.flush()
+        items[1].recipe_id = recipe.id
+        items[0].recipe_name_snapshot = "쌀밥 기본"
+        db.commit()
+        pork = b.ingredients["돼지고기"].id
+        detail = analysis.date_detail(db, "LUNCH", target, pork)
+    assert [m["name"] for m in detail["menus"]] == ["쌀밥", "제육볶음", "김치"]
+    assert [m["is_main"] for m in detail["menus"]] == [False, True, False]
+    assert detail["menus"][0]["recipe_name"] == "쌀밥 기본"
+    assert detail["menus"][1]["recipe_name"] == "제육볶음 - 고추장형"
+    assert [m["has_ingredient"] for m in detail["menus"]] == [False, True, False]
+    assert [i["highlight"] for i in detail["menus"][1]["ingredients"]] == [True, False]
+    assert (detail["actual"], detail["usual"], detail["diff"]) == (450, 400, 50)
+    assert detail["weather"]["text"] == "11:00~12:00 · 비 안 옴 · 18℃"
+
+
+def test_analysis_api_and_excel_export(engine):
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    with sessions() as db:
+        b = Builder(db)
+        b.meal(MONDAY, 400, menus=(("갈비찜", None, ("소갈비",)),), weather=(5.0, 1.0))
+        b.meal(MONDAY + timedelta(weeks=1), 420, menus=(("갈비찜", None, ("소갈비",)),), weather=(5.0, 0.0))
+        db.commit()
+        ingredient_id = b.ingredients["소갈비"].id
+    app = FastAPI()
+    app.include_router(analysis_router.router)
+
+    def override_db():
+        with sessions() as db:
+            yield db
+
+    app.dependency_overrides[analysis_router.get_db] = override_db
+    app.dependency_overrides[analysis_router.current_user] = lambda: SimpleNamespace(id=1)
+    params = {"start": MONDAY.isoformat(), "end": (MONDAY + timedelta(weeks=2)).isoformat(), "meal_type": "LUNCH"}
+    with TestClient(app) as client:
+        daily = client.get("/api/analysis/daily", params=params)
+        assert daily.status_code == 200 and len(daily.json()["points"]) == 2
+        assert client.get("/api/analysis/menu-group", params={**params, "name": "갈비찜", "weather": "rain"}).json()["days"] == 1
+        assert client.get("/api/analysis/ingredient", params={**params, "ingredient_id": ingredient_id}).json()["days"] == 2
+        assert client.get("/api/analysis/weather", params=params).json()["days"] == 1
+        assert client.get("/api/analysis/date-detail", params={"date": MONDAY.isoformat(), "meal_type": "LUNCH"}).json()["menus"][0]["name"] == "갈비찜"
+        assert client.get("/api/analysis/daily", params={**params, "meal_type": "BOTH"}).status_code == 400
+        assert client.get("/api/analysis/menu-group", params={**params, "name": "갈비찜", "weather": "windy"}).status_code == 400
+        for tab, extra in (("daily", {}), ("menu", {"name": "갈비찜"}), ("ingredient", {"ingredient_id": ingredient_id}), ("weather", {})):
+            response = client.get("/api/analysis/export.xlsx", params={**params, "tab": tab, **extra})
+            assert response.status_code == 200
+            assert response.content[:2] == b"PK"
