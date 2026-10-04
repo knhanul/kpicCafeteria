@@ -796,7 +796,6 @@ function updateGridStatus(menu=null){
       statusEl.className='grid-status grid-status-hint';
     }
   }
-  if(menu)updateRecipeDiffStatus(menu);
 }
 
 async function moveSelectedMenu(delta){const ids=state.selectedService.menus.map(m=>m.id),idx=ids.indexOf(state.selectedMenuItemId),next=idx+delta;if(next<0||next>=ids.length)return;[ids[idx],ids[next]]=[ids[next],ids[idx]];try{state.selectedService=await api(`/api/workspace/services/${state.selectedServiceId}/reorder`,json('POST',{menu_ids:ids}));renderEditor();renderWeekBoard();}catch(e){toast(e.message,true);}}
