@@ -455,6 +455,29 @@ def date_detail(
 # ---------------------------------------------------------------------------
 MENU_MODES = {"name": "메뉴 이름", "group": "통계집계명"}
 DEFAULT_MIN_DAYS = {"LUNCH": 5, "DINNER": 4}
+# 메뉴 범위. 역할(role)은 식단 줄에 따로 저장되지 않아 메뉴 기준정보(Menu.role)를 씁니다.
+MENU_SCOPES = {"main_dish": "주찬만", "main_menu": "메인 메뉴만", "with_side": "부찬 포함", "all": "전체"}
+SCOPE_ROLES = {"main_dish": ("주찬",), "with_side": ("주찬", "부찬")}
+MAIN_MENU_MIN_DAYS = {"LUNCH": 3, "DINNER": 2}
+
+
+def check_menu_scope(scope: str) -> str:
+    if scope not in MENU_SCOPES:
+        raise AnalysisError("메뉴 범위는 주찬만, 메인 메뉴만, 부찬 포함, 전체 중에서 골라 주세요.")
+    return scope
+
+
+def default_min_days(meal_type: str, scope: str = "all") -> int:
+    return (MAIN_MENU_MIN_DAYS if scope == "main_menu" else DEFAULT_MIN_DAYS)[meal_type]
+
+
+def _scope_conditions(scope: str) -> list:
+    check_menu_scope(scope)
+    if scope == "main_menu":
+        return [MealServiceMenu.is_representative.is_(True)]
+    if scope in SCOPE_ROLES:
+        return [Menu.role.in_(SCOPE_ROLES[scope])]
+    return []
 MAX_COMPARE_ITEMS = 5
 
 
@@ -470,7 +493,7 @@ def _menu_key_column(mode: str):
 
 def _service_menu_keys(
     db: Session, meal_type: str, start: date, end: date, mode: str,
-    keys: list[str] | None = None, main_only: bool = False,
+    keys: list[str] | None = None, main_only: bool = False, scope: str = "all",
 ) -> dict[str, set[int]]:
     """{menu key: set of meal_service ids} for meals in the period (one key counted once per meal)."""
     column = _menu_key_column(mode)
@@ -484,7 +507,10 @@ def _service_menu_keys(
     if keys is not None:
         stmt = stmt.where(column.in_(keys))
     if main_only:
-        stmt = stmt.where(MealServiceMenu.is_representative.is_(True))
+        scope = "main_menu"
+    conditions = _scope_conditions(scope)
+    if conditions:
+        stmt = stmt.where(*conditions)
     result: dict[str, set[int]] = defaultdict(set)
     for key, service_id in db.execute(stmt).all():
         result[key].add(service_id)
@@ -493,7 +519,7 @@ def _service_menu_keys(
 
 def popular_menus(
     db: Session, meal_type: str, start: date, end: date, basis: str = "name", order: str = "top",
-    limit: int = 10, min_days: int | None = None, main_only: bool = False,
+    limit: int = 10, min_days: int | None = None, main_only: bool = False, scope: str | None = None,
 ) -> dict[str, Any]:
     """Menus ranked by the average difference (actual - 평소 식수, people) on the days they were served."""
     check_meal_type(meal_type)
@@ -503,17 +529,23 @@ def popular_menus(
         raise AnalysisError("상위 또는 하위만 선택할 수 있습니다.")
     if limit not in {10, 20}:
         raise AnalysisError("10개 또는 20개만 볼 수 있습니다.")
+    if scope is None:
+        scope = "main_menu" if main_only else "all"
+    check_menu_scope(scope)
+    main_only = scope == "main_menu"
     if min_days is None:
-        min_days = DEFAULT_MIN_DAYS[meal_type]
+        min_days = default_min_days(meal_type, scope)
     if min_days < 1 or min_days > 365:
         raise AnalysisError("최소 등장 횟수는 1~365 사이로 입력해 주세요.")
     points = {p["service_id"]: p for p in _build_points(db, meal_type, start, end) if p["usual"] is not None}
     rows = []
     too_few = 0
-    for key, service_ids in _service_menu_keys(db, meal_type, start, end, basis, main_only=main_only).items():
+    max_days = 0
+    for key, service_ids in _service_menu_keys(db, meal_type, start, end, basis, scope=scope).items():
         members = [points[sid] for sid in service_ids if sid in points]
         if not members:
             continue
+        max_days = max(max_days, len(members))
         if len(members) < min_days:
             too_few += 1
             continue
@@ -543,6 +575,9 @@ def popular_menus(
         "limit": limit,
         "min_days": min_days,
         "main_only": main_only,
+        "scope": scope,
+        "scope_name": MENU_SCOPES[scope],
+        "max_days": max_days,
         "candidates": len(rows),
         "excluded_too_few": too_few,
         "items": ranked,
@@ -551,6 +586,7 @@ def popular_menus(
 
 def menu_compare(
     db: Session, meal_type: str, start: date, end: date, mode: str, names: list[str], weather_filter: str = "all",
+    scope: str = "all",
 ) -> dict[str, Any]:
     """One series per selected menu (by exact name or 통계집계명) plus the shared 평소 식수 line."""
     check_meal_type(meal_type)
@@ -559,9 +595,11 @@ def menu_compare(
     clean = _clean_compare_names(names, "메뉴")
     if weather_filter not in WEATHER_FILTERS:
         raise AnalysisError("날씨 조건이 올바르지 않습니다.")
-    by_key = _service_menu_keys(db, meal_type, start, end, mode, keys=clean)
+    by_key = _service_menu_keys(db, meal_type, start, end, mode, keys=clean, scope=check_menu_scope(scope))
     items, used, usual_line = _compare_series(db, meal_type, start, end, by_key, clean, weather_filter)
     return {
+        "scope": scope,
+        "scope_name": MENU_SCOPES[scope],
         "meal_type": meal_type,
         "meal_type_name": MEAL_TYPES[meal_type],
         "start": start.isoformat(),
@@ -577,20 +615,24 @@ def menu_compare(
     }
 
 
-def search_menus(db: Session, mode: str = "group", query: str = "", limit: int = 30) -> list[dict[str, Any]]:
+def search_menus(db: Session, mode: str = "group", query: str = "", limit: int = 30, scope: str = "all") -> list[dict[str, Any]]:
     check_menu_mode(mode)
-    if mode == "group":
+    conditions = _scope_conditions(scope)
+    if mode == "group" and not conditions:
         return search_menu_groups(db, query, limit)
+    column = _menu_key_column(mode)
+    count = func.count(func.distinct(MealServiceMenu.meal_service_id))
     stmt = (
-        select(Menu.name, func.count(func.distinct(MealServiceMenu.meal_service_id)))
+        select(column, count)
         .join(MealServiceMenu, MealServiceMenu.menu_id == Menu.id)
-        .group_by(Menu.name)
+        .where(column != "", *conditions)
+        .group_by(column)
     )
     query = (query or "").strip()
     if query:
-        stmt = stmt.where(Menu.name.ilike(f"%{query}%"))
-    rows = db.execute(stmt.order_by(func.count(func.distinct(MealServiceMenu.meal_service_id)).desc(), Menu.name).limit(limit)).all()
-    return [{"name": name, "served": int(count)} for name, count in rows]
+        stmt = stmt.where(column.ilike(f"%{query}%"))
+    rows = db.execute(stmt.order_by(count.desc(), column).limit(limit)).all()
+    return [{"name": name, "served": int(c)} for name, c in rows]
 
 
 def _clean_compare_names(names: list[str], noun: str) -> list[str]:

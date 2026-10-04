@@ -481,3 +481,88 @@ def test_ingredient_compare_api_detail_highlight_and_excel(engine):
     assert wb.sheetnames == ["재료별식수", "재료별 요약"]
     assert wb["재료별식수"].max_row == 1 + 3 + 2
     assert [row[0].value for row in wb["재료별 요약"].iter_rows(min_row=2)] == ["돼지고기", "콩류"]
+
+
+def _scope_fixture(db):
+    """Roles come from the menu master (Menu.role). 비빔밥 is a 밥·죽 menu that is the day's main menu."""
+    b = Builder(db)
+    b.meal(MONDAY - timedelta(days=1), 400)
+    roles = {"제육볶음": "주찬", "비빔밥": "밥·죽", "계란말이": "부찬", "배추김치": "김치·절임", "미역국": "국·탕"}
+    plan = [
+        (440, ("제육볶음", "계란말이", "배추김치"), "제육볶음"),
+        (430, ("제육볶음", "계란말이", "배추김치", "미역국"), "제육볶음"),
+        (380, ("비빔밥", "계란말이", "배추김치"), "비빔밥"),
+        (420, ("제육볶음", "배추김치"), "배추김치"),  # odd data: main flag on a side dish
+    ]
+    for index, (actual, names, main) in enumerate(plan):
+        service = b.meal(MONDAY + timedelta(days=index), actual, menus=tuple((name, None, ()) for name in names))
+        for item in service.menus:
+            item.is_representative = item.menu_name_snapshot == main
+    for name, role in roles.items():
+        b.menus[name].role = role
+    db.commit()
+    return b
+
+
+def test_popular_scope_main_dish_main_menu_with_side_and_all(engine):
+    with Session(engine) as db:
+        _scope_fixture(db)
+        start, end = MONDAY, MONDAY + timedelta(days=10)
+        run = lambda scope, **kw: analysis.popular_menus(db, "LUNCH", start, end, basis="name", limit=10, min_days=1, scope=scope, **kw)
+        main_dish, main_menu, with_side, every = run("main_dish"), run("main_menu"), run("with_side"), run("all")
+        legacy = analysis.popular_menus(db, "LUNCH", start, end, basis="name", limit=10, min_days=1, main_only=True)
+        default_main = analysis.popular_menus(db, "LUNCH", start, end, basis="name", scope="main_menu")
+        default_dinner = analysis.popular_menus(db, "DINNER", start, end, basis="name", scope="main_menu")
+        default_dish = analysis.popular_menus(db, "LUNCH", start, end, basis="name", scope="main_dish")
+        empty = analysis.popular_menus(db, "LUNCH", start, end, basis="name", scope="main_dish", min_days=4)
+        with pytest.raises(analysis.AnalysisError):
+            run("side_only")
+    names = lambda r: {i["name"] for i in r["items"]}
+    assert names(main_dish) == {"제육볶음"}
+    assert {i["name"]: i["days"] for i in main_dish["items"]} == {"제육볶음": 3}
+    # 메인 메뉴만 follows the per-day flag: 제육볶음 only 2 days as main, plus 비빔밥 and the flagged 배추김치
+    assert {i["name"]: i["days"] for i in main_menu["items"]} == {"제육볶음": 2, "비빔밥": 1, "배추김치": 1}
+    assert names(with_side) == {"제육볶음", "계란말이"}
+    assert names(every) == {"제육볶음", "계란말이", "배추김치", "미역국", "비빔밥"}
+    assert names(legacy) == names(main_menu) and legacy["scope"] == "main_menu"
+    assert (default_main["min_days"], default_dinner["min_days"], default_dish["min_days"]) == (3, 2, 5)
+    assert main_dish["scope_name"] == "주찬만" and main_menu["main_only"] is True
+    # empty result still tells the largest count found, for the "가장 많이 나온 메뉴도 N번" message
+    assert empty["items"] == [] and empty["max_days"] == 3 and empty["excluded_too_few"] == 1
+
+
+def test_menu_search_and_compare_respect_scope(engine):
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    with sessions() as db:
+        _scope_fixture(db)
+        start, end = MONDAY, MONDAY + timedelta(days=10)
+        dish = analysis.search_menus(db, "name", "", scope="main_dish")
+        side = analysis.search_menus(db, "group", "", scope="with_side")
+        group_all = analysis.search_menus(db, "group", "")
+        compare_main = analysis.menu_compare(db, "LUNCH", start, end, "name", ["제육볶음", "배추김치"], scope="main_menu")
+        compare_all = analysis.menu_compare(db, "LUNCH", start, end, "name", ["제육볶음", "배추김치"])
+    assert [i["name"] for i in dish] == ["제육볶음"]
+    assert {i["name"] for i in side} == {"제육볶음", "계란말이"}
+    assert len(group_all) == 6
+    assert [i["days"] for i in compare_main["items"]] == [2, 1]
+    assert [i["days"] for i in compare_all["items"]] == [3, 4]
+    app = FastAPI()
+    app.include_router(analysis_router.router)
+
+    def override_db():
+        with sessions() as db:
+            yield db
+
+    app.dependency_overrides[analysis_router.get_db] = override_db
+    app.dependency_overrides[analysis_router.current_user] = lambda: SimpleNamespace(id=1)
+    params = [("start", MONDAY.isoformat()), ("end", (MONDAY + timedelta(days=10)).isoformat()), ("meal_type", "LUNCH")]
+    with TestClient(app) as client:
+        popular = client.get("/api/analysis/popular-menus", params=[*params, ("scope", "with_side"), ("min_days", "1")]).json()
+        assert {i["name"] for i in popular["items"]} == {"제육볶음", "계란말이"}
+        assert client.get("/api/analysis/popular-menus", params=[*params, ("scope", "x")]).status_code == 400
+        found = client.get("/api/analysis/menus/search", params={"mode": "name", "scope": "main_dish"}).json()["items"]
+        assert [i["name"] for i in found] == ["제육볶음"]
+        menus = client.get("/api/analysis/menus", params=[*params, ("mode", "name"), ("names", "제육볶음"), ("scope", "main_menu")]).json()
+        assert menus["items"][0]["days"] == 2 and menus["scope_name"] == "메인 메뉴만"
+        excel = client.get("/api/analysis/export.xlsx", params=[*params, ("tab", "popular"), ("scope", "main_dish"), ("min_days", "1")])
+        assert excel.status_code == 200 and excel.content[:2] == b"PK"

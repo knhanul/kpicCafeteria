@@ -347,7 +347,8 @@ function switchView(view) {
   $$('.side-nav button').forEach(x=>x.classList.toggle('active',x.dataset.view===view));
   const titles={workspace:'',orders:'발주 관리',master:'메뉴·재료 기준정보',analysis:'식수 분석','master-data':'기본 데이터 관리','users':'사용자 관리','backup':'시스템 데이터 백업','archive':'Excel 데이터 아카이브'};
   $('#page-title').textContent=titles[view]||'';
-  $('#top-header').classList.toggle('hidden', view==='workspace');
+  // 화면 이름만 보여주는 상단 제목 영역은 공간만 차지해서, 이 화면들에서는 숨기고 내용이 바로 위에서 시작하게 합니다.
+  $('#top-header').classList.toggle('hidden', ['workspace','orders','master','analysis'].includes(view));
   if(view==='orders') initOrders();
   if(view==='master') loadMaster();
   if(view==='master-data') loadMasterData();
@@ -2554,6 +2555,9 @@ window.addEventListener('beforeunload',e=>{if(isUILocked()){e.preventDefault();e
 /* ==================== 식수 분석 ==================== */
 const ANALYSIS_TABS = {daily:'날짜별 식수', popular:'인기 메뉴', menu:'메뉴별 식수', ingredient:'재료별 식수', weather:'날씨별 식수'};
 const ANALYSIS_MIN_DAYS = {LUNCH:5, DINNER:4};
+const ANALYSIS_MAIN_MENU_MIN_DAYS = {LUNCH:3, DINNER:2};
+const ANALYSIS_SCOPES = {main_dish:'주찬만', main_menu:'메인 메뉴만', with_side:'부찬 포함', all:'전체'};
+function analysisMinDefault(mealType, scope){ return (scope==='main_menu'?ANALYSIS_MAIN_MENU_MIN_DAYS:ANALYSIS_MIN_DAYS)[mealType]; }
 const ANALYSIS_MENU_MODES = {name:'메뉴 이름', group:'통계집계명'};
 const ANALYSIS_MAX_MENUS = 5;
 const ANALYSIS_ING_MODES = {name:'재료 이름', group:'통계집계명(분석군)'};
@@ -2562,13 +2566,13 @@ function analysisPicker(a){
   if(a.tab==='ingredient') return {modeKey:'ingMode', itemsKey:'ingItems', modes:ANALYSIS_ING_MODES, noun:'재료', served:'들어간 날',
     placeholder:{name:'재료 이름 입력 후 Enter 또는 검색 (예: 두부)', group:'통계집계명(분석군) 입력 후 Enter 또는 검색 (예: 돼지고기)'}, searchUrl:(mode,q)=>`/api/analysis/ingredient-keys/search?mode=${mode}&q=${encodeURIComponent(q)}`};
   return {modeKey:'menuMode', itemsKey:'menuItems', modes:ANALYSIS_MENU_MODES, noun:'메뉴', served:'나온 날',
-    placeholder:{name:'정확한 메뉴 이름 입력 후 Enter 또는 검색 (예: LA갈비찜)', group:'통계집계명 입력 후 Enter 또는 검색 (예: 갈비찜)'}, searchUrl:(mode,q)=>`/api/analysis/menus/search?mode=${mode}&q=${encodeURIComponent(q)}`};
+    placeholder:{name:'정확한 메뉴 이름 입력 후 Enter 또는 검색 (예: LA갈비찜)', group:'통계집계명 입력 후 Enter 또는 검색 (예: 갈비찜)'}, searchUrl:(mode,q)=>`/api/analysis/menus/search?mode=${mode}&scope=${analysisState().menuScope}&q=${encodeURIComponent(q)}`};
 }
 const ANALYSIS_COLORS = ['#1d5f9a','#d9480f','#2b8a3e','#7048e8','#c2255c'];
 const ANALYSIS_WEATHER_FILTERS = {all:'전체', rain:'비 오는 날', hot:'더운 날(28℃ 이상)', cold:'추운 날(영하)'};
 function analysisDefaults(){
   const end=new Date();end.setHours(12,0,0,0);
-  return {tab:'daily', start:isoDate(analysisMonthsBack(end,3)), end:isoDate(end), mealType:'LUNCH', showWeather:false, menuMode:'group', menuItems:[], ingMode:'name', ingItems:[], popBasis:'name', popOrder:'top', popLimit:10, popMinDays:ANALYSIS_MIN_DAYS.LUNCH, popMainOnly:false, weatherFilter:'all', result:null, query:null, band:null};
+  return {tab:'daily', start:isoDate(analysisMonthsBack(end,3)), end:isoDate(end), mealType:'LUNCH', showWeather:false, menuMode:'group', menuItems:[], menuScope:'main_dish', popScope:'main_dish', popSel:{basis:null, items:[], version:0, carried:0}, ingMode:'name', ingItems:[], popBasis:'name', popOrder:'top', popLimit:10, popMinDays:ANALYSIS_MIN_DAYS.LUNCH, weatherFilter:'all', result:null, query:null, band:null};
 }
 function analysisMonthsBack(end, months){ const d=new Date(end); d.setMonth(d.getMonth()-months); d.setDate(d.getDate()+1); return d; }
 function analysisState(){ if(!state.analysis) state.analysis=analysisDefaults(); return state.analysis; }
@@ -2584,8 +2588,18 @@ function initAnalysis(){
   renderAnalysisResult();
 }
 
+// 탭마다 조회 조건과 결과를 따로 보관해서, 다른 탭에 다녀와도 다시 조회하지 않고 그대로 보여줍니다.
+const ANALYSIS_TAB_KEYS=['start','end','mealType','showWeather','weatherFilter','result','query','band','popMinDays'];
 function switchAnalysisTab(tab){
-  const a=analysisState();a.tab=tab;a.result=null;a.query=null;a.band=null;a.weatherFilter='all';
+  const a=analysisState();
+  if(a.tab===tab) return;
+  a.saved=a.saved||{};
+  a.saved[a.tab]=Object.fromEntries(ANALYSIS_TAB_KEYS.map(k=>[k,a[k]]));
+  const saved=a.saved[tab];
+  if(saved) Object.assign(a,saved);
+  else { a.result=null;a.query=null;a.band=null;a.weatherFilter='all'; }  // 처음 여는 탭은 지금 기간·배식을 이어받습니다.
+  a.tab=tab;
+  if(tab==='menu') carryPopularSelection(a);
   $$('#analysis-tabs button[data-analysis-tab]').forEach(x=>x.classList.toggle('active',x.dataset.analysisTab===tab));
   renderAnalysisConditions();renderAnalysisResult();
 }
@@ -2595,15 +2609,17 @@ function renderAnalysisConditions(){
   const seg=(key,options,current)=>`<div class="an-seg">${options.map(([k,v])=>`<button type="button" data-${key}="${k}" class="${String(current)===String(k)?'active':''}">${v}</button>`).join('')}</div>`;
   const pk=(a.tab==='menu'||a.tab==='ingredient')?analysisPicker(a):null;
   const selector = pk
-    ? `<div class="an-field"><span>조회 기준</span>${seg('pick-mode',Object.entries(pk.modes),a[pk.modeKey])}</div>
+    ? `${a.tab==='menu'?`<div class="an-field"><span>메뉴 범위</span>${seg('menu-scope',Object.entries(ANALYSIS_SCOPES),a.menuScope)}</div>`:''}
+       <div class="an-field"><span>조회 기준</span>${seg('pick-mode',Object.entries(pk.modes),a[pk.modeKey])}</div>
        <div class="an-field an-search-field"><span>${escapeHtml(pk.modes[a[pk.modeKey]])} (최대 ${ANALYSIS_MAX_MENUS}개 비교)</span><div class="an-search"><div class="search-submit-row"><input id="an-search-input" autocomplete="off" placeholder="${escapeHtml(pk.placeholder[a[pk.modeKey]])}"><button type="button" class="secondary-button" id="an-search-btn">검색</button></div><div class="an-search-list hidden" id="an-search-list"></div></div>
        <div class="an-chips" id="an-chips">${a[pk.itemsKey].map((name,i)=>`<span class="an-chip" style="--chip:${ANALYSIS_COLORS[i%ANALYSIS_COLORS.length]}">${escapeHtml(name)}<button type="button" data-remove-chip="${i}" aria-label="${escapeHtml(name)} 빼기">×</button></span>`).join('')||`<span class="muted">${pk.noun}를 검색한 뒤 목록에서 고르세요.</span>`}</div></div>`
     : a.tab==='popular'
-    ? `<div class="an-field"><span>기준</span>${seg('pop-basis',Object.entries(ANALYSIS_MENU_MODES),a.popBasis)}</div>
+    ? `<div class="an-field"><span>메뉴 범위</span>${seg('pop-scope',Object.entries(ANALYSIS_SCOPES),a.popScope)}</div>
+       <div class="an-field"><span>기준</span>${seg('pop-basis',Object.entries(ANALYSIS_MENU_MODES),a.popBasis)}</div>
        <div class="an-field"><span>순서</span>${seg('pop-order',[['top','상위'],['bottom','하위']],a.popOrder)}</div>
        <div class="an-field"><span>개수</span>${seg('pop-limit',[[10,'10개'],[20,'20개']],a.popLimit)}</div>
        <label class="an-field"><span>최소 등장 횟수</span><input type="number" id="an-min-days" min="1" max="365" value="${a.popMinDays}" style="width:90px"></label>
-       <label class="an-check"><input type="checkbox" id="an-main-only" ${a.popMainOnly?'checked':''}> 메인 메뉴로 나온 날만</label>`
+`
     : '';
   const weatherFilter = (a.tab==='menu'||a.tab==='ingredient')
     ? `<label class="an-field"><span>날씨</span><select id="an-weather-filter">${Object.entries(ANALYSIS_WEATHER_FILTERS).map(([k,v])=>`<option value="${k}" ${a.weatherFilter===k?'selected':''}>${v}</option>`).join('')}</select></label>` : '';
@@ -2618,12 +2634,13 @@ function renderAnalysisConditions(){
   $('#an-start').addEventListener('change',e=>{a.start=e.target.value;});
   $('#an-end').addEventListener('change',e=>{a.end=e.target.value;});
   $$('[data-months]',root).forEach(b=>b.addEventListener('click',()=>{const end=new Date();end.setHours(12,0,0,0);a.end=isoDate(end);a.start=isoDate(analysisMonthsBack(end,Number(b.dataset.months)));$('#an-start').value=a.start;$('#an-end').value=a.end;}));
-  $$('[data-meal]',root).forEach(b=>b.addEventListener('click',()=>{a.mealType=b.dataset.meal;a.popMinDays=ANALYSIS_MIN_DAYS[a.mealType];$$('[data-meal]',root).forEach(x=>x.classList.toggle('active',x===b));const md=$('#an-min-days');if(md)md.value=a.popMinDays;}));
+  $$('[data-meal]',root).forEach(b=>b.addEventListener('click',()=>{a.mealType=b.dataset.meal;a.popMinDays=analysisMinDefault(a.mealType,a.popScope);$$('[data-meal]',root).forEach(x=>x.classList.toggle('active',x===b));const md=$('#an-min-days');if(md)md.value=a.popMinDays;}));
   const segBind=(key,apply)=>$$(`[data-${key}]`,root).forEach(b=>b.addEventListener('click',()=>{apply(b.getAttribute(`data-${key}`));$$(`[data-${key}]`,root).forEach(x=>x.classList.toggle('active',x===b));}));
   segBind('pop-basis',v=>{a.popBasis=v;});segBind('pop-order',v=>{a.popOrder=v;});segBind('pop-limit',v=>{a.popLimit=Number(v);});
   if(pk) segBind('pick-mode',v=>{if(a[pk.modeKey]!==v){a[pk.modeKey]=v;a[pk.itemsKey]=[];renderAnalysisConditions();}});
-  $('#an-min-days')?.addEventListener('change',e=>{a.popMinDays=Number(e.target.value)||ANALYSIS_MIN_DAYS[a.mealType];});
-  $('#an-main-only')?.addEventListener('change',e=>{a.popMainOnly=e.target.checked;});
+  $('#an-min-days')?.addEventListener('change',e=>{a.popMinDays=Number(e.target.value)||analysisMinDefault(a.mealType,a.popScope);});
+  segBind('pop-scope',v=>{a.popScope=v;a.popMinDays=analysisMinDefault(a.mealType,v);const md=$('#an-min-days');if(md)md.value=a.popMinDays;});
+  segBind('menu-scope',v=>{a.menuScope=v;$('#an-search-list')?.classList.add('hidden');});
   $$('[data-remove-chip]',root).forEach(b=>b.addEventListener('click',()=>{a[pk.itemsKey].splice(Number(b.dataset.removeChip),1);renderAnalysisConditions();}));
   $('#an-weather-filter')?.addEventListener('change',e=>{a.weatherFilter=e.target.value;});
   $('#an-show-weather')?.addEventListener('change',e=>{a.showWeather=e.target.checked;if(a.result)renderAnalysisResult();});
@@ -2637,7 +2654,7 @@ function bindAnalysisSearch(){
   const search=async value=>{
     try{
       const data=await api(pk.searchUrl(a[pk.modeKey],value.trim()));
-      list.innerHTML=data.items.length?`<div class="an-search-hint">${data.items.length}개 찾음 · 눌러서 추가</div>`+data.items.map((item,i)=>`<button type="button" data-index="${i}"><span>${escapeHtml(item.name)}</span><small>${numberText(item.served)}회 제공</small></button>`).join(''):'<div class="an-search-empty">찾는 이름이 없습니다.</div>';
+      list.innerHTML=data.items.length?`<div class="an-search-hint">${data.items.length}개 찾음 · 눌러서 추가</div>`+data.items.map((item,i)=>`<button type="button" data-index="${i}"><span>${escapeHtml(item.name)}</span><small>${numberText(item.served)}회 제공</small></button>`).join(''):`<div class="an-search-empty">찾는 이름이 없습니다.${a.tab==='menu'&&a.menuScope!=='all'?` 지금은 ‘${ANALYSIS_SCOPES[a.menuScope]}’ 범위에서 찾았어요. 메뉴 범위를 ‘전체’로 바꿔 보세요.`:''}</div>`;
       list.classList.remove('hidden');
       $$('button[data-index]',list).forEach(b=>b.addEventListener('mousedown',e=>{e.preventDefault();pick(data.items[Number(b.dataset.index)]);}));
     }catch(e){toast(e.message,true);}
@@ -2662,8 +2679,8 @@ function analysisQueryParams(){
   if(!a.start||!a.end) throw new Error('조회 기간을 선택해 주세요.');
   if(a.start>a.end) throw new Error('시작일이 종료일보다 늦습니다.');
   const params={start:a.start,end:a.end,meal_type:a.mealType};
-  if(a.tab==='menu'){ if(!a.menuItems.length) throw new Error('목록에서 메뉴를 하나 이상 골라 주세요.'); params.mode=a.menuMode; params.names=[...a.menuItems]; params.weather=a.weatherFilter; }
-  if(a.tab==='popular'){ const md=Number(a.popMinDays); if(!Number.isInteger(md)||md<1||md>365) throw new Error('최소 등장 횟수는 1~365 사이로 입력해 주세요.'); Object.assign(params,{basis:a.popBasis,order:a.popOrder,limit:a.popLimit,min_days:md,main_only:a.popMainOnly}); }
+  if(a.tab==='menu'){ if(!a.menuItems.length) throw new Error('목록에서 메뉴를 하나 이상 골라 주세요.'); params.mode=a.menuMode; params.names=[...a.menuItems]; params.weather=a.weatherFilter; params.scope=a.menuScope; }
+  if(a.tab==='popular'){ const md=Number(a.popMinDays); if(!Number.isInteger(md)||md<1||md>365) throw new Error('최소 등장 횟수는 1~365 사이로 입력해 주세요.'); Object.assign(params,{basis:a.popBasis,order:a.popOrder,limit:a.popLimit,min_days:md,scope:a.popScope}); }
   if(a.tab==='ingredient'){ if(!a.ingItems.length) throw new Error('목록에서 재료를 하나 이상 골라 주세요.'); params.mode=a.ingMode; params.names=[...a.ingItems]; params.weather=a.weatherFilter; }
   return params;
 }
@@ -2679,7 +2696,7 @@ async function runAnalysisQuery(){
     try{
       const result=await api(`${ANALYSIS_ENDPOINTS[tab]}?${analysisSearchParams(params)}`);
       if(a.tab!==tab) return;
-      a.result=result;a.query={tab,params};a.band=null;
+      a.result=result;a.query={tab,params};a.band=null;a.carryNote=null;
       renderAnalysisResult();
     }catch(e){ toast(e.message,true); }
   });
@@ -2693,7 +2710,7 @@ function analysisNum(v){ return v===null||v===undefined?'—':numberText(v); }
 
 function renderAnalysisResult(){
   const a=analysisState();const root=$('#analysis-result');if(!root)return;
-  if(!a.result){ root.innerHTML=`<div class="an-empty">조건을 정한 뒤 <strong>조회</strong> 버튼을 눌러 주세요.</div>`; return; }
+  if(!a.result){ root.innerHTML=`${a.tab==='menu'&&a.carryNote?`<div class="an-note">${escapeHtml(a.carryNote)}</div>`:''}<div class="an-empty">조건을 정한 뒤 <strong>조회</strong> 버튼을 눌러 주세요.</div>`; return; }
   if(a.query.tab==='weather'){ renderAnalysisWeather(root,a.result); return; }
   if(a.query.tab==='popular'){ renderAnalysisPopular(root,a.result); return; }
   if(a.query.tab==='menu'||a.query.tab==='ingredient'){ renderAnalysisMenus(root,a.result); return; }
@@ -2798,34 +2815,94 @@ function analysisSignedText(v){ if(v===null||v===undefined) return '—'; if(v>0
 
 function renderAnalysisPopular(root, r){
   const a=analysisState();
-  const title=[`${r.order==='top'?'상위':'하위'} 인기 메뉴 ${r.limit}개`, r.basis_name+' 기준', r.meal_type_name, `${r.start} ~ ${r.end}`];
-  if(r.main_only) title.push('메인 메뉴로 나온 날만');
+  const title=[`${r.order==='top'?'상위':'하위'} 인기 메뉴 ${r.limit}개`, r.scope_name, r.basis_name+' 기준', r.meal_type_name, `${r.start} ~ ${r.end}`];
   const explain=`그 메뉴가 나온 날 실제 식수가 평소 식수보다 평균 몇 명 많았는지(+), 적었는지(−)로 순서를 매겼어요. ${r.min_days}번보다 적게 나온 메뉴${r.excluded_too_few?` ${numberText(r.excluded_too_few)}개`:''}는 뺐어요.`;
-  if(!r.items.length){ root.innerHTML=`<div class="an-card"><h3>${escapeHtml(title.join(' · '))}</h3><p class="an-sub">${escapeHtml(explain)}</p><div class="an-empty">조건에 맞는 메뉴가 없습니다. 최소 등장 횟수를 줄이거나 기간을 늘려 보세요.</div></div>`; return; }
+  if(!r.items.length){ root.innerHTML=`<div class="an-card"><h3>${escapeHtml(title.join(' · '))}</h3><p class="an-sub">${escapeHtml(explain)}</p><div class="an-empty">${r.max_days?`가장 많이 나온 메뉴도 ${numberText(r.max_days)}번이에요. 최소 등장 횟수를 ${numberText(r.max_days)} 이하로 낮추거나 기간을 늘려 보세요.`:'이 기간에는 실제 식수가 입력된 날 중에 이 범위의 메뉴가 없어요. 기간이나 메뉴 범위를 바꿔 보세요.'}</div></div>`; return; }
+  if(a.popSel.basis!==r.basis) a.popSel={basis:r.basis, items:[], version:(a.popSel.version||0)+1, carried:a.popSel.carried||0};  // 기준(메뉴 이름/통계집계명)이 바뀌면 이름이 달라서 선택을 비웁니다.
+  const sel=a.popSel.items;
   const maxAbs=Math.max(1,...r.items.map(i=>Math.abs(i.avg_diff||0)));
   const bars=r.items.map((item,i)=>{const v=item.avg_diff||0;const w=Math.abs(v)/maxAbs*50;
-    return `<button type="button" class="an-pop-row" data-pop="${i}" title="${escapeHtml(item.name)} — 눌러서 메뉴별 식수 보기">
+    return `<div class="an-pop-line"><input type="checkbox" class="an-pop-check" data-pop-check="${i}" aria-label="${escapeHtml(item.name)} 비교에 넣기" ${sel.includes(item.name)?'checked':''}><button type="button" class="an-pop-row" data-pop="${i}" title="${escapeHtml(item.name)} — 눌러서 메뉴별 식수 보기">
       <span class="an-pop-rank">${item.rank}</span><span class="an-pop-name">${escapeHtml(item.name)}</span>
       <span class="an-pop-track"><span class="an-pop-zero"></span><span class="an-pop-bar ${v>=0?'an-pop-pos':'an-pop-neg'}" style="${v>=0?`left:50%;width:${w}%`:`right:50%;width:${w}%`}"></span></span>
-      <span class="an-pop-val ${analysisDiffClass(v)}">${analysisSignedText(item.avg_diff)}</span></button>`;}).join('');
+      <span class="an-pop-val ${analysisDiffClass(v)}">${analysisSignedText(item.avg_diff)}</span></button></div>`;}).join('');
   root.innerHTML=`<div class="an-card">
       <div class="an-card-head"><h3>${escapeHtml(title.join(' · '))}</h3><span class="an-days">후보 ${numberText(r.candidates)}개</span></div>
       <p class="an-explain">${escapeHtml(explain)}</p>
+      <div class="an-pop-compare" id="an-pop-compare"></div>
       <div class="an-pop-chart">${bars}</div>
-      <p class="an-sub">막대나 표의 메뉴를 누르면 메뉴별 식수에서 그 메뉴를 날짜별로 볼 수 있어요.</p>
+      <p class="an-sub">메뉴 이름을 누르면 그 메뉴 하나를, 체크한 뒤 ‘선택한 메뉴 비교’를 누르면 여러 메뉴를 메뉴별 식수에서 함께 볼 수 있어요. 상위·하위를 바꿔 조회해도 체크는 남아 있어요.</p>
     </div>
     <div class="an-card"><div class="an-table-head"><h4>인기 메뉴 표</h4><button type="button" class="secondary-button" data-an-download>Excel 내려받기</button></div>
-      <div class="table-wrap an-table-wrap"><table class="data-table an-table"><thead><tr><th class="num">순위</th><th>메뉴</th><th class="num">나온 날 수</th><th class="num">평균 실제</th><th class="num">평균 평소</th><th class="num">평균 차이(명)</th></tr></thead><tbody>
-      ${r.items.map((item,i)=>`<tr data-pop="${i}" tabindex="0"><td class="num">${item.rank}</td><td>${escapeHtml(item.name)}</td><td class="num">${numberText(item.days)}일</td><td class="num">${analysisNum(item.avg_actual)}명</td><td class="num">${analysisNum(item.avg_usual)}명</td><td class="num ${analysisDiffClass(item.avg_diff)}">${analysisSignedText(item.avg_diff)}</td></tr>`).join('')}
+      <div class="table-wrap an-table-wrap"><table class="data-table an-table"><thead><tr><th class="an-col-check">비교</th><th class="num">순위</th><th>메뉴</th><th class="num">나온 날 수</th><th class="num">평균 실제</th><th class="num">평균 평소</th><th class="num">평균 차이(명)</th></tr></thead><tbody>
+      ${r.items.map((item,i)=>`<tr data-pop="${i}" tabindex="0"><td class="an-col-check"><input type="checkbox" class="an-pop-check" data-pop-check="${i}" aria-label="${escapeHtml(item.name)} 비교에 넣기" ${sel.includes(item.name)?'checked':''}></td><td class="num">${item.rank}</td><td>${escapeHtml(item.name)}</td><td class="num">${numberText(item.days)}일</td><td class="num">${analysisNum(item.avg_actual)}명</td><td class="num">${analysisNum(item.avg_usual)}명</td><td class="num ${analysisDiffClass(item.avg_diff)}">${analysisSignedText(item.avg_diff)}</td></tr>`).join('')}
       </tbody></table></div></div>`;
-  $$('[data-pop]',root).forEach(el=>{const go=()=>openPopularMenu(r.basis,r.items[Number(el.dataset.pop)].name);el.addEventListener('click',go);el.addEventListener('keydown',e=>{if(e.key==='Enter')go();});});
+  $$('[data-pop]',root).forEach(el=>{const go=e=>{if(e&&e.target.closest('.an-col-check,.an-pop-check'))return;openPopularMenu(r.basis,r.items[Number(el.dataset.pop)].name,r.scope);};el.addEventListener('click',go);el.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.target.classList.contains('an-pop-check'))go();});});
+  $$('[data-pop-check]',root).forEach(box=>{
+    box.addEventListener('click',e=>e.stopPropagation());
+    box.addEventListener('change',()=>{
+      const name=r.items[Number(box.dataset.popCheck)].name;
+      if(box.checked){
+        if(sel.length>=ANALYSIS_MAX_MENUS){box.checked=false;toast(`비교할 메뉴는 최대 ${ANALYSIS_MAX_MENUS}개까지 고를 수 있어요. 다른 메뉴의 체크를 먼저 풀어 주세요.`,true);return;}
+        if(!sel.includes(name)) sel.push(name);
+      } else { const k=sel.indexOf(name); if(k>=0) sel.splice(k,1); }
+      popularSelectionChanged();
+      $$(`[data-pop-check="${box.dataset.popCheck}"]`,root).forEach(x=>{x.checked=box.checked;});
+      renderPopularCompareBar(r);
+    });
+  });
+  renderPopularCompareBar(r);
   $$('[data-an-download]',root).forEach(b=>b.addEventListener('click',downloadAnalysisExcel));
 }
 
-function openPopularMenu(basis, name){
+// 인기 메뉴에서 체크한 메뉴를 메뉴별 식수 비교 메뉴로 넘깁니다. 탭을 직접 눌러 와도 적용되며, 이때는 조회하지 않고 칩만 넣습니다.
+// 체크가 마지막으로 넘긴 뒤 바뀐 경우에만 넘겨서, 메뉴별 탭에서 직접 고친 칩을 덮어쓰지 않습니다.
+function popularSelectionChanged(){ const a=analysisState(); a.popSel.version=(a.popSel.version||0)+1; }
+function carryPopularSelection(a, source){
+  const sel=a.popSel;
+  if(!sel.items.length || sel.version===sel.carried) return false;
+  const r=source || a.saved?.popular?.result || null;
+  sel.carried=sel.version;
+  a.menuMode=sel.basis||a.menuMode;
+  a.menuItems=sel.items.slice(0,ANALYSIS_MAX_MENUS);
+  if(r){ a.menuScope=r.scope||'all'; a.start=r.start; a.end=r.end; a.mealType=r.meal_type; }
+  a.result=null;a.query=null;a.band=null;a.carryNote=`인기 메뉴에서 체크한 메뉴 ${a.menuItems.length}개를 비교 메뉴로 넣었어요. 조회를 누르면 비교해요.`;
+  return true;
+}
+
+function renderPopularCompareBar(r){
+  const a=analysisState();const box=$('#an-pop-compare');if(!box)return;
+  const sel=a.popSel.items;
+  box.innerHTML=`<button type="button" class="primary-button" id="an-pop-compare-btn" ${sel.length?'':'disabled'}>선택한 메뉴 비교 (${sel.length})</button>
+    <div class="an-chips">${sel.length?sel.map((name,i)=>`<span class="an-chip" style="--chip:${ANALYSIS_COLORS[i%ANALYSIS_COLORS.length]}">${escapeHtml(name)}<button type="button" data-unsel="${i}" aria-label="${escapeHtml(name)} 빼기">×</button></span>`).join(''):`<span class="muted">비교할 메뉴를 체크하세요 (최대 ${ANALYSIS_MAX_MENUS}개).</span>`}</div>
+    ${sel.length?'<button type="button" class="ghost-button" id="an-pop-clear">선택 해제</button>':''}`;
+  $('#an-pop-compare-btn',box)?.addEventListener('click',()=>comparePopularSelection(r));
+  $('#an-pop-clear',box)?.addEventListener('click',()=>{sel.splice(0);popularSelectionChanged();$$('[data-pop-check]').forEach(x=>{x.checked=false;});renderPopularCompareBar(r);});
+  $$('[data-unsel]',box).forEach(b=>b.addEventListener('click',()=>{const name=sel[Number(b.dataset.unsel)];sel.splice(Number(b.dataset.unsel),1);popularSelectionChanged();r.items.forEach((item,i)=>{if(item.name===name)$$(`[data-pop-check="${i}"]`).forEach(x=>{x.checked=false;});});renderPopularCompareBar(r);}));
+}
+
+// 인기 메뉴에서 메뉴별 식수로 넘어갈 때는 인기 메뉴 조회의 기간·배식·범위·기준을 그대로 가져가서 조회합니다(버튼을 눌렀을 때만).
+function openMenuCompareFromPopular(r, names){
   const a=analysisState();
+  a.popSel.carried=a.popSel.version;  // 버튼으로 넘길 때는 아래에서 직접 넣고 바로 조회합니다.
   switchAnalysisTab('menu');
-  a.menuMode=basis;a.menuItems=[name];
+  a.start=r.start;a.end=r.end;a.mealType=r.meal_type;
+  a.menuMode=r.basis;a.menuScope=r.scope||'all';a.menuItems=names.slice(0,ANALYSIS_MAX_MENUS);
+  renderAnalysisConditions();
+  runAnalysisQuery();
+}
+function comparePopularSelection(r){
+  const a=analysisState();
+  if(!a.popSel.items.length){toast('비교할 메뉴를 먼저 체크해 주세요.',true);return;}
+  openMenuCompareFromPopular(r,[...a.popSel.items]);
+}
+
+function openPopularMenu(basis, name, scope='all'){
+  const a=analysisState();
+  const r=a.query?.tab==='popular'?a.result:null;
+  if(r){ openMenuCompareFromPopular(r,[name]); return; }
+  switchAnalysisTab('menu');
+  a.menuMode=basis;a.menuItems=[name];a.menuScope=scope;
   renderAnalysisConditions();
   runAnalysisQuery();
 }
@@ -2835,6 +2912,7 @@ function renderAnalysisMenus(root, r){
   const isIng=a.query.tab==='ingredient';const noun=isIng?'재료':'메뉴';const served=isIng?'들어간 날':'나온 날';
   const color=i=>ANALYSIS_COLORS[i%ANALYSIS_COLORS.length];
   const title=[`${r.mode_name} 기준`, r.meal_type_name, `${r.start} ~ ${r.end}`];
+  if(r.scope && r.scope!=='all') title.unshift(r.scope_name);
   if(r.weather_filter&&r.weather_filter!=='all') title.push(r.weather_filter_name);
   const notes=r.items.filter(i=>i.low_sample_note).map(i=>`<div class="an-note">${escapeHtml(i.name)}: ${escapeHtml(i.low_sample_note)}</div>`).join('');
   if(!r.dates.length){ root.innerHTML=`<div class="an-card"><h3>${escapeHtml(title.join(' · '))}</h3><div class="an-empty">조건에 맞는 식단(실제 식수 입력된 날)이 없습니다.</div></div>`; return; }

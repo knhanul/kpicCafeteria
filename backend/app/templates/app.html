@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>{{ app_name }}</title>
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/app.css?v={{ asset_version }}">
 </head>
 <body>
 <div id="app-shell" class="app-shell" data-must-change-password="{{ must_change_password }}">
@@ -91,7 +91,7 @@
 
     <main id="view-orders" class="view">
       <div class="page-card">
-        <div class="section-heading"><div><h2>발주 관리</h2><p>식단에 포함된 재료의 필요량을 자동으로 확인하고 발주량·발주일·배송일을 관리합니다. 필요량은 식단 기준으로 자동 계산되며, 발주량은 실제 주문 상황에 맞게 수정할 수 있습니다.</p></div></div>
+        <p class="view-hint">필요량은 식단 기준으로 자동 계산되고, 발주량·발주일·배송일은 실제 주문에 맞게 고칠 수 있어요.</p>
         <div class="orders-toolbar">
           <label class="field">시작일<input type="date" id="orders-date-from"></label>
           <label class="field">종료일<input type="date" id="orders-date-to"></label>
@@ -105,7 +105,7 @@
             <button data-order-view="date">사용일별</button>
           </div>
           <label class="field orders-status-filter">상태<select id="orders-status-filter"><option value="">전체</option><option value="pending">미처리</option><option value="ordered">발주완료</option><option value="skipped">발주안함</option></select></label>
-          <span class="search-submit-row"><input id="orders-search" placeholder="재료명 입력 후 Enter 또는 검색"><button type="button" class="secondary-button" id="orders-search-btn">검색</button></span>
+          <span class="search-submit-row"><input id="orders-search" placeholder="재료명 (Enter로 검색)"><button type="button" class="secondary-button" id="orders-search-btn">검색</button></span>
         </div>
         <div id="orders-bulk-bar" class="orders-bulk-bar hidden"></div>
         <div id="orders-root"></div>
@@ -129,7 +129,7 @@
 
     <main id="view-analysis" class="view">
       <div class="page-card">
-        <div class="section-heading"><div><h2>식수 분석</h2><p>실제 식수를 <strong>평소 식수</strong>(지난 1년 같은 배식의 평균, 중식·석식 따로)와 비교해 몇 명 많고 적었는지 보여줍니다. 조건을 정하고 조회를 누르세요.</p></div></div>
+        <p class="view-hint">실제 식수를 <strong>평소 식수</strong>(지난 1년 같은 배식의 평균, 중식·석식 따로)와 비교해 몇 명 많고 적었는지 보여줘요.</p>
         <div class="analysis-tabs" id="analysis-tabs" role="tablist">
           <button type="button" data-analysis-tab="daily" class="active">날짜별 식수</button>
           <button type="button" data-analysis-tab="popular">인기 메뉴</button>
@@ -176,6 +176,6 @@
 </div>
 <div id="modal-root"></div>
 <div id="toast-root" aria-live="polite"></div>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v={{ asset_version }}"></script>
 </body>
 </html>

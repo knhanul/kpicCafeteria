@@ -45,25 +45,25 @@ def menu_group(
 
 
 @router.get("/menus/search")
-def menus_search(q: str = "", mode: str = "group", db: Session = Depends(get_db), user: User = Depends(current_user)):
-    return {"items": _run(analysis.search_menus, db, mode, q)}
+def menus_search(q: str = "", mode: str = "group", scope: str = "all", db: Session = Depends(get_db), user: User = Depends(current_user)):
+    return {"items": _run(analysis.search_menus, db, mode, q, 30, scope)}
 
 
 @router.get("/menus")
 def menus_compare(
     start: date, end: date, mode: str = "group", names: list[str] = Query(default=[]), meal_type: str = "LUNCH",
-    weather: str = "all", db: Session = Depends(get_db), user: User = Depends(current_user),
+    weather: str = "all", scope: str = "all", db: Session = Depends(get_db), user: User = Depends(current_user),
 ):
-    return _run(analysis.menu_compare, db, meal_type, start, end, mode, names, weather)
+    return _run(analysis.menu_compare, db, meal_type, start, end, mode, names, weather, scope)
 
 
 @router.get("/popular-menus")
 def popular_menus(
     start: date, end: date, meal_type: str = "LUNCH", basis: str = "name", order: str = "top", limit: int = 10,
-    min_days: int | None = None, main_only: bool = False,
+    min_days: int | None = None, main_only: bool = False, scope: str | None = None,
     db: Session = Depends(get_db), user: User = Depends(current_user),
 ):
-    return _run(analysis.popular_menus, db, meal_type, start, end, basis, order, limit, min_days, main_only)
+    return _run(analysis.popular_menus, db, meal_type, start, end, basis, order, limit, min_days, main_only, scope)
 
 
 @router.get("/ingredients/search")
@@ -138,6 +138,7 @@ def export_xlsx(
     tab: str, start: date, end: date, meal_type: str = "LUNCH", name: str = "", ingredient_id: int | None = None,
     weather: str = "all", mode: str = "group", names: list[str] = Query(default=[]),
     basis: str = "name", order: str = "top", limit: int = 10, min_days: int | None = None, main_only: bool = False,
+    scope: str | None = None,
     db: Session = Depends(get_db), user: User = Depends(current_user),
 ):
     wb = Workbook()
@@ -151,7 +152,7 @@ def export_xlsx(
         label = f"메뉴별식수_{data['menu_group']}"
         _sheet(wb, "메뉴별식수", POINT_HEADERS, _point_rows(data["points"], meal_name), first=True)
     elif tab == "menus":
-        data = _run(analysis.menu_compare, db, meal_type, start, end, mode, names, weather)
+        data = _run(analysis.menu_compare, db, meal_type, start, end, mode, names, weather, scope or "all")
         label = "메뉴비교_" + "_".join(item["name"] for item in data["items"])[:60]
         rows = [[item["name"], *row] for item in data["items"] for row in _point_rows(item["points"], meal_name)]
         _sheet(wb, "메뉴별식수", [data["mode_name"], *POINT_HEADERS], rows, first=True)
@@ -165,13 +166,13 @@ def export_xlsx(
         summary = [[item["name"], item["days"], item["avg_actual"], item["avg_usual"], item["avg_diff"]] for item in data["items"]]
         _sheet(wb, "재료별 요약", [data["mode_name"], "들어간 날 수", "평균 실제(명)", "평균 평소(명)", "평균 차이(명)"], summary)
     elif tab == "popular":
-        data = _run(analysis.popular_menus, db, meal_type, start, end, basis, order, limit, min_days, main_only)
+        data = _run(analysis.popular_menus, db, meal_type, start, end, basis, order, limit, min_days, main_only, scope)
         label = f"인기메뉴_{'상위' if order == 'top' else '하위'}{limit}"
         rows = [[item["rank"], item["name"], item["days"], item["avg_actual"], item["avg_usual"], item["avg_diff"]] for item in data["items"]]
         ws = _sheet(wb, "인기 메뉴", ["순위", data["basis_name"], "나온 날 수", "평균 실제(명)", "평균 평소(명)", "평균 차이(명)"], rows, first=True)
         ws.column_dimensions["B"].width = 28
         ws.append([])
-        ws.append([f"기준: {data['basis_name']} · 최소 {data['min_days']}회 이상 · {'메인 메뉴로 나온 날만' if main_only else '모든 날'}"])
+        ws.append([f"기준: {data['basis_name']} · 최소 {data['min_days']}회 이상 · 범위 {data['scope_name']}"])
     elif tab == "ingredient":
         if ingredient_id is None:
             raise HTTPException(status_code=400, detail="재료를 선택해 주세요.")

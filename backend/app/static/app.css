@@ -466,3 +466,15 @@ body.ui-locked{overflow:hidden}
 .search-submit-row button{white-space:nowrap;padding:7px 12px}
 .table-tools>button{white-space:nowrap}
 .an-search-hint{padding:6px 12px;font-size:11px;color:#6b8196;border-bottom:1px solid #edf1f4}
+/* 상단 제목 영역을 없앤 화면의 한 줄 안내 */
+.view-hint{margin:0 0 10px;font-size:12.5px;color:#5c7286;line-height:1.5}
+@media(min-width:1101px){#view-master .master-editor-panel{top:16px;max-height:calc(100vh - 40px)}}
+/* 인기 메뉴 체크 → 여러 메뉴 비교 */
+.an-pop-line{display:grid;grid-template-columns:22px 1fr;align-items:center;gap:4px}
+.an-pop-line .an-pop-row{width:100%}
+.an-pop-check{width:16px;height:16px;cursor:pointer;margin:0}
+.an-pop-compare{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 8px;padding:8px 10px;background:#f6f9fc;border:1px solid var(--line);border-radius:10px}
+.an-pop-compare .an-chips{margin-top:0;flex:1}
+.an-pop-compare .primary-button{padding:7px 14px}
+.an-pop-compare .primary-button:disabled{opacity:.45;cursor:not-allowed}
+.an-col-check{width:44px;text-align:center}

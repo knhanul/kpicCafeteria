@@ -25,6 +25,22 @@ app.add_middleware(SessionMiddleware, secret_key=settings.app_secret, same_site=
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 views = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
+
+def _asset_version() -> str:
+    """Short content hash of app.js/app.css so a new deploy always loads fresh files (no stale browser cache)."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    for name in ("app.js", "app.css"):
+        path = BASE_DIR / "static" / name
+        if path.exists():
+            digest.update(path.read_bytes())
+    return digest.hexdigest()[:12]
+
+
+ASSET_VERSION = _asset_version()
+NO_CACHE_HEADERS = {"Cache-Control": "no-cache"}
+
 if not settings.desktop_mode:
     app.include_router(auth.router)
     app.include_router(users.router)
@@ -91,7 +107,7 @@ def health():
 def login_page(request: Request):
     if settings.desktop_mode or request.session.get("user_id"):
         return RedirectResponse("/", status_code=302)
-    return views.TemplateResponse(request=request, name="login.html", context={"app_name": settings.app_name})
+    return views.TemplateResponse(request=request, name="login.html", context={"app_name": settings.app_name, "asset_version": ASSET_VERSION}, headers=NO_CACHE_HEADERS)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -119,7 +135,9 @@ def index(request: Request):
                 "role": user.role,
                 "must_change_password": False if settings.desktop_mode else user.must_change_password,
                 "desktop_mode": settings.desktop_mode,
+                "asset_version": ASSET_VERSION,
             },
+            headers=NO_CACHE_HEADERS,
         )
     finally:
         db.close()
