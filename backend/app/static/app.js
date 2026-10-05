@@ -2777,7 +2777,6 @@ function renderAnalysisConditions(){
         <div class="an-item"><span class="an-label">기간</span><div class="an-period"><input type="date" id="an-start" value="${a.start}"><span>~</span><input type="date" id="an-end" value="${a.end}"></div></div>
         <div class="an-item"><span class="an-label">빠른 선택</span>${quickHtml}</div>
         ${withWeather ? `
-          <div class="an-divider"></div>
           <div class="an-item an-item-wrap">
             <span class="an-label">날씨</span>
             <select id="an-weather-filter" style="width:auto;min-width:85px;height:28px;padding:1px 6px;font-size:12.5px">${Object.entries(ANALYSIS_WEATHER_FILTERS).map(([k,v])=>`<option value="${k}" ${a.weatherFilter===k?'selected':''}>${v}</option>`).join('')}</select>
@@ -2798,8 +2797,10 @@ function renderAnalysisConditions(){
           <div class="an-group-title">🍽️ 기본 조건</div>
           <div class="an-group-body">
             <div class="an-item"><span class="an-label">배식</span><div class="an-seg">${seg('meal',[['LUNCH','중식','중식 식수'],['DINNER','석식','석식 식수']],a.mealType)}</div></div>
-            <div class="an-item"><span class="muted" style="font-size:12px;padding-left:2px">평소 식수(1년 평균)와 실제 식수 비교</span></div>
-            ${queryBtnHtml}
+            <div class="an-item">
+              <span class="muted" style="font-size:12px;padding-left:2px">평소 식수(1년 평균)와 실제 식수 비교</span>
+              <button type="button" class="primary-button an-query" id="an-query" style="margin-left:auto" title="${escapeHtml(summaryText)}">조회</button>
+            </div>
           </div>
         </div>
       </div>
@@ -2823,14 +2824,12 @@ function renderAnalysisConditions(){
           <div class="an-group-title">🏆 순위 조건</div>
           <div class="an-group-body">
             <div class="an-item"><span class="an-label">순서</span><div class="an-seg">${seg('pop-order',[['top','상위','상위 순'],['bottom','하위','하위 순']],a.popOrder)}</div></div>
-            <div class="an-divider"></div>
-            <div class="an-item an-item-wrap">
-              <span class="an-label" style="min-width:auto">표시</span>
-              <div class="an-seg">${seg('pop-limit',[[10,'10','10개 표시'],[20,'20','20개 표시'],[50,'50','50개 표시']],a.popLimit)}</div>
-              <span class="an-label" style="min-width:auto;margin-left:6px">최소 등장</span>
+            <div class="an-item"><span class="an-label">표시</span><div class="an-seg">${seg('pop-limit',[[10,'10개','10개 표시'],[20,'20개','20개 표시'],[50,'50개','50개 표시']],a.popLimit)}</div></div>
+            <div class="an-item">
+              <span class="an-label">최소 등장</span>
               <input type="number" id="an-min-days" min="1" max="365" value="${a.popMinDays}" class="an-input-num"> <span class="an-unit">회 이상</span>
+              <button type="button" class="primary-button an-query" id="an-query" style="margin-left:auto" title="${escapeHtml(summaryText)}">조회</button>
             </div>
-            ${queryBtnHtml}
           </div>
         </div>
       </div>
@@ -2920,8 +2919,10 @@ function renderAnalysisConditions(){
           <div class="an-group-title">🍽️ 기본 조건</div>
           <div class="an-group-body">
             <div class="an-item"><span class="an-label">배식</span><div class="an-seg">${seg('meal',[['LUNCH','중식','중식 식수'],['DINNER','석식','석식 식수']],a.mealType)}</div></div>
-            <div class="an-item"><span class="muted" style="font-size:12px;padding-left:2px">중식 11·12시, 석식 17·18시 날씨 연동 분석</span></div>
-            ${queryBtnHtml}
+            <div class="an-item">
+              <span class="muted" style="font-size:12px;padding-left:2px">중식 11·12시, 석식 17·18시 날씨 연동 분석</span>
+              <button type="button" class="primary-button an-query" id="an-query" style="margin-left:auto" title="${escapeHtml(summaryText)}">조회</button>
+            </div>
           </div>
         </div>
       </div>

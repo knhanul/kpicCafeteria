@@ -30,7 +30,7 @@ try:
         print("Analysis conditions loaded!")
         
         # Check tabs
-        for tab in ['daily', 'popular', 'menu', 'ingredient']:
+        for tab in ['daily', 'popular', 'menu', 'ingredient', 'weather']:
             page.locator(f"button[data-analysis-tab='{tab}']").click()
             page.wait_for_timeout(300)
             page.screenshot(path=f'scratch/screen_{tab}.png')

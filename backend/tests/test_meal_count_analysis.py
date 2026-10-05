@@ -387,6 +387,7 @@ def test_menu_compare_weather_filter_and_api(engine):
         assert popular.status_code == 200 and popular.json()["items"]
         assert client.get("/api/analysis/menus/search", params={"mode": "name", "q": "냉"}).json()["items"][0]["name"] == "냉면"
         assert client.get("/api/analysis/popular-menus", params={**params, "limit": 7}).status_code == 400
+        assert client.get("/api/analysis/popular-menus", params={**params, "limit": 50}).status_code == 200
         for tab, extra in (("menus", [("mode", "name"), ("names", "냉면"), ("names", "국밥")]), ("popular", [("basis", "name"), ("min_days", "1")])):
             response = client.get("/api/analysis/export.xlsx", params=[*params.items(), ("tab", tab), *extra])
             assert response.status_code == 200 and response.content[:2] == b"PK"

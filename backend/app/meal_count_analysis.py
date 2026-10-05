@@ -547,8 +547,8 @@ def popular_menus(
     check_menu_mode(basis)
     if order not in {"top", "bottom"}:
         raise AnalysisError("상위 또는 하위만 선택할 수 있습니다.")
-    if limit not in {10, 20}:
-        raise AnalysisError("10개 또는 20개만 볼 수 있습니다.")
+    if limit not in {10, 20, 50}:
+        raise AnalysisError("10개, 20개 또는 50개만 볼 수 있습니다.")
     if scope is None:
         scope = "main_menu" if main_only else "all"
     check_menu_scope(scope)
