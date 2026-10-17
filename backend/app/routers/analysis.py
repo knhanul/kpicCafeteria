@@ -114,6 +114,14 @@ def monthly(start: date, end: date, meal_type: str = "LUNCH", db: Session = Depe
     return _run(analysis.monthly_stats, db, meal_type, start, end)
 
 
+@router.get("/ingredient-monthly-usage")
+def ingredient_monthly_usage(
+    start: date, end: date, names: list[str] = Query(default=[]), meal_type: str = "LUNCH",
+    db: Session = Depends(get_db), user: User = Depends(current_user),
+):
+    return _run(analysis.ingredient_monthly_usage, db, meal_type, start, end, names)
+
+
 @router.get("/date-detail")
 def date_detail(
     service_date: date = Query(alias="date"), meal_type: str = "LUNCH", ingredient_id: int | None = None,

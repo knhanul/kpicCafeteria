@@ -438,7 +438,7 @@ def test_ingredient_compare_name_vs_group_and_excluded_flag(engine):
     # 통계집계명: both pork ingredients count as one series; the excluded 양념 ingredient yields nothing
     assert [i["days"] for i in by_group["items"]] == [3, 2, 0]
     assert [p["actual"] for p in by_group["items"][0]["points"]] == [440, 430, 420]
-    assert by_group["mode_name"] == "통계집계명(분석군)"
+    assert by_group["mode_name"] == "대표 재료명"
     assert len(by_group["usual_line"]) == 4 and by_group["dates"] == sorted(by_group["dates"])
     assert by_group["usual_line"][1]["usual"] == 420  # (400 + 440) / 2: the shared baseline of that day
     assert [p["actual"] for p in hot["items"][0]["points"]] == [440, 420]
@@ -447,6 +447,20 @@ def test_ingredient_compare_name_vs_group_and_excluded_flag(engine):
     assert next(g for g in groups if g["name"] == "돼지고기")["served"] == 3
     assert [n["name"] for n in names] == ["돼지고기 앞다리"]
     assert pork_ids == expected_pork_ids and salt_ids == set()
+
+
+def test_ingredient_monthly_usage_counts_meals_not_rows(engine):
+    with Session(engine) as db:
+        _ingredient_fixture(db)
+        start = MONDAY
+        end = date(2026, 4, 15)
+        result = analysis.ingredient_monthly_usage(db, "LUNCH", start, end, ["돼지고기", "콩류", "양념"])
+    assert result["months"] == ["2026-03", "2026-04"]
+    by_name = {item["name"]: item for item in result["items"]}
+    assert by_name["돼지고기"]["counts"] == [3, 0]
+    assert by_name["콩류"]["counts"] == [2, 0]
+    assert by_name["양념"]["counts"] == [0, 0]
+    assert by_name["돼지고기"]["total"] == 3
 
 
 def test_ingredient_compare_api_detail_highlight_and_excel(engine):

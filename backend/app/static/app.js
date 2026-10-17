@@ -1763,7 +1763,7 @@ async function renderIngredientsMaster(root,q=''){const token=++_ingredientRende
   if(token!==_ingredientRenderToken)return;
   const oldInput=$('#master-search');const hadFocus=document.activeElement===oldInput;const curVal=oldInput?.value??q;const curCursor=oldInput?.selectionStart;const curScroll=oldInput?.scrollTop;
   root.innerHTML=`<div class="master-split">
-    <section class="master-list-panel"><div class="table-tools"><input id="master-search" placeholder="재료명 입력 후 Enter 또는 조회" value="${escapeHtml(curVal)}"><button class="primary-button" id="master-search-btn">조회</button><button class="secondary-button" id="new-ingredient">＋ 재료</button></div><div class="table-wrap master-list-wrap"><table class="data-table"><thead><tr><th>재료명</th><th>통계분석군</th><th>단위</th><th>상태</th></tr></thead><tbody>${rows.map(r=>`<tr data-ingredient-master="${r.id}" class="${r.id===state.masterSelectionId?'selected-row':''}"><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.stat_group)}</td><td>${escapeHtml(r.default_unit||'')}</td><td>${r.active?'사용':'미사용'}</td></tr>`).join('')}</tbody></table></div></section>
+    <section class="master-list-panel"><div class="table-tools"><input id="master-search" placeholder="재료명 입력 후 Enter 또는 조회" value="${escapeHtml(curVal)}"><button class="primary-button" id="master-search-btn">조회</button><button class="secondary-button" id="new-ingredient">＋ 재료</button></div><div class="table-wrap master-list-wrap"><table class="data-table"><thead><tr><th>재료명</th><th>대표 재료명</th><th>단위</th><th>상태</th></tr></thead><tbody>${rows.map(r=>`<tr data-ingredient-master="${r.id}" class="${r.id===state.masterSelectionId?'selected-row':''}"><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.stat_group)}</td><td>${escapeHtml(r.default_unit||'')}</td><td>${r.active?'사용':'미사용'}</td></tr>`).join('')}</tbody></table></div></section>
     <aside id="master-editor" class="master-editor-panel"></aside></div>`;
   const si=$('#master-search');if(hadFocus&&si){si.focus();if(curCursor!=null)si.setSelectionRange(curCursor,curCursor);if(curScroll!=null)si.scrollTop=curScroll;}
   bindSearchSubmit($('#master-search'),$('#master-search-btn'),value=>renderIngredientsMaster(root,value.trim()));
@@ -1777,7 +1777,7 @@ async function renderIngredientMasterPanel(id=null){
   const detailTab=id?(state.masterIngredientDetailTab||'info'):'info';
   const header=`<div class="master-ingredient-workspace-header"><div><h3>${escapeHtml(id?data.name:'새 재료')}</h3><small>${id?`${escapeHtml(data.stat_group)} · ${data.active?'사용':'미사용'}`:'재료 기본정보를 입력하세요.'}</small></div>${detailTab==='info'?`<button class="primary-button" id="save-master-ingredient">${id?'재료 정보 저장':'재료 등록'}</button>`:''}</div>`;
   const tabs=id?`<div class="master-ingredient-detail-tabs" role="tablist"><button type="button" class="master-ingredient-detail-tab ${detailTab==='info'?'active':''}" data-master-ingredient-detail="info" role="tab" aria-selected="${detailTab==='info'}">재료 정보</button><button type="button" class="master-ingredient-detail-tab ${detailTab==='usage'?'active':''}" data-master-ingredient-detail="usage" role="tab" aria-selected="${detailTab==='usage'}">사용 메뉴</button></div>`:'';
-  const info=`<div class="master-ingredient-detail-content"><section class="master-menu-section"><div class="master-section-heading"><h4>재료 정보</h4></div><div class="field-grid"><label class="field">표준재료명<input id="im-name" value="${escapeHtml(data.name)}"></label><label class="field">통계분석군<select id="im-group">${state.codes.stat_groups.map(x=>`<option ${x===data.stat_group?'selected':''}>${x}</option>`).join('')}</select></label><label class="field">기본단위<select id="im-unit"><option value="">미지정</option>${state.codes.units.map(x=>`<option ${x===(data.default_unit||'')?'selected':''}>${x}</option>`).join('')}</select></label><label class="field">kg 환산계수(선택)<input id="im-factor" type="number" step="0.0001" value="${data.kg_factor??''}"></label></div><div class="recipe-options"><label><input id="im-excluded" type="checkbox" ${data.analysis_excluded?'checked':''}> 통계 분석 제외</label><label><input id="im-active" type="checkbox" ${data.active?'checked':''}> 사용</label></div>${id&&data.aliases?.length?`<div class="alias-list"><strong>별칭</strong><span>${data.aliases.map(x=>escapeHtml(x.alias)).join(' · ')}</span></div>`:''}${id?'<div class="master-menu-danger-row"><button type="button" class="danger-button" id="archive-ingredient">재료 삭제</button></div>':''}</section></div>`;
+  const info=`<div class="master-ingredient-detail-content"><section class="master-menu-section"><div class="master-section-heading"><h4>재료 정보</h4></div><div class="field-grid"><label class="field">표준재료명<input id="im-name" value="${escapeHtml(data.name)}"></label><label class="field">대표 재료명<select id="im-group">${state.codes.stat_groups.map(x=>`<option ${x===data.stat_group?'selected':''}>${x}</option>`).join('')}</select></label><label class="field">기본단위<select id="im-unit"><option value="">미지정</option>${state.codes.units.map(x=>`<option ${x===(data.default_unit||'')?'selected':''}>${x}</option>`).join('')}</select></label><label class="field">kg 환산계수(선택)<input id="im-factor" type="number" step="0.0001" value="${data.kg_factor??''}"></label></div><div class="recipe-options"><label><input id="im-excluded" type="checkbox" ${data.analysis_excluded?'checked':''}> 통계 분석 제외</label><label><input id="im-active" type="checkbox" ${data.active?'checked':''}> 사용</label></div>${id&&data.aliases?.length?`<div class="alias-list"><strong>별칭</strong><span>${data.aliases.map(x=>escapeHtml(x.alias)).join(' · ')}</span></div>`:''}${id?'<div class="master-menu-danger-row"><button type="button" class="danger-button" id="archive-ingredient">재료 삭제</button></div>':''}</section></div>`;
   const content=detailTab==='usage'?'<div id="master-ingredient-usage-root" class="master-ingredient-usage-root"><div class="master-ingredient-loading">사용 메뉴를 불러오는 중...</div></div>':info;
   panel.innerHTML=header+tabs+content;
   $$('[data-master-ingredient-detail]').forEach(button=>button.addEventListener('click',()=>{state.masterIngredientDetailTab=button.dataset.masterIngredientDetail;renderIngredientMasterPanel(id);if(button.dataset.masterIngredientDetail==='usage')loadIngredientUsage(id);}));
@@ -2562,18 +2562,20 @@ document.addEventListener('keydown',e=>{if(isUILocked()){e.preventDefault();e.st
 window.addEventListener('beforeunload',e=>{if(isUILocked()){e.preventDefault();e.returnValue='';return '';}});
 
 /* ==================== 식수 분석 ==================== */
-const ANALYSIS_TABS = {daily:'날짜별 식수', weekday:'요일별 식수', monthly:'월별 식수', popular:'인기 메뉴', menu:'메뉴별 식수', ingredient:'재료별 식수', weather:'날씨별 식수'};
+const ANALYSIS_TABS = {daily:'날짜별 식수', weekday:'요일별 식수', monthly:'월별 식수', popular:'인기 메뉴', menu:'메뉴별 식수', ingredient:'재료별 식수', 'ing-usage':'대표재료 사용횟수', weather:'날씨별 식수'};
 const ANALYSIS_MIN_DAYS = {LUNCH:1, DINNER:1};
 const ANALYSIS_MAIN_MENU_MIN_DAYS = {LUNCH:1, DINNER:1};
 const ANALYSIS_SCOPES = {main_dish:'주찬만', main_menu:'메인 메뉴만', with_side:'부찬 포함', all:'전체'};
 function analysisMinDefault(mealType, scope){ return (scope==='main_menu'?ANALYSIS_MAIN_MENU_MIN_DAYS:ANALYSIS_MIN_DAYS)[mealType]; }
 const ANALYSIS_MENU_MODES = {name:'메뉴 이름', group:'대표 메뉴명'};
 const ANALYSIS_MAX_MENUS = 5;
-const ANALYSIS_ING_MODES = {name:'재료 이름', group:'통계집계명(분석군)'};
+const ANALYSIS_ING_MODES = {name:'재료 이름', group:'대표 재료명'};
 // 메뉴별/재료별 탭의 비교 선택 설정
 function analysisPicker(a){
+  if(a.tab==='ing-usage') return {modeKey:'ingUsageMode', itemsKey:'ingUsageItems', modes:{group:'대표 재료명'}, noun:'대표 재료명', served:'사용',
+    placeholder:{group:'대표 재료명 입력 후 Enter 또는 검색 (예: 돼지고기)'}, searchUrl:(_mode,q)=>`/api/analysis/ingredient-keys/search?mode=group&q=${encodeURIComponent(q)}`};
   if(a.tab==='ingredient') return {modeKey:'ingMode', itemsKey:'ingItems', modes:ANALYSIS_ING_MODES, noun:'재료', served:'들어간 날',
-    placeholder:{name:'재료 이름 입력 후 Enter 또는 검색 (예: 두부)', group:'통계집계명(분석군) 입력 후 Enter 또는 검색 (예: 돼지고기)'}, searchUrl:(mode,q)=>`/api/analysis/ingredient-keys/search?mode=${mode}&q=${encodeURIComponent(q)}`};
+    placeholder:{name:'재료 이름 입력 후 Enter 또는 검색 (예: 두부)', group:'대표 재료명 입력 후 Enter 또는 검색 (예: 돼지고기)'}, searchUrl:(mode,q)=>`/api/analysis/ingredient-keys/search?mode=${mode}&q=${encodeURIComponent(q)}`};
   return {modeKey:'menuMode', itemsKey:'menuItems', modes:ANALYSIS_MENU_MODES, noun:'메뉴', served:'나온 날',
     placeholder:{name:'정확한 메뉴 이름 입력 후 Enter 또는 검색 (예: LA갈비찜)', group:'대표 메뉴명 입력 후 Enter 또는 검색 (예: 갈비찜)'}, searchUrl:(mode,q)=>`/api/analysis/menus/search?mode=${mode}&scope=${analysisState().menuScope}&q=${encodeURIComponent(q)}`};
 }
@@ -2653,7 +2655,7 @@ function analysisMonthsBack(end, months) {
 
 function analysisDefaults(){
   const end=new Date();end.setHours(12,0,0,0);
-  return {tab:'daily', start:isoDate(analysisMonthsBack(end,3)), end:isoDate(end), quickKey:'3m', mealType:'LUNCH', showWeather:false, menuMode:'group', menuItems:[], menuItemScopes:{}, menuScope:'main_dish', popScope:'main_dish', popSel:{basis:null, items:[], scopes:{}, version:0, carried:0}, ingMode:'name', ingItems:[], popBasis:'name', popOrder:'top', popLimit:10, popMinDays:ANALYSIS_MIN_DAYS.LUNCH, weatherFilter:'all', showDetail:false, result:null, query:null, band:null};
+  return {tab:'daily', start:isoDate(analysisMonthsBack(end,3)), end:isoDate(end), quickKey:'3m', mealType:'LUNCH', showWeather:false, menuMode:'group', menuItems:[], menuItemScopes:{}, menuScope:'main_dish', popScope:'main_dish', popSel:{basis:null, items:[], scopes:{}, version:0, carried:0}, ingMode:'name', ingItems:[], ingUsageMode:'group', ingUsageItems:[], popBasis:'name', popOrder:'top', popLimit:10, popMinDays:ANALYSIS_MIN_DAYS.LUNCH, weatherFilter:'all', showDetail:false, result:null, query:null, band:null};
 }
 
 function analysisState(){ if(!state.analysis) state.analysis=analysisDefaults(); return state.analysis; }
@@ -2734,6 +2736,11 @@ function getAnalysisConditionSummary(a){
       parts.push(ANALYSIS_WEATHER_FILTERS[a.weatherFilter] || a.weatherFilter);
     }
     if (a.showWeather) parts.push('날씨 포함');
+  } else if (a.tab === 'ing-usage') {
+    if (a.ingUsageItems && a.ingUsageItems.length) {
+      if (a.ingUsageItems.length === 1) parts.push(a.ingUsageItems[0]);
+      else parts.push(`${a.ingUsageItems[0]} 외 ${a.ingUsageItems.length - 1}개`);
+    }
   }
 
   return parts.filter(Boolean).join(' · ');
@@ -2759,7 +2766,7 @@ const ANALYSIS_ING_MODES_SHORT = {name:'재료', group:'대표'};
 function renderAnalysisConditions(){
   const a=analysisState();const root=$('#analysis-conditions');if(!root)return;
   const seg=(key,options,current)=>`<div class="an-seg">${options.map(([k,v,t])=>`<button type="button" data-${key}="${k}" class="${String(current)===String(k)?'active':''}" ${t?`title="${escapeHtml(t)}"`:''}>${v}</button>`).join('')}</div>`;
-  const pk=(a.tab==='menu'||a.tab==='ingredient')?analysisPicker(a):null;
+  const pk=(a.tab==='menu'||a.tab==='ingredient'||a.tab==='ing-usage')?analysisPicker(a):null;
 
   const activeOpt = ANALYSIS_PERIOD_OPTIONS.find(opt => opt.key === a.quickKey);
   const dropdownLabel = activeOpt ? `${activeOpt.label} ▾` : '기간 ▾';
@@ -2921,6 +2928,43 @@ function renderAnalysisConditions(){
         </div>
       </div>
     `;
+  } else if (a.tab === 'ing-usage') {
+    a.ingUsageItems = a.ingUsageItems || [];
+    a.ingUsageMode = 'group';
+    contentHtml = `
+      <div class="an-groups cols-3">
+        ${periodGroup(false)}
+        <div class="an-group">
+          <div class="an-group-title">🍽️ 기본 조건</div>
+          <div class="an-group-body">
+            <div class="an-item"><span class="an-label">배식</span><div class="an-seg">${seg('meal',[['LUNCH','중식','중식'],['DINNER','석식','석식']],a.mealType)}</div></div>
+            <div class="an-item"><span class="muted" style="font-size:12px;padding-left:2px">월별 대표 재료명 사용 횟수 (들어간 식단 수)</span></div>
+          </div>
+        </div>
+        <div class="an-group">
+          <div class="an-group-title">🔍 대표 재료명</div>
+          <div class="an-group-body">
+            <div class="an-item">
+              <span class="an-label">이름</span>
+              <div class="an-search-wrap">
+                <div class="search-submit-row">
+                  <input id="an-search-input" autocomplete="off" placeholder="${escapeHtml(pk.placeholder.group)}">
+                  <button type="button" class="secondary-button" id="an-search-btn">검색</button>
+                </div>
+                <div class="an-search-list hidden" id="an-search-list"></div>
+              </div>
+            </div>
+            <div class="an-item">
+              <span class="an-label">선택</span>
+              <div class="an-chips" id="an-chips">
+                ${a.ingUsageItems.map((name,i)=>`<span class="an-chip" style="--chip:${ANALYSIS_COLORS[i%ANALYSIS_COLORS.length]}">${escapeHtml(name)}<button type="button" data-remove-chip="${i}" aria-label="${escapeHtml(name)} 빼기">×</button></span>`).join('')||`<span class="muted" style="font-size:12px">대표 재료명 검색 추가 (최대 ${ANALYSIS_MAX_MENUS}개)</span>`}
+              </div>
+            </div>
+            ${queryBtnHtml}
+          </div>
+        </div>
+      </div>
+    `;
   } else if (a.tab === 'weather') {
     contentHtml = `
       <div class="an-groups cols-2">
@@ -3063,7 +3107,7 @@ function renderAnalysisConditions(){
   $('#an-weather-filter')?.addEventListener('change',e=>{a.weatherFilter=e.target.value;updateAnalysisConditionSummary(root);});
   $('#an-show-weather')?.addEventListener('change',e=>{a.showWeather=e.target.checked;updateAnalysisConditionSummary(root);if(a.result)renderAnalysisResult();});
   $('#an-query').addEventListener('click',runAnalysisQuery);
-  if(a.tab==='menu'||a.tab==='ingredient') bindAnalysisSearch();
+  if(a.tab==='menu'||a.tab==='ingredient'||a.tab==='ing-usage') bindAnalysisSearch();
 }
 
 function bindAnalysisSearch(){
@@ -3100,10 +3144,11 @@ function analysisQueryParams(){
   if(a.tab==='menu'){ if(!a.menuItems.length) throw new Error('목록에서 메뉴를 하나 이상 골라 주세요.'); params.mode=a.menuMode; params.names=[...a.menuItems]; params.weather=a.weatherFilter; params.scope=a.menuScope; params.scopes=a.menuItems.map(n=>(a.menuItemScopes||{})[n]||a.menuScope); }
   if(a.tab==='popular'){ const md=Number(a.popMinDays); if(!Number.isInteger(md)||md<1||md>365) throw new Error('최소 등장 횟수는 1~365 사이로 입력해 주세요.'); Object.assign(params,{basis:a.popBasis,order:a.popOrder,limit:a.popLimit,min_days:md,scope:a.popScope}); }
   if(a.tab==='ingredient'){ if(!a.ingItems.length) throw new Error('목록에서 재료를 하나 이상 골라 주세요.'); params.mode=a.ingMode; params.names=[...a.ingItems]; params.weather=a.weatherFilter; }
+  if(a.tab==='ing-usage'){ if(!(a.ingUsageItems||[]).length) throw new Error('목록에서 대표 재료명을 하나 이상 골라 주세요.'); params.names=[...a.ingUsageItems]; }
   return params;
 }
 function analysisSearchParams(params){ const sp=new URLSearchParams(); Object.entries(params).forEach(([k,v])=>{ if(Array.isArray(v)) v.forEach(x=>sp.append(k,x)); else sp.append(k,v); }); return sp; }
-const ANALYSIS_ENDPOINTS={daily:'/api/analysis/daily',weekday:'/api/analysis/weekday',monthly:'/api/analysis/monthly',popular:'/api/analysis/popular-menus',menu:'/api/analysis/menus',ingredient:'/api/analysis/ingredients',weather:'/api/analysis/weather'};
+const ANALYSIS_ENDPOINTS={daily:'/api/analysis/daily',weekday:'/api/analysis/weekday',monthly:'/api/analysis/monthly',popular:'/api/analysis/popular-menus',menu:'/api/analysis/menus',ingredient:'/api/analysis/ingredients','ing-usage':'/api/analysis/ingredient-monthly-usage',weather:'/api/analysis/weather'};
 
 async function runAnalysisQuery(){
   const a=analysisState();
@@ -3133,6 +3178,7 @@ function renderAnalysisResult(){
   if(a.query.tab==='weekday'||a.query.tab==='monthly'){ renderAnalysisGroups(root,a.result,a.query.tab); return; }
   if(a.query.tab==='popular'){ renderAnalysisPopular(root,a.result); return; }
   if(a.query.tab==='menu'||a.query.tab==='ingredient'){ renderAnalysisMenus(root,a.result); return; }
+  if(a.query.tab==='ing-usage'){ renderAnalysisIngredientUsage(root,a.result); return; }
   const r=a.result;
   const titleBits=[r.meal_type_name, `${r.start} ~ ${r.end}`];
   if(r.menu_group) titleBits.unshift(`메뉴: ${r.menu_group}`);
@@ -3445,6 +3491,76 @@ function analysisGroupValue(group, key){
   if(!group.days) return null;
   const value = group[key];
   return value===null||value===undefined ? null : value;
+}
+
+function renderAnalysisIngredientUsage(root, r){
+  const items=r.items||[];
+  const months=r.months||[];
+  if(!months.length){ root.innerHTML='<div class="an-card"><h3>대표 재료명 월별 사용 횟수</h3><div class="an-empty">조회 기간이 없습니다.</div></div>'; return; }
+  const legend=items.map((item,i)=>`<span class="an-lg-item"><span class="an-lg-swatch" style="background:${ANALYSIS_COLORS[i%ANALYSIS_COLORS.length]}"></span>${escapeHtml(item.name)} <b>${numberText(item.total)}회</b></span>`).join('');
+  const head=`<tr><th>대표 재료명</th>${months.map(m=>`<th class="num">${Number(m.slice(5))}월</th>`).join('')}<th class="num">합계</th></tr>`;
+  const rows=items.map((item,i)=>`<tr><td><span class="an-lg-swatch" style="background:${ANALYSIS_COLORS[i%ANALYSIS_COLORS.length]}"></span>${escapeHtml(item.name)}</td>${item.counts.map(c=>`<td class="num">${numberText(c)}</td>`).join('')}<td class="num">${numberText(item.total)}</td></tr>`).join('');
+  root.innerHTML=`<div class="an-card">
+      <div class="an-card-head"><h3>${escapeHtml(r.meal_type_name)} · ${escapeHtml(r.start)} ~ ${escapeHtml(r.end)} · 대표 재료명 월별 사용 횟수</h3></div>
+      <p class="an-sub">그 배식에 대표 재료명이 들어간 식단 수입니다. 같은 날 여러 메뉴에 들어가도 1회로 셉니다.</p>
+      <div class="an-legend">${legend}</div>
+      <div class="an-chart" id="an-chart"></div>
+    </div>
+    <div class="an-card"><div class="table-wrap"><table class="data-table an-table"><thead>${head}</thead><tbody>${rows}</tbody></table></div></div>`;
+  drawAnalysisUsageChart($('#an-chart'), r);
+}
+
+function drawAnalysisUsageChart(container, r){
+  if(!container) return;
+  const months=r.months||[];
+  const items=r.items||[];
+  const n=Math.max(months.length, 1);
+  const width=Math.max(560, container.clientWidth||960);
+  const top=18, bottom=52, left=56, right=16, height=300+top;
+  const plotW=width-left-right, plotH=height-top-bottom;
+  const values=items.flatMap(item=>item.counts||[]);
+  const max=Math.max(1, ...values, 0);
+  const {lo,hi,ticks}=analysisNiceTicks(0, max+Math.max(1, max*0.12));
+  const x=i=>n>1?left+(i/(n-1))*plotW:left+plotW/2;
+  const y=v=>top+plotH-(v-lo)/(hi-lo||1)*plotH;
+  const grid=ticks.map(t=>`<line x1="${left}" x2="${width-right}" y1="${y(t)}" y2="${y(t)}" class="an-grid"/><text x="${left-8}" y="${y(t)+4}" class="an-axis" text-anchor="end">${numberText(t)}</text>`).join('');
+  let lastYear=null;
+  const xLabels=months.map((m,i)=>{
+    const [yy,mm]=m.split('-');
+    const year=yy!==lastYear?`${yy}년`:'';
+    lastYear=yy;
+    return `<text x="${x(i)}" y="${height-bottom+18}" class="an-axis" text-anchor="middle">${Number(mm)}월</text>${year?`<text x="${x(i)}" y="${height-bottom+34}" class="an-axis an-axis-year" text-anchor="middle">${year}</text>`:''}`;
+  }).join('');
+  const lines=items.map((item,si)=>{
+    const color=ANALYSIS_COLORS[si%ANALYSIS_COLORS.length];
+    const counts=item.counts||[];
+    const d=counts.map((c,i)=>`${i?'L':'M'}${x(i).toFixed(1)},${y(c).toFixed(1)}`).join('');
+    const dots=counts.map((c,i)=>`<circle cx="${x(i)}" cy="${y(c)}" r="3.6" fill="${color}" stroke="#fff" stroke-width="1"/>`).join('');
+    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="2.4" stroke-linejoin="round"/>${dots}`;
+  }).join('');
+  const step=n>1?plotW/(n-1):plotW;
+  const hits=months.map((m,i)=>`<rect x="${(x(i)-step/2).toFixed(1)}" y="${top}" width="${Math.max(step,8).toFixed(1)}" height="${plotH}" class="an-hit" data-i="${i}"/>`).join('');
+  container.innerHTML=`<svg class="an-svg" viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="대표 재료명 월별 사용 횟수 꺾은선">
+      ${grid}<line x1="${left}" x2="${width-right}" y1="${y(0)}" y2="${y(0)}" class="an-baseline"/>
+      <text x="${left-44}" y="${top-4}" class="an-axis">(회)</text>
+      ${lines}${xLabels}${hits}
+    </svg><div class="an-tip hidden"></div>`;
+  const tip=$('.an-tip', container);
+  const show=i=>{
+    const month=months[i]; if(!month) return;
+    const linesHtml=items.map((item,si)=>`<span><b style="color:${ANALYSIS_COLORS[si%ANALYSIS_COLORS.length]}">●</b> ${escapeHtml(item.name)} ${numberText((item.counts||[])[i]||0)}회</span>`).join('');
+    tip.innerHTML=`<strong>${month.slice(0,4)}년 ${Number(month.slice(5))}월</strong>${linesHtml}`;
+    tip.classList.remove('hidden');
+    const box=container.getBoundingClientRect();
+    const px=x(i)*(box.width/width);
+    tip.style.left=`${Math.min(Math.max(px, 110), box.width-110)}px`;
+    tip.style.top='8px';
+  };
+  $$('.an-hit', container).forEach(rect=>{
+    const i=Number(rect.dataset.i);
+    rect.addEventListener('mouseenter', ()=>show(i));
+    rect.addEventListener('mouseleave', ()=>tip.classList.add('hidden'));
+  });
 }
 
 function drawAnalysisCategoryChart(container, groups, {mode='bar', onClick}={}){

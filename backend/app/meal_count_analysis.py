@@ -840,19 +840,19 @@ def _compare_series(
 
 
 # ---------------------------------------------------------------------------
-# 재료 이름·통계집계명(분석군) 조회 / 여러 재료 비교
+# 재료 이름·대표 재료명 조회 / 여러 재료 비교
 # ---------------------------------------------------------------------------
-INGREDIENT_MODES = {"name": "재료 이름", "group": "통계집계명(분석군)"}
+INGREDIENT_MODES = {"name": "재료 이름", "group": "대표 재료명"}
 
 
 def check_ingredient_mode(mode: str) -> str:
     if mode not in INGREDIENT_MODES:
-        raise AnalysisError("조회 기준은 재료 이름 또는 통계집계명(분석군)만 선택할 수 있습니다.")
+        raise AnalysisError("조회 기준은 재료 이름 또는 대표 재료명만 선택할 수 있습니다.")
     return mode
 
 
 def _ingredient_key_filter(mode: str):
-    """Key column plus extra conditions. 통계집계명 mode skips ingredients marked '통계 분석 제외'."""
+    """Key column plus extra conditions. 대표 재료명 mode skips ingredients marked '통계 분석 제외'."""
     if mode == "name":
         return Ingredient.name, []
     return Ingredient.stat_group, [Ingredient.analysis_excluded.is_(False), Ingredient.stat_group != ""]
@@ -881,7 +881,7 @@ def _service_ingredient_keys(
 def ingredient_compare(
     db: Session, meal_type: str, start: date, end: date, mode: str, names: list[str], weather_filter: str = "all",
 ) -> dict[str, Any]:
-    """One series per selected ingredient (재료 이름 or 통계집계명(분석군)) plus the shared 평소 식수 line."""
+    """One series per selected ingredient (재료 이름 or 대표 재료명) plus the shared 평소 식수 line."""
     check_meal_type(meal_type)
     check_period(start, end)
     check_ingredient_mode(mode)
@@ -934,3 +934,55 @@ def ingredient_ids_for(db: Session, mode: str, names: list[str]) -> set[int]:
         return set()
     column, extra = _ingredient_key_filter(mode)
     return set(db.scalars(select(Ingredient.id).where(column.in_(names), *extra)).all())
+
+
+def _months_between(start: date, end: date) -> list[str]:
+    months: list[str] = []
+    year, month = start.year, start.month
+    while (year, month) <= (end.year, end.month):
+        months.append(f"{year:04d}-{month:02d}")
+        month += 1
+        if month == 13:
+            year += 1
+            month = 1
+    return months
+
+
+def ingredient_monthly_usage(
+    db: Session, meal_type: str, start: date, end: date, names: list[str],
+) -> dict[str, Any]:
+    """월별 대표 재료명 사용 횟수: 그 배식에 대표 재료명이 들어간 식단 수."""
+    check_meal_type(meal_type)
+    check_period(start, end)
+    clean = _clean_compare_names(names, "대표 재료명")
+    column, extra = _ingredient_key_filter("group")
+    rows = db.execute(
+        select(column, MealService.id, MealService.service_date)
+        .join(MealServiceMenuIngredient, MealServiceMenuIngredient.ingredient_id == Ingredient.id)
+        .join(MealServiceMenu, MealServiceMenu.id == MealServiceMenuIngredient.meal_service_menu_id)
+        .join(MealService, MealService.id == MealServiceMenu.meal_service_id)
+        .where(
+            MealService.meal_type == meal_type,
+            MealService.service_date >= start,
+            MealService.service_date <= end,
+            column.in_(clean),
+            *extra,
+        )
+        .distinct()
+    ).all()
+    by_month: dict[str, dict[str, set[int]]] = {name: defaultdict(set) for name in clean}
+    for key, service_id, service_date in rows:
+        by_month[key][f"{service_date.year:04d}-{service_date.month:02d}"].add(service_id)
+    months = _months_between(start, end)
+    items = []
+    for name in clean:
+        counts = [len(by_month[name].get(month, ())) for month in months]
+        items.append({"name": name, "counts": counts, "total": sum(counts)})
+    return {
+        "meal_type": meal_type,
+        "meal_type_name": MEAL_TYPES[meal_type],
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "months": months,
+        "items": items,
+    }
