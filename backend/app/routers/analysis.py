@@ -135,17 +135,18 @@ def date_detail(
     return _run(analysis.date_detail, db, meal_type, service_date, ingredient_id, ids)
 
 
-def _point_rows(points: list[dict[str, Any]], meal_name: str) -> list[list[Any]]:
-    return [
-        [
-            p["date"], p["weekday"], meal_name, p["actual"], p["usual"], p["diff"],
-            (p["weather"] or {}).get("text") or "",
-        ]
-        for p in points
-    ]
+def _point_rows(points: list[dict[str, Any]], meal_name: str, *, with_weather: bool = True) -> list[list[Any]]:
+    rows = []
+    for p in points:
+        row = [p["date"], p["weekday"], meal_name, p["actual"], p["usual"], p["diff"]]
+        if with_weather:
+            row.append((p["weather"] or {}).get("text") or "")
+        rows.append(row)
+    return rows
 
 
 POINT_HEADERS = ["날짜", "요일", "배식", "실제(명)", "평소(명)", "차이(명)", "배식시간 날씨"]
+INGREDIENT_POINT_HEADERS = ["날짜", "요일", "배식", "실제(명)", "평소(명)", "차이(명)"]
 
 
 def _sheet(wb: Workbook, title: str, headers: list[str], rows: list[list[Any]], first: bool = False):
@@ -187,10 +188,10 @@ def export_xlsx(
         summary = [[item["name"], item["scope_name"], item["days"], item["avg_actual"], item["avg_usual"], item["avg_diff"]] for item in data["items"]]
         _sheet(wb, "메뉴별 요약", [data["mode_name"], "메뉴 범위", "나온 날 수", "평균 실제(명)", "평균 평소(명)", "평균 차이(명)"], summary)
     elif tab == "ingredients":
-        data = _run(analysis.ingredient_compare, db, meal_type, start, end, mode, names, weather)
+        data = _run(analysis.ingredient_compare, db, meal_type, start, end, mode, names, "all")
         label = "재료비교_" + "_".join(item["name"] for item in data["items"])[:60]
-        rows = [[item["name"], *row] for item in data["items"] for row in _point_rows(item["points"], meal_name)]
-        _sheet(wb, "재료별식수", [data["mode_name"], *POINT_HEADERS], rows, first=True)
+        rows = [[item["name"], *row] for item in data["items"] for row in _point_rows(item["points"], meal_name, with_weather=False)]
+        _sheet(wb, "재료별식수", [data["mode_name"], *INGREDIENT_POINT_HEADERS], rows, first=True)
         summary = [[item["name"], item["days"], item["avg_actual"], item["avg_usual"], item["avg_diff"]] for item in data["items"]]
         _sheet(wb, "재료별 요약", [data["mode_name"], "들어간 날 수", "평균 실제(명)", "평균 평소(명)", "평균 차이(명)"], summary)
     elif tab == "popular":
@@ -204,9 +205,9 @@ def export_xlsx(
     elif tab == "ingredient":
         if ingredient_id is None:
             raise HTTPException(status_code=400, detail="재료를 선택해 주세요.")
-        data = _run(analysis.ingredient, db, meal_type, start, end, ingredient_id, weather)
+        data = _run(analysis.ingredient, db, meal_type, start, end, ingredient_id, "all")
         label = f"재료별식수_{data['ingredient']['name']}"
-        _sheet(wb, "재료별식수", POINT_HEADERS, _point_rows(data["points"], meal_name), first=True)
+        _sheet(wb, "재료별식수", INGREDIENT_POINT_HEADERS, _point_rows(data["points"], meal_name, with_weather=False), first=True)
     elif tab == "weather":
         data = _run(analysis.weather_bands, db, meal_type, start, end)
         label = "날씨별식수"

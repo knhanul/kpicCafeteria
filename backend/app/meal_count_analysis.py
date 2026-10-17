@@ -800,7 +800,7 @@ def search_menus(db: Session, mode: str = "group", query: str = "", limit: int =
     return [{"name": name, "served": int(c)} for name, c in rows]
 
 
-def _clean_compare_names(names: list[str], noun: str) -> list[str]:
+def _clean_compare_names(names: list[str], noun: str, *, limit: int | None = MAX_COMPARE_ITEMS) -> list[str]:
     clean: list[str] = []
     for name in names:
         name = (name or "").strip()
@@ -808,8 +808,8 @@ def _clean_compare_names(names: list[str], noun: str) -> list[str]:
             clean.append(name)
     if not clean:
         raise AnalysisError(f"{noun}를 하나 이상 선택해 주세요.")
-    if len(clean) > MAX_COMPARE_ITEMS:
-        raise AnalysisError(f"{noun}는 최대 {MAX_COMPARE_ITEMS}개까지 비교할 수 있습니다.")
+    if limit is not None and len(clean) > limit:
+        raise AnalysisError(f"{noun}는 최대 {limit}개까지 비교할 수 있습니다.")
     return clean
 
 
@@ -885,7 +885,7 @@ def ingredient_compare(
     check_meal_type(meal_type)
     check_period(start, end)
     check_ingredient_mode(mode)
-    clean = _clean_compare_names(names, "재료")
+    clean = _clean_compare_names(names, "재료", limit=None if mode == "group" else MAX_COMPARE_ITEMS)
     if weather_filter not in WEATHER_FILTERS:
         raise AnalysisError("날씨 조건이 올바르지 않습니다.")
     by_key = _service_ingredient_keys(db, meal_type, start, end, mode, keys=clean)
@@ -954,7 +954,7 @@ def ingredient_monthly_usage(
     """월별 대표 재료명 사용 횟수: 그 배식에 대표 재료명이 들어간 식단 수."""
     check_meal_type(meal_type)
     check_period(start, end)
-    clean = _clean_compare_names(names, "대표 재료명")
+    clean = _clean_compare_names(names, "대표 재료명", limit=None)
     column, extra = _ingredient_key_filter("group")
     rows = db.execute(
         select(column, MealService.id, MealService.service_date)

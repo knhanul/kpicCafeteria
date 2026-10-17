@@ -428,7 +428,9 @@ def test_ingredient_compare_name_vs_group_and_excluded_flag(engine):
         with pytest.raises(analysis.AnalysisError):
             analysis.ingredient_compare(db, "LUNCH", start, end, "group", [])
         with pytest.raises(analysis.AnalysisError):
-            analysis.ingredient_compare(db, "LUNCH", start, end, "group", [f"군{i}" for i in range(6)])
+            analysis.ingredient_compare(db, "LUNCH", start, end, "name", [f"재료{i}" for i in range(6)])
+        many = analysis.ingredient_compare(db, "LUNCH", start, end, "group", [f"군{i}" for i in range(6)])
+        usage = analysis.ingredient_monthly_usage(db, "LUNCH", start, end, [f"군{i}" for i in range(6)])
         with pytest.raises(analysis.AnalysisError):
             analysis.ingredient_compare(db, "LUNCH", start, end, "stat", ["돼지고기"])
         expected_pork_ids = {b.ingredients["돼지고기 앞다리"].id, b.ingredients["삼겹살"].id}
@@ -447,6 +449,8 @@ def test_ingredient_compare_name_vs_group_and_excluded_flag(engine):
     assert next(g for g in groups if g["name"] == "돼지고기")["served"] == 3
     assert [n["name"] for n in names] == ["돼지고기 앞다리"]
     assert pork_ids == expected_pork_ids and salt_ids == set()
+    assert [i["name"] for i in many["items"]] == [f"군{i}" for i in range(6)]
+    assert [i["name"] for i in usage["items"]] == [f"군{i}" for i in range(6)]
 
 
 def test_ingredient_monthly_usage_counts_meals_not_rows(engine):
