@@ -3,7 +3,7 @@ const state = {
   weekStart: mondayOf(new Date()), workspace: null,
   selectedServiceId: null, selectedService: null, selectedMenuItemId: null,
   analysis: null, importToken: null, actualMealUpload: null, weatherUpload: null, weatherOffset: 0, weatherMealOffset: 0, weatherHistoryOffset: 0, masterTab: 'menus', masterSelectionId: null, masterMenuDetailTab: 'recipe',
-  masterDataTab: 'hwpx-templates', masterDataSelectionId: null, mealDefaults: null,
+  masterDataTab: 'hwpx-templates', masterDataSelectionId: null, hwpxTemplatePanelRequestId: 0, mealDefaults: null,
   masterIngredientDetailTab: 'info', masterIngredientUsage: {ingredientId:null,items:[],offset:0,total:0,hasMore:false,loading:false,error:''}, masterIngredientUsageQuery:'',
   masterMenuHistory: {menuId:null,items:[],offset:0,total:0,hasMore:false,loading:false,error:'',snapshotCache:{},expandedSnapshotId:null}, masterHistoryFilter:'',
   mealServiceTime: null, preservationCollectionTime: null,
@@ -1488,10 +1488,17 @@ async function renderHwpxTemplatesView(root){
   const labels={'MEAL_PLAN':'식단표','COOKING_INSTRUCTION':'조리지시서','PRESERVATION_RECORD':'보존식 기록지'};
   root.innerHTML=`<div class="master-split">
     <section class="master-list-panel">
+      <div class="panel-section-head template-management-head"><h3>등록된 HWPX 양식</h3><button type="button" class="primary-button" id="new-hwpx-template">＋ 새 양식 등록</button></div>
+      <p class="template-management-help">기본 템플릿을 다운로드해 수정한 뒤 ‘새 양식 등록’에서 같은 문서 유형으로 올리면 새 버전으로 보관됩니다.</p>
       ${Object.entries(grouped).map(([type,items])=>`<div class="template-group"><h4>${labels[type]}</h4>${items.length?items.map(r=>`<button class="template-list-item ${r.id===state.masterDataSelectionId?'active':''}" data-template-select="${r.id}" title="${escapeHtml(r.name)}${r.original_filename?` (${escapeHtml(r.original_filename)})`:''}"><strong>${escapeHtml(r.name)}</strong><span>v${r.version}${r.active?' · [활성]':''}${r.is_valid?'':' · 검증실패'}</span></button>`).join(''):'<p class="muted">등록된 양식이 없습니다.</p>'}</div>`).join('')}
     </section>
     <aside id="hwpx-template-editor" class="master-editor-panel"><div class="empty-editor">왼쪽에서 양식을 선택하거나 새 양식을 등록하세요.</div></aside>
   </div>`;
+  $('#new-hwpx-template',root).addEventListener('click',()=>{
+    state.masterDataSelectionId=null;
+    $$('[data-template-select]',root).forEach(btn=>btn.classList.remove('active'));
+    renderHwpxTemplatePanel();
+  });
   $$('[data-template-select]',root).forEach(btn=>btn.addEventListener('click',()=>{state.masterDataSelectionId=Number(btn.dataset.templateSelect);$$('[data-template-select]',root).forEach(x=>x.classList.toggle('active',x===btn));renderHwpxTemplatePanel();}));
   renderHwpxTemplatePanel();
 }
@@ -1499,11 +1506,13 @@ async function renderHwpxTemplatesView(root){
 async function renderHwpxTemplatePanel(){
   const panel=$('#hwpx-template-editor');if(!panel)return;
   const id=state.masterDataSelectionId;
+  const requestId=++state.hwpxTemplatePanelRequestId;
   if(!id){renderHwpxTemplateForm(panel,null);return;}
   try{
     const data=await api(`/api/master-data/document-templates/${id}`);
+    if(requestId!==state.hwpxTemplatePanelRequestId||id!==state.masterDataSelectionId)return;
     renderHwpxTemplateForm(panel,data);
-  }catch(e){panel.innerHTML=`<div class="form-error">${escapeHtml(e.message)}</div>`;}
+  }catch(e){if(requestId===state.hwpxTemplatePanelRequestId&&id===state.masterDataSelectionId)panel.innerHTML=`<div class="form-error">${escapeHtml(e.message)}</div>`;}
 }
 
 function renderHwpxTemplateForm(panel,data){

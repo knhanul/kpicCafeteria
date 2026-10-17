@@ -1,6 +1,6 @@
 {
-  "식단표_반복페이지템플릿.hwpx": {
-    "out": "식단표_반복페이지템플릿.hwpx",
+  "식단표_템플릿.hwpx": {
+    "out": "식단표_템플릿.hwpx",
     "type": "meal-plan",
     "capacity": "2-weeks",
     "unit": "2주",
@@ -9,8 +9,8 @@
     "sha256": "68a9bd53f7fcddf377581143f236082886a8bf39394e7f70af89b162ae66de2a",
     "size": 46767
   },
-  "조리지시서_반복페이지템플릿.hwpx": {
-    "out": "조리지시서_반복페이지템플릿.hwpx",
+  "조리지시서_템플릿.hwpx": {
+    "out": "조리지시서_템플릿.hwpx",
     "type": "cooking-instruction",
     "capacity": "1-day-2-meals",
     "unit": "1일(중식+석식)",
@@ -19,8 +19,8 @@
     "sha256": "228083c1aac1b15fae5ccafda2c57e4ab92148c4631806b0895330067262492e",
     "size": 31979
   },
-  "보존식기록지_반복페이지템플릿.hwpx": {
-    "out": "보존식기록지_반복페이지템플릿.hwpx",
+  "보존식기록지_템플릿.hwpx": {
+    "out": "보존식기록지_템플릿.hwpx",
     "type": "preserved-food",
     "capacity": "3-meals",
     "unit": "3식",

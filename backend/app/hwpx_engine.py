@@ -5,6 +5,7 @@ import io
 import json
 import math
 import re
+import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -131,13 +132,22 @@ REQUIRED_PLACEHOLDERS = {
         "W2_D5_DINNER_MENU",
     },
 }
+OPTIONAL_PLACEHOLDERS = {
+    "PRESERVATION_RECORD": {"PERIOD_TITLE"},
+}
+PLACEHOLDER_ALTERNATIVES = {
+    "PRESERVATION_RECORD": tuple(
+        (f"B{slot}_SAMPLE_DATETIME", (f"B{slot}_SAMPLE_HOUR", f"B{slot}_SAMPLE_MINUTE"))
+        for slot in range(1, 4)
+    ),
+}
 WEEKDAY_LABELS = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
 REPEAT_PAGE_START = "CAFETERIA_REPEAT_PAGE_START"
 REPEAT_PAGE_END = "CAFETERIA_REPEAT_PAGE_END"
 
 _DEFAULT_TEMPLATE_PAGE_CONFIG = {
-    "식단표_반복페이지템플릿.hwpx": {
-        "out": "식단표_반복페이지템플릿.hwpx",
+    "식단표_템플릿.hwpx": {
+        "out": "식단표_템플릿.hwpx",
         "type": "meal-plan",
         "capacity": "2-weeks",
         "unit": "2주",
@@ -146,8 +156,8 @@ _DEFAULT_TEMPLATE_PAGE_CONFIG = {
         "sha256": "68a9bd53f7fcddf377581143f236082886a8bf39394e7f70af89b162ae66de2a",
         "size": 46767,
     },
-    "조리지시서_반복페이지템플릿.hwpx": {
-        "out": "조리지시서_반복페이지템플릿.hwpx",
+    "조리지시서_템플릿.hwpx": {
+        "out": "조리지시서_템플릿.hwpx",
         "type": "cooking-instruction",
         "capacity": "1-day-2-meals",
         "unit": "1일(중식+석식)",
@@ -156,8 +166,8 @@ _DEFAULT_TEMPLATE_PAGE_CONFIG = {
         "sha256": "228083c1aac1b15fae5ccafda2c57e4ab92148c4631806b0895330067262492e",
         "size": 31979,
     },
-    "보존식기록지_반복페이지템플릿.hwpx": {
-        "out": "보존식기록지_반복페이지템플릿.hwpx",
+    "보존식기록지_템플릿.hwpx": {
+        "out": "보존식기록지_템플릿.hwpx",
         "type": "preserved-food",
         "capacity": "3-meals",
         "unit": "3식",
@@ -244,14 +254,23 @@ def _is_comment_node(node: ET.Element) -> bool:
 
 
 def _read_repeat_page_config() -> dict[str, dict[str, Any]]:
-    config_path = Path(__file__).resolve().parents[2] / "docs" / "template" / "template-page-config.json"
-    if config_path.exists():
+    app_file = Path(__file__).resolve()
+    candidates = [
+        app_file.parents[2] / "docs" / "template" / "template-page-config.json",
+        app_file.parents[1] / "docs" / "template" / "template-page-config.json",
+    ]
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        candidates.append(Path(bundle_root) / "docs" / "template" / "template-page-config.json")
+    for config_path in candidates:
+        if not config_path.exists():
+            continue
         try:
             loaded = json.loads(config_path.read_text(encoding="utf-8"))
             if isinstance(loaded, dict):
                 return loaded
         except (json.JSONDecodeError, OSError):
-            pass
+            continue
     return _DEFAULT_TEMPLATE_PAGE_CONFIG
 
 
@@ -493,7 +512,15 @@ class HwpxPackage:
         if document_type and required_placeholders is None:
             required_placeholders = REQUIRED_PLACEHOLDERS.get(document_type)
         if required_placeholders:
-            missing_placeholders = sorted(set(required_placeholders) - set(placeholders))
+            placeholder_set = set(placeholders)
+            missing = set(required_placeholders) - placeholder_set
+            missing -= OPTIONAL_PLACEHOLDERS.get(document_type or "", set())
+            for alternatives in PLACEHOLDER_ALTERNATIVES.get(document_type or "", ()):
+                combined, split = alternatives
+                missing.discard(combined)
+                if combined not in placeholder_set and not set(split).issubset(placeholder_set):
+                    missing.add(f"{combined} (or {' and '.join(split)})")
+            missing_placeholders = sorted(missing)
             if missing_placeholders:
                 raise HwpxTemplateError("필수 플레이스홀더가 없습니다: " + ", ".join(missing_placeholders))
         if not allow_remaining_placeholders and placeholders:

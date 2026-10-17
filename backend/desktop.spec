@@ -7,6 +7,7 @@ root = Path(SPECPATH)
 datas = [
     (str(root / "app" / "static"), "app/static"),
     (str(root / "app" / "templates"), "app/templates"),
+    (str(root.parent / "docs" / "template"), "docs/template"),
 ]
 hiddenimports = collect_submodules("webview")
 

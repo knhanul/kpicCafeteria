@@ -13,6 +13,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from .config import settings
 from .db import Base, SessionLocal, engine
+from .default_templates import ensure_default_templates
 from .desktop_schema import ensure_desktop_schema_version
 from .models import MealTypeSetting, User
 from .routers import admin, analysis, auth, documents, master, master_data, orders, setup, templates, users, weather, workspace
@@ -96,6 +97,7 @@ def startup() -> None:
             elif existing.default_service_time is None:
                 existing.default_service_time = svc_time
         db.commit()
+        ensure_default_templates(db, settings.template_dir)
 
 
 @app.get("/health")

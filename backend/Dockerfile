@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY requirements.txt /app/requirements.txt
+COPY backend/requirements.txt /app/requirements.txt
 RUN pip install -r /app/requirements.txt
 RUN apt-get update && apt-get install -y --no-install-recommends \
       postgresql-client \
@@ -21,8 +21,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN playwright install chromium
 
-COPY app /app/app
-COPY entrypoint.sh /app/entrypoint.sh
+COPY backend/app /app/app
+COPY backend/entrypoint.sh /app/entrypoint.sh
+COPY docs/template /app/docs/template
 RUN sed -i 's/\r$//' /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 

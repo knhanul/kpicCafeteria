@@ -163,7 +163,7 @@ def _seed_preservation_meals(db, meal_count: int) -> tuple[date, date]:
 def test_meal_plan_repeat_pages_by_two_weeks(tmp_path, week_count):
     db = make_db()
     start_date, end_date = _seed_meal_plan_weeks(db, week_count)
-    template_path = _repeat_template_path("식단표_반복페이지템플릿.hwpx")
+    template_path = _repeat_template_path("식단표_템플릿.hwpx")
 
     services = db.query(MealService).order_by(MealService.service_date, MealService.meal_type, MealService.id).all()
     hwpx_bytes, _ = generate_hwpx_bytes("MEAL_PLAN", services, template_path, start_date=start_date, end_date=end_date)
@@ -184,7 +184,7 @@ def test_meal_plan_repeat_pages_by_two_weeks(tmp_path, week_count):
 def test_cooking_instruction_repeat_pages_by_day(tmp_path, day_count):
     db = make_db()
     start_date, end_date = _seed_cooking_days(db, day_count)
-    template_path = _repeat_template_path("조리지시서_반복페이지템플릿.hwpx")
+    template_path = _repeat_template_path("조리지시서_템플릿.hwpx")
 
     services = db.query(MealService).order_by(MealService.service_date, MealService.meal_type, MealService.id).all()
     hwpx_bytes, _ = generate_hwpx_bytes("COOKING_INSTRUCTION", services, template_path, start_date=start_date, end_date=end_date)
@@ -209,7 +209,7 @@ def test_cooking_instruction_repeat_pages_by_day(tmp_path, day_count):
 def test_preservation_repeat_pages_by_three_meals(tmp_path, meal_count):
     db = make_db()
     start_date, end_date = _seed_preservation_meals(db, meal_count)
-    template_path = _repeat_template_path("보존식기록지_반복페이지템플릿.hwpx")
+    template_path = _repeat_template_path("보존식기록지_템플릿.hwpx")
 
     services = db.query(MealService).order_by(MealService.service_date, MealService.meal_type, MealService.id).all()
     hwpx_bytes, _ = generate_hwpx_bytes("PRESERVATION_RECORD", services, template_path, start_date=start_date, end_date=end_date)

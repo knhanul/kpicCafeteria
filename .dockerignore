@@ -1,0 +1,14 @@
+.git
+.venv
+.desktop-venv
+__pycache__
+**/__pycache__
+**/*.py[cod]
+.pytest_cache
+desktop-build
+desktop-dist
+dist
+storage
+data
+backup
+cafeteria_latest.zip
