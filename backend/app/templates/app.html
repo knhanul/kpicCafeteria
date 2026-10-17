@@ -1,1 +1,184 @@
-$(cat /tmp/kpicCafeteria/backend/app/templates/app.html)
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ app_name }}</title>
+  <link rel="stylesheet" href="/static/app.css?v={{ asset_version }}">
+</head>
+<body>
+<div id="app-shell" class="app-shell" data-must-change-password="{{ must_change_password }}">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <img src="/static/assets/ci.png" alt="기관 로고">
+      <div><strong>구내식당 관리</strong><span>영양사 업무 시스템</span></div>
+    </div>
+    <nav class="side-nav">
+      <button data-view="workspace" class="active">주간 급식 운영</button>
+      <button data-view="master">메뉴·재료 기준정보</button>
+      <button data-view="orders">발주 관리</button>
+      <button data-view="analysis">식수 분석</button>
+    </nav>
+    <div class="side-nav-divider"></div>
+    <nav class="side-nav">
+      <div class="side-nav-group collapsed" data-group="settings">
+        <button type="button" class="side-nav-toggle" data-group="settings" aria-expanded="false">설정 <span class="group-caret">▾</span></button>
+        <div class="side-nav-sub">
+          <button data-view="master-data">기본 데이터 관리</button>
+          {% if role == "admin" and not desktop_mode %}
+          <button data-view="users">사용자 관리</button>
+          {% endif %}
+          {% if role == "admin" %}
+          <button data-view="backup">시스템 데이터 백업</button>
+          <button data-view="archive">Excel 데이터 아카이브</button>
+          {% endif %}
+        </div>
+      </div>
+    </nav>
+    <div class="sidebar-spacer"></div>
+    <div class="sidebar-user">
+      <span>👤 {{ display_name }}</span>
+      {% if not desktop_mode %}
+      <div class="sidebar-user-actions">
+        <button id="change-password-button" class="ghost-button">비밀번호 변경</button>
+        <button id="logout-button" class="ghost-button">로그아웃</button>
+      </div>
+      {% endif %}
+    </div>
+  </aside>
+
+  <section class="main-area">
+    <header class="top-header" id="top-header">
+      <div><h1 id="page-title">주간 급식 운영</h1></div>
+    </header>
+
+    <main id="view-workspace" class="view active">
+      <div class="workspace-toolbar">
+        <div class="toolbar-row toolbar-row-modes">
+          <div class="mode-tabs" role="tablist">
+            <button data-mode="meal" class="active">식단 작성</button>
+            <button data-mode="cooking">조리지시서</button>
+            <button data-mode="preservation">보존식 기록</button>
+            <button data-mode="actual">실제 식수</button>
+          </div>
+        </div>
+        <div class="toolbar-row toolbar-row-actions">
+          <div class="week-controls">
+            <button id="prev-week" class="ghost-button week-nav-btn">‹ 이전</button>
+            <span class="period-picker">
+              <input type="date" id="week-date-picker" class="week-date-picker" title="조회 시작일">
+              <span class="period-separator">~</span>
+              <span id="week-end-date" class="week-end-date"></span>
+            </span>
+            <button id="next-week" class="ghost-button week-nav-btn">다음 ›</button>
+            <button id="today-week" class="ghost-button week-nav-btn">이번 주</button>
+          </div>
+          <div class="workspace-actions">
+            <button id="document-preview" class="secondary-button">출력물 생성</button>
+            <button id="focus-toggle" class="primary-button">⛶ 집중 작성</button>
+          </div>
+        </div>
+      </div>
+      <div id="focus-toolbar" class="focus-toolbar hidden">
+        <strong>식단 집중 작성</strong><span id="focus-week-range"></span><span id="save-state">저장됨</span>
+        <button id="focus-exit" class="ghost-button">집중 모드 종료</button>
+      </div>
+      <div class="workspace-grid">
+        <section class="week-board-wrap"><div id="week-board" class="week-board"></div></section>
+        <aside id="editor-panel" class="editor-panel"><div class="empty-editor">날짜와 배식을 선택해 주세요.</div></aside>
+      </div>
+    </main>
+
+    <main id="view-orders" class="view">
+      <div class="page-card">
+        <p class="view-hint">필요량은 식단 기준으로 자동 계산되고, 발주량·발주일·배송일은 실제 주문에 맞게 고칠 수 있어요.</p>
+        <div class="orders-toolbar">
+          <label class="field">시작일<input type="date" id="orders-date-from"></label>
+          <label class="field">종료일<input type="date" id="orders-date-to"></label>
+          <button class="primary-button" id="orders-query-btn">조회</button>
+          <span class="orders-period-label" id="orders-period-label"></span>
+          <span class="orders-save-state" id="orders-save-state"></span>
+        </div>
+        <div class="orders-toolbar orders-toolbar-row2">
+          <div class="mode-tabs" id="orders-view-tabs">
+            <button data-order-view="ingredient" class="active">재료별</button>
+            <button data-order-view="date">사용일별</button>
+          </div>
+          <label class="field orders-status-filter">상태<select id="orders-status-filter"><option value="">전체</option><option value="pending">미처리</option><option value="ordered">발주완료</option><option value="skipped">발주안함</option></select></label>
+          <span class="search-submit-row"><input id="orders-search" placeholder="재료명 (Enter로 검색)"><button type="button" class="secondary-button" id="orders-search-btn">검색</button></span>
+        </div>
+        <div id="orders-bulk-bar" class="orders-bulk-bar hidden"></div>
+        <div id="orders-root"></div>
+      </div>
+    </main>
+
+    <main id="view-master" class="view">
+      <div class="page-card">
+        <div class="master-tabs"><button data-master="menus" class="active">메뉴·레시피</button><button data-master="ingredients">재료</button></div>
+        <div id="master-content" class="master-workspace"></div>
+      </div>
+    </main>
+
+    <main id="view-master-data" class="view">
+      <div class="page-card">
+        <div class="section-heading"><div><h2>기본 데이터 관리</h2><p>HWPX 문서 양식과 배식 기본값을 관리합니다.</p></div></div>
+        <div class="master-tabs md-tabs" id="master-data-tabs"><button data-md-tab="hwpx-templates" class="active">HWPX 양식 관리</button><button data-md-tab="meal-service-defaults">배식 기본값 관리</button><button data-md-tab="setup-import">기초 데이터 구축</button><button data-md-tab="actual-meal-upload">식수 정보 업로드</button><button data-md-tab="weather">날씨정보 관리</button></div>
+        <div id="master-data-content"></div>
+      </div>
+    </main>
+
+    <main id="view-analysis" class="view">
+      <div class="page-card">
+        <p class="view-hint">실제 식수를 <strong>평소 식수</strong>(지난 1년 같은 배식의 평균, 중식·석식 따로)와 비교해 몇 명 많고 적었는지 보여줘요.</p>
+        <div class="analysis-tabs" id="analysis-tabs" role="tablist">
+          <button type="button" data-analysis-tab="daily" class="active">날짜별 식수</button>
+          <button type="button" data-analysis-tab="weekday">요일별 식수</button>
+          <button type="button" data-analysis-tab="monthly">월별 식수</button>
+          <button type="button" data-analysis-tab="popular">인기 메뉴</button>
+          <button type="button" data-analysis-tab="menu">메뉴별 식수</button>
+          <button type="button" data-analysis-tab="ingredient">재료별 식수</button>
+          <button type="button" data-analysis-tab="ing-usage">대표재료 사용횟수</button>
+          <button type="button" data-analysis-tab="weather">날씨별 식수</button>
+        </div>
+        <div id="analysis-conditions" class="analysis-conditions"></div>
+        <div id="analysis-result" class="analysis-result"></div>
+      </div>
+    </main>
+
+    <main id="view-users" class="view">
+      <div class="page-card">
+        <div class="section-heading"><div><h2>사용자 관리</h2><p>사용자 계정을 등록하고 권한과 상태를 관리합니다.</p></div></div>
+        <div id="users-root"></div>
+      </div>
+    </main>
+
+    <main id="view-backup" class="view">
+      <div class="page-card">
+        <div class="section-heading">
+          <div><h2>시스템 데이터 백업</h2><p>현재 구내식당 시스템의 모든 업무 데이터를 백업파일로 저장합니다. 문제가 발생했을 때 시스템 데이터를 복구하는 데 사용할 수 있으므로 정기적으로 별도 저장장치에 보관하는 것을 권장합니다.</p></div>
+          <button class="primary-button" id="create-backup-btn">지금 백업</button>
+        </div>
+        <div id="backup-root"></div>
+      </div>
+    </main>
+
+    <main id="view-archive" class="view">
+      <div class="page-card">
+        <div class="section-heading">
+          <div><h2>Excel 데이터 아카이브</h2><p>식단, 조리지시, 보존식 및 기준정보를 Excel 파일로 저장합니다. Excel에서 직접 내용을 확인할 수 있으며 장기보관용 자료로 사용할 수 있습니다. 이 파일은 시스템에 직접 복구하는 백업파일은 아닙니다.</p></div>
+          <div class="archive-controls">
+            <label class="field">시작일<input type="date" id="archive-date-from"></label>
+            <label class="field">종료일<input type="date" id="archive-date-to"></label>
+            <button class="primary-button" id="create-archive-btn">Excel 아카이브 생성</button>
+          </div>
+        </div>
+        <div id="archive-root"></div>
+      </div>
+    </main>
+  </section>
+</div>
+<div id="modal-root"></div>
+<div id="toast-root" aria-live="polite"></div>
+<script src="/static/app.js?v={{ asset_version }}"></script>
+</body>
+</html>
