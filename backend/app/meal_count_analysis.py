@@ -460,8 +460,7 @@ def weekday_stats(db: Session, meal_type: str, start: date, end: date) -> dict[s
 def _month_service_counts(db: Session, meal_type: str, start: date, end: date) -> dict[str, tuple[int, int]]:
     """각 달의 (편성된 식단 수, 실식수가 입력된 식단 수).
 
-    편성은 메뉴가 있는 배식. 실식수 입력은 그 중 실제 식수가 비어 있지 않은 배식(0 포함).
-    평균 계산은 여전히 실식수가 0보다 큰 날만 쓴다.
+    편성은 메뉴가 있는 배식. 실식수 입력은 그 중 실제 식수가 0보다 큰 배식이다. 0은 입력으로 세지 않는다.
     """
     rows = db.execute(
         select(MealService.service_date, MealActual.actual_count)
@@ -478,7 +477,7 @@ def _month_service_counts(db: Session, meal_type: str, start: date, end: date) -
     for service_date, actual in rows:
         key = f"{service_date.year:04d}-{service_date.month:02d}"
         planned[key] += 1
-        if actual is not None:
+        if actual is not None and actual > 0:
             entered[key] += 1
     return {key: (planned[key], entered[key]) for key in planned}
 
