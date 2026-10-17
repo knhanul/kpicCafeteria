@@ -2655,7 +2655,7 @@ function analysisMonthsBack(end, months) {
 
 function analysisDefaults(){
   const end=new Date();end.setHours(12,0,0,0);
-  return {tab:'daily', start:isoDate(analysisMonthsBack(end,3)), end:isoDate(end), quickKey:'3m', mealType:'LUNCH', showWeather:false, menuMode:'group', menuItems:[], menuItemScopes:{}, menuScope:'main_dish', popScope:'main_dish', popSel:{basis:null, items:[], scopes:{}, version:0, carried:0}, ingMode:'name', ingItems:[], ingGroupFilter:'', ingGroupCatalog:null, ingUsageMode:'group', ingUsageItems:[], ingUsageFilter:'', popBasis:'name', popOrder:'top', popLimit:10, popMinDays:ANALYSIS_MIN_DAYS.LUNCH, weatherFilter:'all', showDetail:false, result:null, query:null, band:null};
+  return {tab:'daily', start:isoDate(analysisMonthsBack(end,3)), end:isoDate(end), quickKey:'3m', mealType:'LUNCH', showWeather:false, menuMode:'group', menuItems:[], menuItemScopes:{}, menuScope:'main_dish', popScope:'main_dish', popSel:{basis:null, items:[], scopes:{}, version:0, carried:0}, ingMode:'name', ingItems:[], ingGroupFilter:'', ingGroupCatalog:null, ingRepOpen:false, ingUsageMode:'group', ingUsageItems:[], ingUsageFilter:'', popBasis:'name', popOrder:'top', popLimit:10, popMinDays:ANALYSIS_MIN_DAYS.LUNCH, weatherFilter:'all', showDetail:false, result:null, query:null, band:null};
 }
 
 function analysisState(){ if(!state.analysis) state.analysis=analysisDefaults(); return state.analysis; }
@@ -2907,9 +2907,9 @@ function renderAnalysisConditions(){
             ${groupMode ? `
             <div class="an-item">
               <span class="an-label">대표 재료</span>
-              <div class="an-search-wrap">
-                <input id="an-rep-filter" autocomplete="off" placeholder="대표 재료명 찾기" value="${escapeHtml(a.ingGroupFilter||'')}">
-                <div class="an-rep-list" id="an-rep-list" role="listbox" aria-label="대표 재료명 목록"><div class="an-search-empty">불러오는 중...</div></div>
+              <div class="an-search-wrap an-rep-picker">
+                <input id="an-rep-filter" autocomplete="off" placeholder="클릭해서 대표 재료 목록" value="${escapeHtml(a.ingGroupFilter||'')}">
+                <div class="an-rep-list${a.ingRepOpen?'':' hidden'}" id="an-rep-list" role="listbox" aria-label="대표 재료명 목록"><div class="an-search-empty">불러오는 중...</div></div>
               </div>
             </div>` : `
             <div class="an-item">
@@ -2951,9 +2951,9 @@ function renderAnalysisConditions(){
           <div class="an-group-body">
             <div class="an-item">
               <span class="an-label">목록</span>
-              <div class="an-search-wrap">
-                <input id="an-rep-filter" autocomplete="off" placeholder="대표 재료명 찾기" value="${escapeHtml(a.ingUsageFilter||'')}">
-                <div class="an-rep-list" id="an-rep-list" role="listbox" aria-label="대표 재료명 목록"><div class="an-search-empty">불러오는 중...</div></div>
+              <div class="an-search-wrap an-rep-picker">
+                <input id="an-rep-filter" autocomplete="off" placeholder="클릭해서 대표 재료 목록" value="${escapeHtml(a.ingUsageFilter||'')}">
+                <div class="an-rep-list${a.ingRepOpen?'':' hidden'}" id="an-rep-list" role="listbox" aria-label="대표 재료명 목록"><div class="an-search-empty">불러오는 중...</div></div>
               </div>
             </div>
             <div class="an-item">
@@ -3130,7 +3130,14 @@ function bindRepIngredientList(){
       : `<div class="an-search-empty">${q?'찾는 대표 재료명이 없습니다.':'식단에 쓰인 대표 재료명이 없습니다.'}</div>`;
     $$('button[data-rep]',list).forEach(b=>b.addEventListener('click',()=>toggleRepIngredient(shown[Number(b.dataset.rep)], itemsKey)));
   };
-  input?.addEventListener('input',()=>{ analysisState()[filterKey]=input.value; paint(a.ingGroupCatalog||[]); });
+  input?.addEventListener('input',()=>{ analysisState()[filterKey]=input.value; paint(a.ingGroupCatalog||[]); openRepList(); });
+  input?.addEventListener('focus', openRepList);
+  input?.addEventListener('click', openRepList);
+  input?.addEventListener('keydown', e=>{ if(e.key==='Escape') closeRepList(true); });
+  if(!document.body.dataset.anRepOutside){
+    document.body.dataset.anRepOutside='1';
+    document.addEventListener('mousedown', e=>{ if(!e.target.closest('.an-rep-picker')) closeRepList(false); });
+  }
   if(a.ingGroupCatalog){ paint(a.ingGroupCatalog); return; }
   if(!a.ingGroupCatalogPromise){
     a.ingGroupCatalogPromise=api('/api/analysis/ingredient-keys/search?mode=group&limit=500').then(data=>{
@@ -3149,13 +3156,27 @@ function bindRepIngredientList(){
   });
 }
 
+function openRepList(){
+  const list=$('#an-rep-list');
+  if(!list) return;
+  analysisState().ingRepOpen=true;
+  list.classList.remove('hidden');
+}
+function closeRepList(blur){
+  const a=analysisState();
+  a.ingRepOpen=false;
+  $('#an-rep-list')?.classList.add('hidden');
+  if(blur) $('#an-rep-filter')?.blur();
+}
+
 function toggleRepIngredient(item, itemsKey){
   if(!item) return;
   const a=analysisState();
   const items=a[itemsKey];
   const at=items.indexOf(item.name);
-  if(at>=0){ items.splice(at,1); renderAnalysisConditions(); return; }
+  if(at>=0){ items.splice(at,1); a.ingRepOpen=true; renderAnalysisConditions(); return; }
   items.push(item.name);
+  a.ingRepOpen=true;
   renderAnalysisConditions();
 }
 

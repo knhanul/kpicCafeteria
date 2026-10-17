@@ -405,7 +405,8 @@ body.ui-locked{overflow:hidden}
 .an-search-list button:hover{background:#eef5fb}
 .an-search-list small{color:var(--muted);font-weight:500}
 .an-search-empty{padding:6px 9px;color:var(--muted);font-size:12px}
-.an-rep-list{margin-top:4px;max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;background:#fff}
+.an-rep-list{position:absolute;left:0;right:0;top:calc(100% + 2px);z-index:30;max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;background:#fff;box-shadow:var(--shadow)}
+.an-rep-list.hidden{display:none}
 .an-rep-list button{display:flex;justify-content:space-between;align-items:center;width:100%;border:0;border-bottom:1px solid #f0f4f8;background:#fff;padding:6px 9px;text-align:left;gap:8px;color:var(--ink);font-weight:600;font-size:12px;cursor:pointer}
 .an-rep-list button:last-child{border-bottom:0}
 .an-rep-list button:hover,.an-rep-list button.is-picked{background:#eef5fb}
