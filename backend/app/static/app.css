@@ -549,3 +549,7 @@ body.ui-locked{overflow:hidden}
 .an-chip-scope{font-size:10.5px;font-weight:600;color:#5c7286;background:#eef3f8;border-radius:6px;padding:0 5px;margin-left:4px}
 .an-note-strong{background:#fdecea;border-color:#f3b9b2;color:#8f2d22}
 .an-lg-empty{color:#98a6b3;text-decoration:line-through}
+/* 요일별·월별 식수: 평균 실제 식수 막대(왼쪽부터 채움) */
+.an-bar.actual{left:0;background:#1d5f9a}
+.an-table tr[data-group]{cursor:pointer}
+.an-table tr[data-group].active td{background:#f3f8fc}

@@ -2562,7 +2562,7 @@ document.addEventListener('keydown',e=>{if(isUILocked()){e.preventDefault();e.st
 window.addEventListener('beforeunload',e=>{if(isUILocked()){e.preventDefault();e.returnValue='';return '';}});
 
 /* ==================== 식수 분석 ==================== */
-const ANALYSIS_TABS = {daily:'날짜별 식수', popular:'인기 메뉴', menu:'메뉴별 식수', ingredient:'재료별 식수', weather:'날씨별 식수'};
+const ANALYSIS_TABS = {daily:'날짜별 식수', weekday:'요일별 식수', monthly:'월별 식수', popular:'인기 메뉴', menu:'메뉴별 식수', ingredient:'재료별 식수', weather:'날씨별 식수'};
 const ANALYSIS_MIN_DAYS = {LUNCH:1, DINNER:1};
 const ANALYSIS_MAIN_MENU_MIN_DAYS = {LUNCH:1, DINNER:1};
 const ANALYSIS_SCOPES = {main_dish:'주찬만', main_menu:'메인 메뉴만', with_side:'부찬 포함', all:'전체'};
@@ -2798,7 +2798,8 @@ function renderAnalysisConditions(){
 
   let contentHtml = '';
 
-  if (a.tab === 'daily') {
+  if (a.tab === 'daily' || a.tab === 'weekday' || a.tab === 'monthly') {
+    const hint = {daily:'평소 식수(1년 평균)와 실제 식수 비교', weekday:'요일마다 평균 실제·평소 식수 비교', monthly:'달마다 평균 실제·평소 식수 비교'}[a.tab];
     contentHtml = `
       <div class="an-groups cols-2">
         ${periodGroup(false)}
@@ -2807,7 +2808,7 @@ function renderAnalysisConditions(){
           <div class="an-group-body">
             <div class="an-item"><span class="an-label">배식</span><div class="an-seg">${seg('meal',[['LUNCH','중식','중식 식수'],['DINNER','석식','석식 식수']],a.mealType)}</div></div>
             <div class="an-item">
-              <span class="muted" style="font-size:12px;padding-left:2px">평소 식수(1년 평균)와 실제 식수 비교</span>
+              <span class="muted" style="font-size:12px;padding-left:2px">${hint}</span>
               <button type="button" class="primary-button an-query" id="an-query" style="margin-left:auto" title="${escapeHtml(summaryText)}">조회</button>
             </div>
           </div>
@@ -3102,7 +3103,7 @@ function analysisQueryParams(){
   return params;
 }
 function analysisSearchParams(params){ const sp=new URLSearchParams(); Object.entries(params).forEach(([k,v])=>{ if(Array.isArray(v)) v.forEach(x=>sp.append(k,x)); else sp.append(k,v); }); return sp; }
-const ANALYSIS_ENDPOINTS={daily:'/api/analysis/daily',popular:'/api/analysis/popular-menus',menu:'/api/analysis/menus',ingredient:'/api/analysis/ingredients',weather:'/api/analysis/weather'};
+const ANALYSIS_ENDPOINTS={daily:'/api/analysis/daily',weekday:'/api/analysis/weekday',monthly:'/api/analysis/monthly',popular:'/api/analysis/popular-menus',menu:'/api/analysis/menus',ingredient:'/api/analysis/ingredients',weather:'/api/analysis/weather'};
 
 async function runAnalysisQuery(){
   const a=analysisState();
@@ -3129,6 +3130,7 @@ function renderAnalysisResult(){
   const a=analysisState();const root=$('#analysis-result');if(!root)return;
   if(!a.result){ root.innerHTML=`${a.tab==='menu'&&a.carryNote?`<div class="an-note">${escapeHtml(a.carryNote)}</div>`:''}<div class="an-empty">조건을 정한 뒤 <strong>조회</strong> 버튼을 눌러 주세요.</div>`; return; }
   if(a.query.tab==='weather'){ renderAnalysisWeather(root,a.result); return; }
+  if(a.query.tab==='weekday'||a.query.tab==='monthly'){ renderAnalysisGroups(root,a.result,a.query.tab); return; }
   if(a.query.tab==='popular'){ renderAnalysisPopular(root,a.result); return; }
   if(a.query.tab==='menu'||a.query.tab==='ingredient'){ renderAnalysisMenus(root,a.result); return; }
   const r=a.result;
@@ -3164,7 +3166,7 @@ function bindAnalysisTable(root){
 
 async function downloadAnalysisExcel(){
   const a=analysisState();if(!a.query)return;
-  const tabKey={daily:'daily',popular:'popular',menu:'menus',ingredient:'ingredients',weather:'weather'}[a.query.tab];
+  const tabKey={daily:'daily',weekday:'weekday',monthly:'monthly',popular:'popular',menu:'menus',ingredient:'ingredients',weather:'weather'}[a.query.tab];
   await withUILock('Excel 파일을 만들고 있습니다.', async()=>{
     try{
       const response=await requestBinary(`/api/analysis/export.xlsx?${analysisSearchParams({...a.query.params,tab:tabKey})}`);
@@ -3435,6 +3437,29 @@ function renderAnalysisWeather(root, r){
     <div class="an-weather-grid">${section('rain','비 오는 날과 안 오는 날',r.rain)}${section('temp','기온별',r.temperature)}</div>
     <div id="an-band-dates">${selected?`<div class="an-card"><div class="an-card-head"><h3>${escapeHtml(selected.label)} · ${numberText(selected.days)}일</h3></div>${selected.low_sample_note?`<div class="an-note">${escapeHtml(selected.low_sample_note)}</div>`:''}${analysisTableHtml(selected.points,true,false)}</div>`:''}</div>`;
   $$('[data-band]',root).forEach(el=>el.addEventListener('click',()=>{a.band=el.dataset.band;renderAnalysisWeather(root,r);$('#an-band-dates')?.scrollIntoView({behavior:'smooth',block:'start'});}));
+  bindAnalysisTable(root);
+}
+
+// 요일별·월별 식수: 막대는 평균 실제 식수(명), 표에 평균 평소와 차이. 막대나 행을 누르면 그 묶음의 날짜 목록을 보여줍니다.
+function renderAnalysisGroups(root, r, tab){
+  const a=analysisState();
+  const unit=tab==='weekday'?'요일':'월';
+  const maxActual=Math.max(1,...r.groups.map(g=>g.avg_actual||0));
+  const bars=r.groups.map(g=>{const has=g.days>0&&g.avg_actual!==null;const pct=has?g.avg_actual/maxActual*100:0;
+    return `<button type="button" class="an-bar-row ${a.band===g.key?'active':''}" data-group="${escapeHtml(g.key)}" ${g.days?'':'disabled'}>
+      <span class="an-bar-label">${escapeHtml(g.label)}<small>${numberText(g.days)}일</small></span>
+      <span class="an-bar-track">${has?`<span class="an-bar actual" style="width:${pct}%"></span>`:''}</span>
+      <span class="an-bar-value">${has?`평균 ${numberText(g.avg_actual)}명`:'자료 없음'}</span></button>`;}).join('');
+  const rows=r.groups.map(g=>`<tr data-group="${escapeHtml(g.key)}" class="${g.days?'':'an-row-empty'} ${a.band===g.key?'active':''}" tabindex="0"><td>${escapeHtml(g.label)}</td><td class="num">${numberText(g.days)}일</td><td class="num">${g.days?analysisNum(g.avg_actual)+'명':'—'}</td><td class="num">${g.days?analysisNum(g.avg_usual)+(g.avg_usual===null?'':'명'):'—'}</td><td class="num ${analysisDiffClass(g.avg_diff)}">${g.days?analysisDiffText(g.avg_diff):'—'}</td><td class="muted">${escapeHtml(g.low_sample_note||'')}</td></tr>`).join('');
+  const selected=a.band?r.groups.find(g=>g.key===a.band&&g.days):null;
+  root.innerHTML=`<div class="an-card"><div class="an-card-head"><h3>${unit}별 식수 · ${escapeHtml(r.meal_type_name)} · ${escapeHtml(r.start)} ~ ${escapeHtml(r.end)}</h3><span class="an-days">${numberText(r.days)}일</span></div>
+      <p class="an-sub">막대는 ${unit}마다 평균 실제 식수(명)예요. 전체 평균 실제 ${analysisNum(r.avg_actual)}명, 평소보다 ${analysisDiffText(r.avg_diff)}. 막대나 표를 누르면 그 ${unit}의 날짜 목록을 볼 수 있어요.</p>
+      <div class="an-bars an-bars-actual">${bars}</div></div>
+    <div class="an-card"><div class="an-table-head"><h4>${unit}별 표</h4><button type="button" class="secondary-button" data-an-download>Excel 내려받기</button></div>
+      <div class="table-wrap"><table class="data-table an-table"><thead><tr><th>${unit}</th><th class="num">일수</th><th class="num">평균 실제</th><th class="num">평균 평소</th><th class="num">평균 차이(명)</th><th>참고</th></tr></thead><tbody>${rows}</tbody></table></div></div>
+    <div id="an-band-dates">${selected?`<div class="an-card"><div class="an-card-head"><h3>${escapeHtml(selected.label)} · ${numberText(selected.days)}일</h3></div>${selected.low_sample_note?`<div class="an-note">${escapeHtml(selected.low_sample_note)}</div>`:''}${analysisTableHtml(selected.points,false,false)}</div>`:''}</div>`;
+  $$('[data-group]',root).forEach(el=>{const pick=()=>{const g=r.groups.find(x=>x.key===el.dataset.group);if(!g||!g.days)return;a.band=g.key;renderAnalysisGroups(root,r,tab);$('#an-band-dates')?.scrollIntoView({behavior:'smooth',block:'start'});};
+    el.addEventListener('click',pick);el.addEventListener('keydown',e=>{if(e.key==='Enter')pick();});});
   bindAnalysisTable(root);
 }
 

@@ -104,6 +104,16 @@ def weather(start: date, end: date, meal_type: str = "LUNCH", db: Session = Depe
     return _run(analysis.weather_bands, db, meal_type, start, end)
 
 
+@router.get("/weekday")
+def weekday(start: date, end: date, meal_type: str = "LUNCH", db: Session = Depends(get_db), user: User = Depends(current_user)):
+    return _run(analysis.weekday_stats, db, meal_type, start, end)
+
+
+@router.get("/monthly")
+def monthly(start: date, end: date, meal_type: str = "LUNCH", db: Session = Depends(get_db), user: User = Depends(current_user)):
+    return _run(analysis.monthly_stats, db, meal_type, start, end)
+
+
 @router.get("/date-detail")
 def date_detail(
     service_date: date = Query(alias="date"), meal_type: str = "LUNCH", ingredient_id: int | None = None,
@@ -200,6 +210,18 @@ def export_xlsx(
             for band in groups:
                 rows += [[f"{group_name}: {band['label']}", *row] for row in _point_rows(band["points"], meal_name)]
         _sheet(wb, "날짜 목록", ["날씨", *POINT_HEADERS], rows)
+    elif tab in ("weekday", "monthly"):
+        weekly = tab == "weekday"
+        data = _run(analysis.weekday_stats if weekly else analysis.monthly_stats, db, meal_type, start, end)
+        label = "요일별식수" if weekly else "월별식수"
+        unit = "요일" if weekly else "월"
+        summary = [
+            [g["label"], g["days"], g["avg_actual"], g["avg_usual"], g["avg_diff"], g["low_sample_note"] or ""]
+            for g in data["groups"]
+        ]
+        _sheet(wb, f"{unit}별 요약", [unit, "일수", "평균 실제(명)", "평균 평소(명)", "평균 차이(명)", "참고"], summary, first=True)
+        rows = [[g["label"], *row] for g in data["groups"] for row in _point_rows(g["points"], meal_name)]
+        _sheet(wb, "날짜 목록", ["구분", *POINT_HEADERS], rows)
     else:
         raise HTTPException(status_code=400, detail="내려받을 화면이 올바르지 않습니다.")
     buffer = io.BytesIO()

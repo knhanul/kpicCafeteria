@@ -643,3 +643,107 @@ def test_menu_compare_per_item_scope_matches_popular_selection(engine):
     from openpyxl import load_workbook
     summary = load_workbook(io.BytesIO(excel.content))["메뉴별 요약"]
     assert [[c.value for c in row][:3] for row in summary.iter_rows(min_row=2)] == [["계란말이", "부찬 포함", 3], ["제육볶음", "주찬만", 3]]
+
+
+def _weekday_fixture(db):
+    b = Builder(db)
+    b.meal(MONDAY - timedelta(days=1), 400)  # Sunday before the period: only history for 평소
+    b.meal(MONDAY, 420)
+    b.meal(MONDAY + timedelta(days=1), 380)  # Tuesday
+    b.meal(MONDAY + timedelta(days=2), None)  # Wednesday, no actual: not counted
+    b.meal(MONDAY + timedelta(days=3), 0)  # Thursday, 0: not counted
+    b.meal(MONDAY + timedelta(days=4), 300, meal_type="DINNER")  # other meal type
+    b.meal(MONDAY + timedelta(weeks=1), 440)
+    b.meal(MONDAY + timedelta(weeks=2), 460)
+    db.commit()
+
+
+def test_weekday_stats_groups_counted_meals_by_weekday(engine):
+    with Session(engine) as db:
+        _weekday_fixture(db)
+        result = analysis.weekday_stats(db, "LUNCH", MONDAY, MONDAY + timedelta(days=20))
+        daily = analysis.daily(db, "LUNCH", MONDAY, MONDAY + timedelta(days=20))
+    groups = result["groups"]
+    assert [g["key"] for g in groups] == ["0", "1", "2", "3", "4", "5", "6"]
+    assert [g["label"] for g in groups] == list("월화수목금토일")
+    assert [g["days"] for g in groups] == [3, 1, 0, 0, 0, 0, 0]
+    mon, tue, wed = groups[0], groups[1], groups[2]
+    assert [p["date"] for p in mon["points"]] == [(MONDAY + timedelta(weeks=w)).isoformat() for w in range(3)]
+    assert mon["avg_actual"] == 440
+    by_date = {p["date"]: p for p in daily["points"]}
+    assert mon["avg_usual"] == analysis._avg([by_date[p["date"]]["usual"] for p in mon["points"]])
+    assert mon["avg_diff"] == analysis._avg([by_date[p["date"]]["diff"] for p in mon["points"]])
+    assert mon["low_sample_note"] == "3일뿐이라 참고만 하세요."
+    assert (tue["avg_actual"], tue["avg_usual"], tue["avg_diff"]) == (380, 410, -30)  # 평소 = (400 + 420) / 2
+    assert tue["low_sample_note"] == "1일뿐이라 참고만 하세요."
+    assert wed["points"] == [] and wed["avg_actual"] is None and wed["low_sample_note"] is None
+    assert (result["meal_type"], result["meal_type_name"], result["days"]) == ("LUNCH", "중식", 4)
+    assert result["avg_actual"] == analysis._avg([420, 380, 440, 460])
+    assert result["avg_diff"] == daily["avg_diff"] and result["avg_usual"] == daily["avg_usual"]
+    with Session(engine) as db:
+        dinner = analysis.weekday_stats(db, "DINNER", MONDAY, MONDAY + timedelta(days=20))
+    assert [g["days"] for g in dinner["groups"]] == [0, 0, 0, 0, 1, 0, 0]
+
+
+def test_monthly_stats_lists_every_month_including_empty_ones(engine):
+    with Session(engine) as db:
+        b = Builder(db)
+        b.meal(date(2026, 1, 20), 400)
+        b.meal(date(2026, 1, 27), 410)
+        b.meal(date(2026, 2, 10), 0)  # recorded 0: February stays empty
+        b.meal(date(2026, 3, 3), 430)
+        b.meal(date(2026, 4, 1), 999)  # after the period
+        db.commit()
+        result = analysis.monthly_stats(db, "LUNCH", date(2026, 1, 15), date(2026, 3, 31))
+        with pytest.raises(analysis.AnalysisError):
+            analysis.monthly_stats(db, "BREAKFAST", date(2026, 1, 15), date(2026, 3, 31))
+    groups = result["groups"]
+    assert [g["key"] for g in groups] == ["2026-01", "2026-02", "2026-03"]
+    assert [g["label"] for g in groups] == ["2026년 1월", "2026년 2월", "2026년 3월"]
+    jan, feb, mar = groups
+    assert (jan["days"], jan["avg_actual"], jan["avg_usual"], jan["avg_diff"]) == (2, 405, 400, 10)  # 1/20 has no 평소
+    assert (feb["days"], feb["avg_actual"], feb["points"]) == (0, None, [])
+    assert (mar["days"], mar["avg_actual"], mar["avg_usual"], mar["avg_diff"]) == (1, 430, 405, 25)
+    assert result["days"] == 3 and result["avg_actual"] == 413
+    with Session(engine) as db:
+        across_year = analysis.monthly_stats(db, "LUNCH", date(2025, 11, 30), date(2026, 1, 1))
+    assert [g["key"] for g in across_year["groups"]] == ["2025-11", "2025-12", "2026-01"]
+
+
+def test_weekday_and_monthly_api_and_excel(engine):
+    import io
+    from openpyxl import load_workbook
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    with sessions() as db:
+        _weekday_fixture(db)
+    app = FastAPI()
+    app.include_router(analysis_router.router)
+
+    def override_db():
+        with sessions() as db:
+            yield db
+
+    app.dependency_overrides[analysis_router.get_db] = override_db
+    app.dependency_overrides[analysis_router.current_user] = lambda: SimpleNamespace(id=1)
+    params = {"start": MONDAY.isoformat(), "end": (MONDAY + timedelta(days=20)).isoformat(), "meal_type": "LUNCH"}
+    with TestClient(app) as client:
+        weekday = client.get("/api/analysis/weekday", params=params)
+        monthly = client.get("/api/analysis/monthly", params=params)
+        assert weekday.status_code == 200 and monthly.status_code == 200
+        assert [g["days"] for g in weekday.json()["groups"]] == [3, 1, 0, 0, 0, 0, 0]
+        assert [g["key"] for g in monthly.json()["groups"]] == ["2026-03"]
+        assert client.get("/api/analysis/weekday", params={**params, "meal_type": "X"}).status_code == 400
+        files = {tab: client.get("/api/analysis/export.xlsx", params={**params, "tab": tab}) for tab in ("weekday", "monthly")}
+    for tab, response in files.items():
+        assert response.status_code == 200 and response.content[:2] == b"PK"
+    wb = load_workbook(io.BytesIO(files["weekday"].content))
+    assert wb.sheetnames == ["요일별 요약", "날짜 목록"]
+    summary = [[c.value for c in row] for row in wb["요일별 요약"].iter_rows()]
+    assert summary[0] == ["요일", "일수", "평균 실제(명)", "평균 평소(명)", "평균 차이(명)", "참고"]
+    assert summary[1][:2] == ["월", 3] and summary[3][:2] == ["수", 0] and len(summary) == 8
+    dates = [[c.value for c in row] for row in wb["날짜 목록"].iter_rows()]
+    assert dates[0] == ["구분", *analysis_router.POINT_HEADERS]
+    assert [row[0] for row in dates[1:]] == ["월", "월", "월", "화"]
+    month_wb = load_workbook(io.BytesIO(files["monthly"].content))
+    assert month_wb.sheetnames == ["월별 요약", "날짜 목록"]
+    assert [c.value for c in next(month_wb["월별 요약"].iter_rows(min_row=2))][:2] == ["2026년 3월", 4]

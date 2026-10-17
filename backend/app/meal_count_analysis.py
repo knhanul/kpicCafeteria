@@ -381,6 +381,63 @@ def weather_bands(db: Session, meal_type: str, start: date, end: date) -> dict[s
     }
 
 
+def _stat_group(key: str, label: str, members: list[dict[str, Any]]) -> dict[str, Any]:
+    with_usual = [p for p in members if p["usual"] is not None]
+    return {
+        "key": key,
+        "label": label,
+        "days": len(members),
+        "avg_actual": _avg([p["actual"] for p in members]),
+        "avg_usual": _avg([p["usual"] for p in with_usual]),
+        "avg_diff": _avg([p["diff"] for p in with_usual]),
+        "low_sample_note": low_sample_note(len(members)),
+        "points": members,
+    }
+
+
+def _grouped_stats(meal_type: str, start: date, end: date, points: list[dict[str, Any]], groups: list[dict[str, Any]]) -> dict[str, Any]:
+    with_usual = [p for p in points if p["usual"] is not None]
+    return {
+        "meal_type": meal_type,
+        "meal_type_name": MEAL_TYPES[meal_type],
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "days": len(points),
+        "avg_actual": _avg([p["actual"] for p in points]),
+        "avg_usual": _avg([p["usual"] for p in with_usual]),
+        "avg_diff": _avg([p["diff"] for p in with_usual]),
+        "groups": groups,
+    }
+
+
+def weekday_stats(db: Session, meal_type: str, start: date, end: date) -> dict[str, Any]:
+    """요일별 식수: 월~일 7개 묶음(배식이 없던 요일은 0일)."""
+    check_meal_type(meal_type)
+    check_period(start, end)
+    points = _build_points(db, meal_type, start, end)
+    by_day: dict[int, list[dict[str, Any]]] = {i: [] for i in range(7)}
+    for point in points:
+        by_day[date.fromisoformat(point["date"]).weekday()].append(point)
+    groups = [_stat_group(str(i), WEEKDAYS[i], by_day[i]) for i in range(7)]
+    return _grouped_stats(meal_type, start, end, points, groups)
+
+
+def monthly_stats(db: Session, meal_type: str, start: date, end: date) -> dict[str, Any]:
+    """월별 식수: 기간 안의 모든 달을 순서대로(배식이 없던 달은 0일)."""
+    check_meal_type(meal_type)
+    check_period(start, end)
+    points = _build_points(db, meal_type, start, end)
+    by_month: dict[str, list[dict[str, Any]]] = {}
+    year, month = start.year, start.month
+    while (year, month) <= (end.year, end.month):
+        by_month[f"{year:04d}-{month:02d}"] = []
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+    for point in points:
+        by_month.setdefault(point["date"][:7], []).append(point)
+    groups = [_stat_group(key, f"{int(key[:4])}년 {int(key[5:])}월", members) for key, members in by_month.items()]
+    return _grouped_stats(meal_type, start, end, points, groups)
+
+
 def search_menu_groups(db: Session, query: str = "", limit: int = 30) -> list[dict[str, Any]]:
     stmt = (
         select(Menu.canonical_name, func.count(func.distinct(MealServiceMenu.meal_service_id)))
