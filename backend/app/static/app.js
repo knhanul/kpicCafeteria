@@ -3506,7 +3506,8 @@ function drawAnalysisCategoryChart(container, groups, {mode='bar', onClick}={}){
   const show=i=>{
     const g=groups[i]; if(!g) return;
     const actual=analysisGroupValue(g,'avg_actual');
-    tip.innerHTML=`<strong>${escapeHtml(g.label)}</strong><span>${g.days?`평균 실제 ${numberText(actual)}명 · ${numberText(g.days)}일`:'자료 없음'}</span>${g.days?'<em>눌러서 날짜 목록 보기</em>':''}`;
+    const coverage=mode==='line'?`<span>편성된 식단 ${numberText(g.planned_count||0)}회</span><span>실식수가 입력된 식단 ${numberText(g.entered_count||0)}회</span>`:'';
+    tip.innerHTML=`<strong>${escapeHtml(g.label)}</strong><span>${g.days?`평균 실제 ${numberText(actual)}명 · ${numberText(g.days)}일`:'자료 없음'}</span>${coverage}${g.days?'<em>눌러서 날짜 목록 보기</em>':''}`;
     tip.classList.remove('hidden');
     const box=container.getBoundingClientRect();
     const px=x(i)*(box.width/width);
@@ -3537,7 +3538,7 @@ function renderAnalysisGroups(root, r, tab){
       <div class="an-chart" id="an-group-chart"></div></div>
     <div class="an-card"><div class="an-table-head"><h4>${unit}별 표</h4><button type="button" class="secondary-button" data-an-download>Excel 내려받기</button></div>
       <div class="table-wrap"><table class="data-table an-table"><thead><tr><th>${unit}</th><th class="num">일수</th><th class="num">평균 실제</th><th class="num">평균 평소</th><th class="num">평균 차이(명)</th><th>참고</th></tr></thead><tbody>${rows}</tbody></table></div></div>
-    <div id="an-band-dates">${selected?`<div class="an-card"><div class="an-card-head"><h3>${escapeHtml(selected.label)} · ${numberText(selected.days)}일</h3></div>${selected.low_sample_note?`<div class="an-note">${escapeHtml(selected.low_sample_note)}</div>`:''}${analysisTableHtml(selected.points,false,false)}</div>`:''}</div>`;
+    <div id="an-band-dates">${selected?`<div class="an-card"><div class="an-card-head"><h3>${escapeHtml(selected.label)} · ${numberText(selected.days)}일</h3></div>${tab==='monthly'?`<p class="an-sub">편성된 식단 ${numberText(selected.planned_count||0)}회 · 실식수가 입력된 식단 ${numberText(selected.entered_count||0)}회</p>`:''}${selected.low_sample_note?`<div class="an-note">${escapeHtml(selected.low_sample_note)}</div>`:''}${analysisTableHtml(selected.points,false,false)}</div>`:''}</div>`;
   drawAnalysisCategoryChart($('#an-group-chart'), r.groups, {mode:tab==='monthly'?'line':'bar', onClick:g=>{a.band=g.key; renderAnalysisGroups(root,r,tab); $('#an-band-dates')?.scrollIntoView({behavior:'smooth',block:'start'});}});
   $$('[data-group]',root).forEach(el=>{const pick=()=>{const g=r.groups.find(x=>x.key===el.dataset.group);if(!g||!g.days)return;a.band=g.key;renderAnalysisGroups(root,r,tab);$('#an-band-dates')?.scrollIntoView({behavior:'smooth',block:'start'});};
     el.addEventListener('click',pick);el.addEventListener('keydown',e=>{if(e.key==='Enter')pick();});});

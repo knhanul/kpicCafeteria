@@ -457,11 +457,41 @@ def weekday_stats(db: Session, meal_type: str, start: date, end: date) -> dict[s
     return result
 
 
+def _month_service_counts(db: Session, meal_type: str, start: date, end: date) -> dict[str, tuple[int, int]]:
+    """각 달의 (편성된 식단 수, 실식수가 입력된 식단 수).
+
+    편성은 메뉴가 있는 배식. 실식수 입력은 그 중 실제 식수가 비어 있지 않은 배식(0 포함).
+    평균 계산은 여전히 실식수가 0보다 큰 날만 쓴다.
+    """
+    rows = db.execute(
+        select(MealService.service_date, MealActual.actual_count)
+        .outerjoin(MealActual, MealActual.meal_service_id == MealService.id)
+        .where(
+            MealService.meal_type == meal_type,
+            MealService.service_date >= start,
+            MealService.service_date <= end,
+            _has_menu(),
+        )
+    ).all()
+    planned: dict[str, int] = defaultdict(int)
+    entered: dict[str, int] = defaultdict(int)
+    for service_date, actual in rows:
+        key = f"{service_date.year:04d}-{service_date.month:02d}"
+        planned[key] += 1
+        if actual is not None:
+            entered[key] += 1
+    return {key: (planned[key], entered[key]) for key in planned}
+
+
 def monthly_stats(db: Session, meal_type: str, start: date, end: date) -> dict[str, Any]:
-    """월별 식수: 기간 안의 모든 달을 순서대로(배식이 없던 달은 0일)."""
+    """월별 식수: 기간 안의 모든 달을 순서대로(배식이 없던 달은 0일).
+
+    공휴일은 따로 빼지 않는다. 실식수가 있는 식단만 평균에 들어가므로 배식하지 않은 날은 빠진다.
+    """
     check_meal_type(meal_type)
     check_period(start, end)
     points = _build_points(db, meal_type, start, end)
+    coverage = _month_service_counts(db, meal_type, start, end)
     by_month: dict[str, list[dict[str, Any]]] = {}
     year, month = start.year, start.month
     while (year, month) <= (end.year, end.month):
@@ -469,7 +499,13 @@ def monthly_stats(db: Session, meal_type: str, start: date, end: date) -> dict[s
         year, month = (year + 1, 1) if month == 12 else (year, month + 1)
     for point in points:
         by_month.setdefault(point["date"][:7], []).append(point)
-    groups = [_stat_group(key, f"{int(key[:4])}년 {int(key[5:])}월", members) for key, members in by_month.items()]
+    groups = []
+    for key, members in by_month.items():
+        group = _stat_group(key, f"{int(key[:4])}년 {int(key[5:])}월", members)
+        planned, entered = coverage.get(key, (0, 0))
+        group["planned_count"] = planned
+        group["entered_count"] = entered
+        groups.append(group)
     return _grouped_stats(meal_type, start, end, points, groups)
 
 

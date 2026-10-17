@@ -716,8 +716,9 @@ def test_monthly_stats_lists_every_month_including_empty_ones(engine):
     with Session(engine) as db:
         b = Builder(db)
         b.meal(date(2026, 1, 20), 400)
+        b.meal(date(2026, 1, 21), None)  # menu only: planned, not entered
         b.meal(date(2026, 1, 27), 410)
-        b.meal(date(2026, 2, 10), 0)  # recorded 0: February stays empty
+        b.meal(date(2026, 2, 10), 0)  # recorded 0: entered, but not used in the average
         b.meal(date(2026, 3, 3), 430)
         b.meal(date(2026, 4, 1), 999)  # after the period
         db.commit()
@@ -731,6 +732,10 @@ def test_monthly_stats_lists_every_month_including_empty_ones(engine):
     assert (jan["days"], jan["avg_actual"], jan["avg_usual"], jan["avg_diff"]) == (2, 405, 400, 10)  # 1/20 has no 평소
     assert (feb["days"], feb["avg_actual"], feb["points"]) == (0, None, [])
     assert (mar["days"], mar["avg_actual"], mar["avg_usual"], mar["avg_diff"]) == (1, 430, 405, 25)
+    # 공휴일을 따로 빼지 않고, 편성 횟수와 실식수 입력 횟수만 달에 붙인다. 0은 입력이지만 평균에는 없다.
+    assert (jan["planned_count"], jan["entered_count"]) == (3, 2)
+    assert (feb["planned_count"], feb["entered_count"]) == (1, 1)
+    assert (mar["planned_count"], mar["entered_count"]) == (1, 1)
     assert result["days"] == 3 and result["avg_actual"] == 413
     with Session(engine) as db:
         across_year = analysis.monthly_stats(db, "LUNCH", date(2025, 11, 30), date(2026, 1, 1))
