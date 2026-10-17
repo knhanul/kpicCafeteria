@@ -3441,27 +3441,109 @@ function renderAnalysisWeather(root, r){
 }
 
 // 요일별·월별 식수: 막대는 평균 실제 식수(명), 표에 평균 평소와 차이. 막대나 행을 누르면 그 묶음의 날짜 목록을 보여줍니다.
+function analysisGroupValue(group, key){
+  if(!group.days) return null;
+  const value = group[key];
+  return value===null||value===undefined ? null : value;
+}
+
+function drawAnalysisCategoryChart(container, groups, {mode='bar', onClick}={}){
+  if(!container) return;
+  const width=Math.max(560, container.clientWidth||960);
+  const top=18, bottom=52, left=56, right=16, height=300+top;
+  const plotW=width-left-right, plotH=height-top-bottom;
+  const n=Math.max(groups.length, 1);
+  const slot=plotW/n;
+  const x=i=>left+slot*(i+0.5);
+  const values=groups.flatMap(g=>[analysisGroupValue(g,'avg_actual'), analysisGroupValue(g,'avg_usual')]).filter(v=>v!==null);
+  const nums=values.length?values:[0,100];
+  const pad=Math.max(5,(Math.max(...nums)-Math.min(...nums))*0.12);
+  const {lo,hi,ticks}=analysisNiceTicks(Math.max(0, Math.min(...nums)-pad), Math.max(...nums)+pad);
+  const y=v=>top+plotH-(v-lo)/(hi-lo||1)*plotH;
+  const baseline=y(Math.max(lo,0));
+  const grid=ticks.map(t=>`<line x1="${left}" x2="${width-right}" y1="${y(t)}" y2="${y(t)}" class="an-grid"/><text x="${left-8}" y="${y(t)+4}" class="an-axis" text-anchor="end">${numberText(t)}</text>`).join('');
+  let lastYear=null;
+  const xLabels=groups.map((g,i)=>{
+    let main=g.label, year='';
+    if(mode==='line' && /^\d{4}-\d{2}$/.test(g.key)){
+      const [yy,mm]=g.key.split('-');
+      main=`${Number(mm)}월`;
+      if(yy!==lastYear){ year=`${yy}년`; lastYear=yy; }
+    }
+    return `<text x="${x(i)}" y="${height-bottom+18}" class="an-axis" text-anchor="middle">${escapeHtml(main)}</text>${year?`<text x="${x(i)}" y="${height-bottom+34}" class="an-axis an-axis-year" text-anchor="middle">${year}</text>`:''}`;
+  }).join('');
+  const line=(key)=>{
+    let d='', open=false;
+    groups.forEach((g,i)=>{
+      const v=analysisGroupValue(g, key);
+      if(v===null){ open=false; return; }
+      d+=`${open?'L':'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`;
+      open=true;
+    });
+    return d;
+  };
+  const bw=Math.max(10, Math.min(42, slot*0.46));
+  const bars=mode==='bar'?groups.map((g,i)=>{
+    const v=analysisGroupValue(g,'avg_actual');
+    if(v===null) return '';
+    const yy=y(v), topY=Math.min(yy, baseline), h=Math.max(1.5, Math.abs(baseline-yy));
+    return `<rect x="${(x(i)-bw/2).toFixed(1)}" y="${topY.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="3" class="an-col-actual"/>`;
+  }).join(''):'';
+  const dots=groups.map((g,i)=>{
+    const actual=analysisGroupValue(g,'avg_actual');
+    const usual=analysisGroupValue(g,'avg_usual');
+    return `${mode==='line'&&actual!==null?`<circle cx="${x(i)}" cy="${y(actual)}" r="3.6" class="an-dot-actual"/>`:''}${usual!==null?`<circle cx="${x(i)}" cy="${y(usual)}" r="2.6" class="an-dot-usual"/>`:''}`;
+  }).join('');
+  const hits=groups.map((g,i)=>`<rect x="${(x(i)-slot/2).toFixed(1)}" y="${top}" width="${slot.toFixed(1)}" height="${plotH}" class="an-hit" data-i="${i}"/>`).join('');
+  const aria=mode==='line'?'월별 평균 식수 꺾은선 그래프':'요일별 평균 식수 그래프';
+  container.innerHTML=`<svg class="an-svg" viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="${aria}">
+      ${grid}<line x1="${left}" x2="${width-right}" y1="${baseline}" y2="${baseline}" class="an-baseline"/>
+      <text x="${left-44}" y="${top-4}" class="an-axis">(명)</text>
+      ${bars}<path d="${line('avg_usual')}" class="an-line-usual"/>${mode==='line'?`<path d="${line('avg_actual')}" class="an-line-actual"/>`:''}
+      ${dots}${xLabels}${hits}
+    </svg><div class="an-tip hidden"></div>`;
+  const tip=$('.an-tip', container);
+  const show=i=>{
+    const g=groups[i]; if(!g) return;
+    const actual=analysisGroupValue(g,'avg_actual');
+    tip.innerHTML=`<strong>${escapeHtml(g.label)}</strong><span>${g.days?`평균 실제 ${numberText(actual)}명 · ${numberText(g.days)}일`:'자료 없음'}</span>${g.days?'<em>눌러서 날짜 목록 보기</em>':''}`;
+    tip.classList.remove('hidden');
+    const box=container.getBoundingClientRect();
+    const px=x(i)*(box.width/width);
+    tip.style.left=`${Math.min(Math.max(px, 90), box.width-90)}px`;
+    tip.style.top=`${actual===null?40:Math.max(8, y(actual)*(box.width/width)-8)}px`;
+  };
+  $$('.an-hit', container).forEach(rect=>{
+    const i=Number(rect.dataset.i);
+    rect.addEventListener('mouseenter', ()=>show(i));
+    rect.addEventListener('mouseleave', ()=>tip.classList.add('hidden'));
+    rect.addEventListener('click', ()=>{ if(groups[i] && groups[i].days && onClick) onClick(groups[i]); });
+  });
+}
+
 function renderAnalysisGroups(root, r, tab){
   const a=analysisState();
   const unit=tab==='weekday'?'요일':'월';
-  const maxActual=Math.max(1,...r.groups.map(g=>g.avg_actual||0));
-  const bars=r.groups.map(g=>{const has=g.days>0&&g.avg_actual!==null;const pct=has?g.avg_actual/maxActual*100:0;
-    return `<button type="button" class="an-bar-row ${a.band===g.key?'active':''}" data-group="${escapeHtml(g.key)}" ${g.days?'':'disabled'}>
-      <span class="an-bar-label">${escapeHtml(g.label)}<small>${numberText(g.days)}일</small></span>
-      <span class="an-bar-track">${has?`<span class="an-bar actual" style="width:${pct}%"></span>`:''}</span>
-      <span class="an-bar-value">${has?`평균 ${numberText(g.avg_actual)}명`:'자료 없음'}</span></button>`;}).join('');
   const rows=r.groups.map(g=>`<tr data-group="${escapeHtml(g.key)}" class="${g.days?'':'an-row-empty'} ${a.band===g.key?'active':''}" tabindex="0"><td>${escapeHtml(g.label)}</td><td class="num">${numberText(g.days)}일</td><td class="num">${g.days?analysisNum(g.avg_actual)+'명':'—'}</td><td class="num">${g.days?analysisNum(g.avg_usual)+(g.avg_usual===null?'':'명'):'—'}</td><td class="num ${analysisDiffClass(g.avg_diff)}">${g.days?analysisDiffText(g.avg_diff):'—'}</td><td class="muted">${escapeHtml(g.low_sample_note||'')}</td></tr>`).join('');
   const selected=a.band?r.groups.find(g=>g.key===a.band&&g.days):null;
+  const holidayNote=tab==='weekday'?`<p class="an-sub">토요일·일요일과 평일 공휴일은 평균에서 뺐습니다. 식수가 있어도 그 요일의 합계와 일수에 넣지 않습니다.${r.excluded_holidays?` 공휴일 ${numberText(r.excluded_holidays)}일을 제외했습니다.`:''}</p>`:'';
+  const chartNote=tab==='monthly'
+    ? '꺾은선은 달마다 평균 실제 식수이고, 점선은 평균 평소입니다. 식수가 없는 달은 0명으로 꺾지 않고 선을 끊습니다.'
+    : '가로축은 월~금입니다. 막대는 평균 실제 식수, 점선은 평균 평소입니다.';
   root.innerHTML=`<div class="an-card"><div class="an-card-head"><h3>${unit}별 식수 · ${escapeHtml(r.meal_type_name)} · ${escapeHtml(r.start)} ~ ${escapeHtml(r.end)}</h3><span class="an-days">${numberText(r.days)}일</span></div>
-      <p class="an-sub">막대는 ${unit}마다 평균 실제 식수(명)예요. 전체 평균 실제 ${analysisNum(r.avg_actual)}명, 평소보다 ${analysisDiffText(r.avg_diff)}. 막대나 표를 누르면 그 ${unit}의 날짜 목록을 볼 수 있어요.</p>
-      <div class="an-bars an-bars-actual">${bars}</div></div>
+      <p class="an-sub">${chartNote} 전체 평균 실제 ${analysisNum(r.avg_actual)}명, 평소보다 ${analysisDiffText(r.avg_diff)}. 그래프나 표를 누르면 그 ${unit}의 날짜 목록을 볼 수 있어요.</p>
+      ${holidayNote}
+      <div class="an-legend"><span class="an-lg-actual"></span>평균 실제<span class="an-lg-usual"></span>평균 평소</div>
+      <div class="an-chart" id="an-group-chart"></div></div>
     <div class="an-card"><div class="an-table-head"><h4>${unit}별 표</h4><button type="button" class="secondary-button" data-an-download>Excel 내려받기</button></div>
       <div class="table-wrap"><table class="data-table an-table"><thead><tr><th>${unit}</th><th class="num">일수</th><th class="num">평균 실제</th><th class="num">평균 평소</th><th class="num">평균 차이(명)</th><th>참고</th></tr></thead><tbody>${rows}</tbody></table></div></div>
     <div id="an-band-dates">${selected?`<div class="an-card"><div class="an-card-head"><h3>${escapeHtml(selected.label)} · ${numberText(selected.days)}일</h3></div>${selected.low_sample_note?`<div class="an-note">${escapeHtml(selected.low_sample_note)}</div>`:''}${analysisTableHtml(selected.points,false,false)}</div>`:''}</div>`;
+  drawAnalysisCategoryChart($('#an-group-chart'), r.groups, {mode:tab==='monthly'?'line':'bar', onClick:g=>{a.band=g.key; renderAnalysisGroups(root,r,tab); $('#an-band-dates')?.scrollIntoView({behavior:'smooth',block:'start'});}});
   $$('[data-group]',root).forEach(el=>{const pick=()=>{const g=r.groups.find(x=>x.key===el.dataset.group);if(!g||!g.days)return;a.band=g.key;renderAnalysisGroups(root,r,tab);$('#an-band-dates')?.scrollIntoView({behavior:'smooth',block:'start'});};
     el.addEventListener('click',pick);el.addEventListener('keydown',e=>{if(e.key==='Enter')pick();});});
   bindAnalysisTable(root);
 }
+
 
 async function openAnalysisDetail(dateIso){
   const a=analysisState();if(!a.query)return;

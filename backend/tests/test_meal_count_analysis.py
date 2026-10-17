@@ -664,25 +664,52 @@ def test_weekday_stats_groups_counted_meals_by_weekday(engine):
         result = analysis.weekday_stats(db, "LUNCH", MONDAY, MONDAY + timedelta(days=20))
         daily = analysis.daily(db, "LUNCH", MONDAY, MONDAY + timedelta(days=20))
     groups = result["groups"]
-    assert [g["key"] for g in groups] == ["0", "1", "2", "3", "4", "5", "6"]
-    assert [g["label"] for g in groups] == list("월화수목금토일")
-    assert [g["days"] for g in groups] == [3, 1, 0, 0, 0, 0, 0]
+    assert [g["key"] for g in groups] == ["0", "1", "2", "3", "4"]
+    assert [g["label"] for g in groups] == list("월화수목금")
+    # 2026-03-02(월)는 삼일절 대체공휴일이라 식수 420이 있어도 월요일에서 빠진다.
+    assert [g["days"] for g in groups] == [2, 1, 0, 0, 0]
+    assert result["excluded_holidays"] == 1
     mon, tue, wed = groups[0], groups[1], groups[2]
-    assert [p["date"] for p in mon["points"]] == [(MONDAY + timedelta(weeks=w)).isoformat() for w in range(3)]
-    assert mon["avg_actual"] == 440
+    assert [p["date"] for p in mon["points"]] == [(MONDAY + timedelta(weeks=w)).isoformat() for w in (1, 2)]
+    assert mon["avg_actual"] == 450
     by_date = {p["date"]: p for p in daily["points"]}
+    assert MONDAY.isoformat() in by_date  # 날짜별 통계에는 공휴일 식수가 그대로 있다
     assert mon["avg_usual"] == analysis._avg([by_date[p["date"]]["usual"] for p in mon["points"]])
     assert mon["avg_diff"] == analysis._avg([by_date[p["date"]]["diff"] for p in mon["points"]])
-    assert mon["low_sample_note"] == "3일뿐이라 참고만 하세요."
+    assert mon["low_sample_note"] == "2일뿐이라 참고만 하세요."
     assert (tue["avg_actual"], tue["avg_usual"], tue["avg_diff"]) == (380, 410, -30)  # 평소 = (400 + 420) / 2
     assert tue["low_sample_note"] == "1일뿐이라 참고만 하세요."
     assert wed["points"] == [] and wed["avg_actual"] is None and wed["low_sample_note"] is None
-    assert (result["meal_type"], result["meal_type_name"], result["days"]) == ("LUNCH", "중식", 4)
-    assert result["avg_actual"] == analysis._avg([420, 380, 440, 460])
-    assert result["avg_diff"] == daily["avg_diff"] and result["avg_usual"] == daily["avg_usual"]
+    kept = [by_date[p["date"]] for p in mon["points"]] + [by_date[tue["points"][0]["date"]]]
+    assert (result["meal_type"], result["meal_type_name"], result["days"]) == ("LUNCH", "중식", 3)
+    assert result["avg_actual"] == analysis._avg([p["actual"] for p in kept])
+    assert result["avg_usual"] == analysis._avg([p["usual"] for p in kept])
+    assert result["avg_diff"] == analysis._avg([p["diff"] for p in kept])
     with Session(engine) as db:
         dinner = analysis.weekday_stats(db, "DINNER", MONDAY, MONDAY + timedelta(days=20))
-    assert [g["days"] for g in dinner["groups"]] == [0, 0, 0, 0, 1, 0, 0]
+    assert [g["days"] for g in dinner["groups"]] == [0, 0, 0, 0, 1]
+
+
+def test_weekday_stats_drops_weekend_and_weekday_holiday_from_both_sides(engine):
+    holiday = date(2026, 3, 2)  # Monday, 삼일절 대체공휴일
+    saturday = date(2026, 3, 7)
+    normal = date(2026, 3, 9)  # Monday
+    with Session(engine) as db:
+        b = Builder(db)
+        b.meal(holiday, 100)
+        b.meal(saturday, 900)
+        b.meal(normal, 400)
+        db.commit()
+        result = analysis.weekday_stats(db, "LUNCH", holiday, normal)
+        monthly = analysis.monthly_stats(db, "LUNCH", holiday, normal)
+    monday = result["groups"][0]
+    assert [g["label"] for g in result["groups"]] == list("월화수목금")
+    assert monday["days"] == 1 and monday["avg_actual"] == 400
+    assert [p["date"] for p in monday["points"]] == [normal.isoformat()]
+    assert result["days"] == 1 and result["avg_actual"] == 400
+    assert result["excluded_holidays"] == 1 and result["excluded_weekend_days"] == 1
+    # 월별은 공휴일·주말을 따로 빼지 않고, 실제 식수가 있는 날만 그대로 센다.
+    assert monthly["days"] == 3 and monthly["avg_actual"] == analysis._avg([100, 900, 400])
 
 
 def test_monthly_stats_lists_every_month_including_empty_ones(engine):
@@ -730,7 +757,8 @@ def test_weekday_and_monthly_api_and_excel(engine):
         weekday = client.get("/api/analysis/weekday", params=params)
         monthly = client.get("/api/analysis/monthly", params=params)
         assert weekday.status_code == 200 and monthly.status_code == 200
-        assert [g["days"] for g in weekday.json()["groups"]] == [3, 1, 0, 0, 0, 0, 0]
+        assert [g["days"] for g in weekday.json()["groups"]] == [2, 1, 0, 0, 0]
+        assert weekday.json()["excluded_holidays"] == 1
         assert [g["key"] for g in monthly.json()["groups"]] == ["2026-03"]
         assert client.get("/api/analysis/weekday", params={**params, "meal_type": "X"}).status_code == 400
         files = {tab: client.get("/api/analysis/export.xlsx", params={**params, "tab": tab}) for tab in ("weekday", "monthly")}
@@ -740,10 +768,10 @@ def test_weekday_and_monthly_api_and_excel(engine):
     assert wb.sheetnames == ["요일별 요약", "날짜 목록"]
     summary = [[c.value for c in row] for row in wb["요일별 요약"].iter_rows()]
     assert summary[0] == ["요일", "일수", "평균 실제(명)", "평균 평소(명)", "평균 차이(명)", "참고"]
-    assert summary[1][:2] == ["월", 3] and summary[3][:2] == ["수", 0] and len(summary) == 8
+    assert summary[1][:2] == ["월", 2] and summary[3][:2] == ["수", 0] and len(summary) == 6
     dates = [[c.value for c in row] for row in wb["날짜 목록"].iter_rows()]
     assert dates[0] == ["구분", *analysis_router.POINT_HEADERS]
-    assert [row[0] for row in dates[1:]] == ["월", "월", "월", "화"]
+    assert [row[0] for row in dates[1:]] == ["월", "월", "화"]
     month_wb = load_workbook(io.BytesIO(files["monthly"].content))
     assert month_wb.sheetnames == ["월별 요약", "날짜 목록"]
     assert [c.value for c in next(month_wb["월별 요약"].iter_rows(min_row=2))][:2] == ["2026년 3월", 4]

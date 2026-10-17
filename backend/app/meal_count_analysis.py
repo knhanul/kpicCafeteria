@@ -34,6 +34,22 @@ from .weather_import import MEAL_WEATHER_HOURS
 
 MEAL_TYPES = {"LUNCH": "중식", "DINNER": "석식"}
 WEEKDAYS = "월화수목금토일"
+# 요일별 통계에서만 빼는 평일 관공서 공휴일(대체공휴일·임시공휴일 포함).
+# 주말은 요일 자체로 빠지므로 여기 넣지 않는다. 제헌절은 2026년부터 공휴일.
+WEEKDAY_PUBLIC_HOLIDAYS = frozenset({
+    date(2024, 1, 1), date(2024, 2, 9), date(2024, 2, 12), date(2024, 5, 6), date(2024, 5, 15),
+    date(2024, 6, 6), date(2024, 8, 15), date(2024, 9, 16), date(2024, 9, 17), date(2024, 9, 18),
+    date(2024, 10, 3), date(2024, 10, 9), date(2024, 12, 25),
+    date(2025, 1, 1), date(2025, 1, 27), date(2025, 1, 28), date(2025, 1, 29), date(2025, 1, 30),
+    date(2025, 3, 3), date(2025, 5, 5), date(2025, 5, 6), date(2025, 6, 6), date(2025, 8, 15),
+    date(2025, 10, 3), date(2025, 10, 6), date(2025, 10, 7), date(2025, 10, 8), date(2025, 10, 9),
+    date(2025, 12, 25),
+    date(2026, 1, 1), date(2026, 2, 16), date(2026, 2, 17), date(2026, 2, 18), date(2026, 3, 2),
+    date(2026, 5, 1), date(2026, 5, 5), date(2026, 5, 25), date(2026, 6, 3), date(2026, 7, 17),
+    date(2026, 8, 17), date(2026, 9, 24), date(2026, 9, 25), date(2026, 10, 5), date(2026, 10, 9),
+    date(2026, 12, 25),
+    date(2027, 1, 1), date(2027, 3, 1), date(2027, 5, 5),
+})
 BASELINE_WEEKS = 52  # 364 days before the date
 LOW_SAMPLE_DAYS = 5
 HOT_TEMP = 28.0
@@ -411,15 +427,34 @@ def _grouped_stats(meal_type: str, start: date, end: date, points: list[dict[str
 
 
 def weekday_stats(db: Session, meal_type: str, start: date, end: date) -> dict[str, Any]:
-    """요일별 식수: 월~일 7개 묶음(배식이 없던 요일은 0일)."""
+    """요일별 식수: 월~금만.
+
+    토요일·일요일과 평일 공휴일은 식수 합(분자)과 일수(분모)에서 모두 뺀다.
+    공휴일에 실제 식수가 있어도 넣지 않고, 식수가 없는 날을 0명으로 세지도 않는다.
+    """
     check_meal_type(meal_type)
     check_period(start, end)
     points = _build_points(db, meal_type, start, end)
-    by_day: dict[int, list[dict[str, Any]]] = {i: [] for i in range(7)}
+    kept: list[dict[str, Any]] = []
+    excluded_weekend = 0
+    excluded_holiday = 0
     for point in points:
+        day = date.fromisoformat(point["date"])
+        if day.weekday() >= 5:
+            excluded_weekend += 1
+            continue
+        if day in WEEKDAY_PUBLIC_HOLIDAYS:
+            excluded_holiday += 1
+            continue
+        kept.append(point)
+    by_day: dict[int, list[dict[str, Any]]] = {i: [] for i in range(5)}
+    for point in kept:
         by_day[date.fromisoformat(point["date"]).weekday()].append(point)
-    groups = [_stat_group(str(i), WEEKDAYS[i], by_day[i]) for i in range(7)]
-    return _grouped_stats(meal_type, start, end, points, groups)
+    groups = [_stat_group(str(i), WEEKDAYS[i], by_day[i]) for i in range(5)]
+    result = _grouped_stats(meal_type, start, end, kept, groups)
+    result["excluded_weekend_days"] = excluded_weekend
+    result["excluded_holidays"] = excluded_holiday
+    return result
 
 
 def monthly_stats(db: Session, meal_type: str, start: date, end: date) -> dict[str, Any]:

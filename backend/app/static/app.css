@@ -551,5 +551,6 @@ body.ui-locked{overflow:hidden}
 .an-lg-empty{color:#98a6b3;text-decoration:line-through}
 /* 요일별·월별 식수: 평균 실제 식수 막대(왼쪽부터 채움) */
 .an-bar.actual{left:0;background:#1d5f9a}
+.an-col-actual{fill:#1d5f9a}
 .an-table tr[data-group]{cursor:pointer}
 .an-table tr[data-group].active td{background:#f3f8fc}
