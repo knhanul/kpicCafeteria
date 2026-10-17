@@ -206,8 +206,12 @@ def test_weather_bands_rain_and_temperature_boundaries(engine):
     temp = {band["key"]: band for band in result["temperature"]}
     assert rain["rain"]["days"] == 2 and rain["dry"]["days"] == 4
     assert rain["rain"]["avg_actual"] == 355
-    assert {k: v["days"] for k, v in temp.items()} == {"below0": 1, "0to10": 1, "10to20": 1, "20to28": 2, "28plus": 1}
-    assert temp["below0"]["low_sample_note"] == "1일뿐이라 참고만 하세요."
+    assert {k: v["days"] for k, v in temp.items()} == {
+        "lt-10": 0, "m10tom5": 0, "m5to0": 1,
+        "0to10": 1, "10to20": 1, "20to28": 2,
+        "28to32": 1, "32to35": 0, "35plus": 0,
+    }
+    assert temp["m5to0"]["low_sample_note"] == "1일뿐이라 참고만 하세요."
     assert result["days"] == 6
     band = temp["20to28"]
     assert band["avg_actual"] == round((420 + 350) / 2)
@@ -228,6 +232,22 @@ def test_weather_bands_split_snow_only_when_depth_is_known(engine):
     snow = {band["key"]: band["days"] for band in result["snow"]}
     assert snow == {"snow": 1, "clear": 1}
     assert result["days"] == 3
+
+
+def test_temp_band_splits_abnormal_heat_and_cold():
+    assert analysis.temp_band(-10.1) == "lt-10"
+    assert analysis.temp_band(-10) == "m10tom5"
+    assert analysis.temp_band(-5.1) == "m10tom5"
+    assert analysis.temp_band(-5) == "m5to0"
+    assert analysis.temp_band(-0.1) == "m5to0"
+    assert analysis.temp_band(0) == "0to10"
+    assert analysis.temp_band(27.9) == "20to28"
+    assert analysis.temp_band(28) == "28to32"
+    assert analysis.temp_band(31.9) == "28to32"
+    assert analysis.temp_band(32) == "32to35"
+    assert analysis.temp_band(34.9) == "32to35"
+    assert analysis.temp_band(35) == "35plus"
+    assert analysis.temp_band(None) is None
 
 
 def test_weather_text_uses_serving_window():

@@ -3541,8 +3541,10 @@ function renderAnalysisWeather(root, r){
     if(!visible.length) return '';
     const maxAbs=Math.max(5,...visible.map(b=>Math.abs(b.avg_diff||0)));
     const bars=visible.map(b=>{const has=b.days>0&&b.avg_diff!==null;const pct=has?Math.abs(b.avg_diff)/maxAbs*50:0;
+      const parts=String(b.label).split(' · ');
+      const range=parts.length>1?parts.slice(1).join(' · '):'';
       return `<button type="button" class="an-bar-row ${a.band===`${key}:${b.key}`?'active':''}" data-band="${key}:${b.key}" ${b.days?'':'disabled'}>
-        <span class="an-bar-label">${escapeHtml(b.label)}<small>${numberText(b.days)}일</small></span>
+        <span class="an-bar-label">${escapeHtml(parts[0])}<small>${range?`${escapeHtml(range)} · `:''}${numberText(b.days)}일</small></span>
         <span class="an-bar-track"><span class="an-bar-zero"></span>${has?`<span class="an-bar ${b.avg_diff>=0?'pos':'neg'}" style="${b.avg_diff>=0?`left:50%;width:${pct}%`:`right:50%;width:${pct}%`}"></span>`:''}</span>
         <span class="an-bar-value ${analysisDiffClass(b.avg_diff)}">${has?(b.avg_diff===0?'평소와 같음':`평소보다 ${analysisDiffText(b.avg_diff)}`):'0일'}</span></button>`;}).join('');
     const rows=visible.map(b=>`<tr data-band="${key}:${b.key}" class="${b.days?'':'an-row-empty'}"><td>${escapeHtml(b.label)}</td><td class="num">${numberText(b.days)}일</td><td class="num">${b.days?analysisNum(b.avg_actual)+'명':'—'}</td><td class="num">${b.days?analysisNum(b.avg_usual)+'명':'—'}</td><td class="num ${analysisDiffClass(b.avg_diff)}">${b.days?analysisDiffText(b.avg_diff):'—'}</td><td>${b.low_sample_note?`<span class="an-note-inline">${escapeHtml(b.low_sample_note)}</span>`:''}</td></tr>`).join('');
@@ -3556,7 +3558,7 @@ function renderAnalysisWeather(root, r){
   const groups=[...(r.rain||[]).map(b=>({...b,group:'rain'})),...(r.temperature||[]).map(b=>({...b,group:'temp'})),...snow.map(b=>({...b,group:'snow'}))];
   const selected=a.band?groups.find(b=>`${b.group}:${b.key}`===a.band&&b.days):null;
   root.innerHTML=`<div class="an-card an-card-plain"><div class="an-card-head"><h3>날씨별 식수 · ${escapeHtml(r.meal_type_name)} · ${escapeHtml(r.start)} ~ ${escapeHtml(r.end)}</h3><button type="button" class="secondary-button" data-an-download>Excel 내려받기</button></div>
-      <p class="an-sub">${escapeHtml(r.meal_type_name)} 배식시간(${escapeHtml(r.weather_window)}) 기준입니다. 강수량은 그 시간 합계, 기온은 평균, 적설은 그 시간 최댓값입니다. 날씨 자료와 평소 식수가 모두 있는 ${numberText(r.days)}일만 셉니다. 기온은 0일인 구간을 숨깁니다. 막대나 표를 누르면 해당 날짜가 보여요.</p></div>
+      <p class="an-sub">${escapeHtml(r.meal_type_name)} 배식시간(${escapeHtml(r.weather_window)}) 기준입니다. 강수량은 그 시간 합계, 기온은 평균, 적설은 그 시간 최댓값입니다. 날씨 자료와 평소 식수가 모두 있는 ${numberText(r.days)}일만 셉니다. 더운 날과 추운 날은 정도별로 나누고, 기온은 0일인 구간을 숨깁니다. 막대나 표를 누르면 해당 날짜가 보여요.</p></div>
     <div class="an-weather-grid">${section('rain','강수량',r.rain,{keepEmpty:true})}${section('temp','기온',r.temperature)}${snowHtml}</div>
     <div id="an-band-dates">${selected?`<div class="an-card"><div class="an-card-head"><h3>${escapeHtml(selected.label)} · ${numberText(selected.days)}일</h3></div>${selected.low_sample_note?`<div class="an-note">${escapeHtml(selected.low_sample_note)}</div>`:''}${analysisTableHtml(selected.points,true,false)}</div>`:''}</div>`;
   $$('[data-band]',root).forEach(el=>el.addEventListener('click',()=>{if(el.disabled)return;a.band=el.dataset.band;renderAnalysisWeather(root,r);$('#an-band-dates')?.scrollIntoView({behavior:'smooth',block:'start'});}));
