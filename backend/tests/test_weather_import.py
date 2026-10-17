@@ -139,11 +139,11 @@ def test_large_xlsx_preview(tmp_path):
 def test_hourly_csv_is_stored_raw_and_builds_meal_period_weather(tmp_path):
     path = tmp_path / "weather-hourly.csv"
     path.write_text(
-        "observation_datetime,station_id,station_name,temperature,precipitation,humidity,wind_speed,source_kind\n"
-        "2026-09-17 11:00,156,관악,20,0.5,70,2,OFFICIAL\n"
-        "2026-09-17 12:00,156,관악,22,1.0,74,4,OFFICIAL\n"
-        "2026-09-17 17:00,156,관악,24,,60,3,OFFICIAL\n"
-        "2026-09-17 18:00,156,관악,26,0,64,5,OFFICIAL\n",
+        "observation_datetime,station_id,station_name,temperature,precipitation,humidity,wind_speed,snow_depth,source_kind\n"
+        "2026-09-17 11:00,156,관악,20,0.5,70,2,0,OFFICIAL\n"
+        "2026-09-17 12:00,156,관악,22,1.0,74,4,1.5,OFFICIAL\n"
+        "2026-09-17 17:00,156,관악,24,,60,3,,OFFICIAL\n"
+        "2026-09-17 18:00,156,관악,26,0,64,5,0,OFFICIAL\n",
         encoding="utf-8",
     )
     engine = make_db(tmp_path)
@@ -160,11 +160,13 @@ def test_hourly_csv_is_stored_raw_and_builds_meal_period_weather(tmp_path):
     assert lunch.min_temp == 20
     assert lunch.max_temp == 22
     assert lunch.precipitation == 1.5
+    assert lunch.snow_depth == 1.5
     assert lunch.avg_humidity == 72
     assert lunch.avg_wind_speed == 3
     assert lunch.sample_count == 2
     assert dinner.avg_temp == 25
     assert dinner.precipitation == 0
+    assert dinner.snow_depth == 0
     assert dinner.avg_humidity == 62
     assert dinner.avg_wind_speed == 4
     assert dinner.sample_count == 2

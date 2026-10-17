@@ -213,12 +213,12 @@ def export_xlsx(
         label = "날씨별식수"
         summary = [
             [group_name, band["label"], band["days"], band["avg_actual"], band["avg_usual"], band["avg_diff"], band["low_sample_note"] or ""]
-            for group_name, groups in (("비", data["rain"]), ("기온", data["temperature"]))
+            for group_name, groups in (("강수량", data["rain"]), ("기온", data["temperature"]), ("적설", data.get("snow") or []))
             for band in groups
         ]
         _sheet(wb, "날씨별 요약", ["구분", "날씨", "일수", "평균 실제(명)", "평균 평소(명)", "평균 차이(명)", "참고"], summary, first=True)
         rows = []
-        for group_name, groups in (("비", data["rain"]), ("기온", data["temperature"])):
+        for group_name, groups in (("강수량", data["rain"]), ("기온", data["temperature"]), ("적설", data.get("snow") or [])):
             for band in groups:
                 rows += [[f"{group_name}: {band['label']}", *row] for row in _point_rows(band["points"], meal_name)]
         _sheet(wb, "날짜 목록", ["날씨", *POINT_HEADERS], rows)

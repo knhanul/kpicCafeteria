@@ -60,7 +60,8 @@ WEATHER_FILTERS = {
     "hot": "더운 날(28℃ 이상)",
     "cold": "추운 날(영하)",
 }
-RAIN_BANDS = [("rain", "비 옴"), ("dry", "비 안 옴")]
+RAIN_BANDS = [("rain", "강수 있음"), ("dry", "강수 없음")]
+SNOW_BANDS = [("snow", "적설 있음"), ("clear", "적설 없음")]
 TEMP_BANDS = [
     ("below0", "영하", None, 0.0),
     ("0to10", "0~10℃", 0.0, 10.0),
@@ -190,23 +191,28 @@ def _weather_map(db: Session, meal_type: str, dates: list[date]) -> dict[date, d
             continue
         rain = round(row.precipitation, 1) if row.precipitation is not None else None
         temp = round(row.avg_temp, 1) if row.avg_temp is not None else None
+        snow = round(row.snow_depth, 1) if row.snow_depth is not None else None
         result[row.observation_date] = {
             "window": window,
             "temp": temp,
             "rain_mm": rain,
             "is_rain": bool(rain and rain > 0),
+            "snow_cm": snow,
+            "has_snow": bool(snow and snow > 0),
             "station": row.station_name or row.station_id,
-            "text": weather_text(window, rain, temp),
+            "text": weather_text(window, rain, temp, snow),
         }
     return result
 
 
-def weather_text(window: str, rain: float | None, temp: float | None) -> str:
+def weather_text(window: str, rain: float | None, temp: float | None, snow: float | None = None) -> str:
     parts = [window] if window else []
     if rain is not None:
-        parts.append(f"비 {_num(rain)}mm" if rain > 0 else "비 안 옴")
+        parts.append(f"강수 {_num(rain)}mm" if rain > 0 else "강수 없음")
     if temp is not None:
         parts.append(f"{_num(temp)}℃")
+    if snow is not None and snow > 0:
+        parts.append(f"적설 {_num(snow)}cm")
     return " · ".join(parts)
 
 
@@ -381,10 +387,15 @@ def weather_bands(db: Session, meal_type: str, start: date, end: date) -> dict[s
         }
 
     rain_groups = [
-        band("rain", "비 옴", [p for p in points if p["weather"]["rain_mm"] is not None and p["weather"]["is_rain"]]),
-        band("dry", "비 안 옴", [p for p in points if p["weather"]["rain_mm"] is not None and not p["weather"]["is_rain"]]),
+        band(key, label, [p for p in points if p["weather"]["rain_mm"] is not None and (p["weather"]["is_rain"] if key == "rain" else not p["weather"]["is_rain"])])
+        for key, label in RAIN_BANDS
     ]
     temp_groups = [band(key, label, [p for p in points if temp_band(p["weather"]["temp"]) == key]) for key, label, _low, _high in TEMP_BANDS]
+    known_snow = [p for p in points if p["weather"].get("snow_cm") is not None]
+    snow_groups = [
+        band(key, label, [p for p in known_snow if p["weather"]["has_snow"] == (key == "snow")])
+        for key, label in SNOW_BANDS
+    ]
     return {
         "meal_type": meal_type,
         "meal_type_name": MEAL_TYPES[meal_type],
@@ -394,6 +405,7 @@ def weather_bands(db: Session, meal_type: str, start: date, end: date) -> dict[s
         "days": len(points),
         "rain": rain_groups,
         "temperature": temp_groups,
+        "snow": snow_groups,
     }
 
 

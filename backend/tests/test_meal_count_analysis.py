@@ -72,10 +72,10 @@ class Builder:
         if actual is not None:
             self.db.add(MealActual(meal_service_id=service.id, actual_count=actual))
         if weather is not None:
-            temp, rain = weather
+            temp, rain, *extra = weather
             self.db.add(MealPeriodWeather(
                 observation_date=day, station_id="156", station_name="광주", meal_type=meal_type,
-                avg_temp=temp, precipitation=rain, sample_count=2,
+                avg_temp=temp, precipitation=rain, snow_depth=extra[0] if extra else None, sample_count=2,
             ))
         self.db.flush()
         return service
@@ -213,11 +213,27 @@ def test_weather_bands_rain_and_temperature_boundaries(engine):
     assert band["avg_actual"] == round((420 + 350) / 2)
     assert band["avg_diff"] == round(sum(p["diff"] for p in band["points"]) / 2)
     assert result["weather_window"] == "11:00~12:00"
+    assert {band["key"]: band["days"] for band in result["snow"]} == {"snow": 0, "clear": 0}
+
+
+def test_weather_bands_split_snow_only_when_depth_is_known(engine):
+    with Session(engine) as db:
+        b = Builder(db)
+        b.meal(MONDAY - timedelta(days=1), 400)
+        b.meal(MONDAY, 410, weather=(1.0, 0.0, 2.0))
+        b.meal(MONDAY + timedelta(days=1), 390, weather=(3.0, 0.0, 0.0))
+        b.meal(MONDAY + timedelta(days=2), 400, weather=(5.0, 1.0))
+        db.commit()
+        result = analysis.weather_bands(db, "LUNCH", MONDAY, MONDAY + timedelta(days=3))
+    snow = {band["key"]: band["days"] for band in result["snow"]}
+    assert snow == {"snow": 1, "clear": 1}
+    assert result["days"] == 3
 
 
 def test_weather_text_uses_serving_window():
-    assert analysis.weather_text("11:00~12:00", 3.0, 22.0) == "11:00~12:00 · 비 3mm · 22℃"
-    assert analysis.weather_text("17:00~18:00", 0.0, -1.5) == "17:00~18:00 · 비 안 옴 · -1.5℃"
+    assert analysis.weather_text("11:00~12:00", 3.0, 22.0) == "11:00~12:00 · 강수 3mm · 22℃"
+    assert analysis.weather_text("17:00~18:00", 0.0, -1.5) == "17:00~18:00 · 강수 없음 · -1.5℃"
+    assert analysis.weather_text("11:00~12:00", 0.0, -1.0, 2.5) == "11:00~12:00 · 강수 없음 · -1℃ · 적설 2.5cm"
     assert analysis.weather_window_label("DINNER") == "17:00~18:00"
 
 
@@ -244,7 +260,7 @@ def test_date_detail_lists_menus_in_order_with_main_recipe_and_highlight(engine)
     assert [m["has_ingredient"] for m in detail["menus"]] == [False, True, False]
     assert [i["highlight"] for i in detail["menus"][1]["ingredients"]] == [True, False]
     assert (detail["actual"], detail["usual"], detail["diff"]) == (450, 400, 50)
-    assert detail["weather"]["text"] == "11:00~12:00 · 비 안 옴 · 18℃"
+    assert detail["weather"]["text"] == "11:00~12:00 · 강수 없음 · 18℃"
 
 
 def test_analysis_api_and_excel_export(engine):

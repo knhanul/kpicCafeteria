@@ -373,6 +373,7 @@ class WeatherHourly(Base):
     precipitation: Mapped[float | None] = mapped_column(Float, nullable=True)
     humidity: Mapped[float | None] = mapped_column(Float, nullable=True)
     wind_speed: Mapped[float | None] = mapped_column(Float, nullable=True)
+    snow_depth: Mapped[float | None] = mapped_column(Float, nullable=True)
     source_kind: Mapped[str | None] = mapped_column(String(80), nullable=True)
     upload_batch_id: Mapped[int | None] = mapped_column(
         ForeignKey("weather_upload_history.id", ondelete="SET NULL"), nullable=True, index=True
@@ -396,6 +397,7 @@ class MealPeriodWeather(Base):
     precipitation: Mapped[float | None] = mapped_column(Float, nullable=True)
     avg_humidity: Mapped[float | None] = mapped_column(Float, nullable=True)
     avg_wind_speed: Mapped[float | None] = mapped_column(Float, nullable=True)
+    snow_depth: Mapped[float | None] = mapped_column(Float, nullable=True)
     sample_count: Mapped[int] = mapped_column(Integer, default=0)
     upload_batch_id: Mapped[int | None] = mapped_column(
         ForeignKey("weather_upload_history.id", ondelete="SET NULL"), nullable=True, index=True

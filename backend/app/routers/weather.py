@@ -220,6 +220,7 @@ def meal_period_weather_records(
             "precipitation": row.precipitation,
             "avg_humidity": row.avg_humidity,
             "avg_wind_speed": row.avg_wind_speed,
+            "snow_depth": row.snow_depth,
             "sample_count": row.sample_count,
         } for row in rows],
     }

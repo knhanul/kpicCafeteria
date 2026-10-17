@@ -47,6 +47,19 @@ def upgrade_existing_schema(engine: Engine) -> None:
                 connection.execute(text("UPDATE users SET role = 'user' WHERE role IS NULL OR role = ''"))
                 connection.execute(text("UPDATE users SET must_change_password = 0 WHERE must_change_password IS NULL"))
 
+    for table in ("weather_hourly", "weather_meal_period"):
+        if table not in inspector.get_table_names():
+            continue
+        columns = {col["name"] for col in inspector.get_columns(table)}
+        if "snow_depth" in columns:
+            continue
+        kind = "DOUBLE PRECISION" if dialect == "postgresql" else "FLOAT"
+        with engine.begin() as connection:
+            if dialect == "postgresql":
+                connection.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS snow_depth {kind}"))
+            else:
+                connection.execute(text(f"ALTER TABLE {table} ADD COLUMN snow_depth {kind}"))
+
     if "recipes" not in inspector.get_table_names():
         return
     legacy_service_menu_columns = {

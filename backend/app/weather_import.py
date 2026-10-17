@@ -27,7 +27,7 @@ PREVIEW_TTL = timedelta(minutes=30)
 # Hourly observations that make up each meal's serving-time weather (weather_meal_period).
 MEAL_WEATHER_HOURS: dict[str, tuple[int, ...]] = {"LUNCH": (11, 12), "DINNER": (17, 18)}
 DAILY_MIN_HOURLY_SAMPLES = 20  # hourly -> daily aggregate only for (nearly) complete days
-HOURLY_COMPARE_FIELDS = ("station_name", "temperature", "precipitation", "humidity", "wind_speed", "source_kind")
+HOURLY_COMPARE_FIELDS = ("station_name", "temperature", "precipitation", "humidity", "wind_speed", "snow_depth", "source_kind")
 NULL_MARKERS = {"", "-", "--", "n/a", "na", "null"}
 WEATHER_FIELDS = (
     "avg_temp", "min_temp", "max_temp", "precipitation",
@@ -45,7 +45,7 @@ HEADER_ALIASES = {
     "precipitation": {"일강수량", "강수량", "일강수", "precipitation", "rainfall"},
     "avg_humidity": {"평균습도", "평균상대습도", "일평균상대습도"},
     "humidity": {"습도", "humidity"},
-    "snow_depth": {"적설", "최심적설", "일최심적설", "최심신적설"},
+    "snow_depth": {"적설", "최심적설", "일최심적설", "최심신적설", "snow_depth", "snowdepth", "적설snowdepth"},
     "sunshine_hours": {"일조시간", "합계일조시간", "일조"},
     "wind_speed": {"풍속", "wind_speed"},
     "source_kind": {"자료구분", "source_kind"},
@@ -314,7 +314,7 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
                 row_errors.append("관측지점 번호와 지점명이 모두 없습니다.")
             if not station_id and station_name:
                 station_id = _name_station_id(station_name)
-            fields = ("temperature", "precipitation", "humidity", "wind_speed") if hourly_mode else WEATHER_FIELDS
+            fields = ("temperature", "precipitation", "humidity", "wind_speed", "snow_depth") if hourly_mode else WEATHER_FIELDS
             weather: dict[str, float | None] = {}
             for field in fields:
                 value, error = _parse_number(get(field))
@@ -328,6 +328,9 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
                 precipitation_filled = True
             else:
                 precipitation_filled = False
+            if hourly_mode and "snow_depth" in mapping and weather.get("snow_depth") is None and not str(get("snow_depth") or "").strip():
+                # Blank snow depth means no snow on the ground.
+                weather["snow_depth"] = 0.0
             identical_duplicate = False
             key_value = observed_at if hourly_mode else observed
             if key_value and station_id and not row_errors:
@@ -470,6 +473,7 @@ def _refresh_meal_period_weather(db: Session, rows: list[dict[str, Any]], batch_
         precipitation = numbers("precipitation")
         humidity = numbers("humidity")
         wind_speed = numbers("wind_speed")
+        snow = numbers("snow_depth")
         values.append({
             "observation_date": observation_date,
             "station_id": station_id,
@@ -481,6 +485,7 @@ def _refresh_meal_period_weather(db: Session, rows: list[dict[str, Any]], batch_
             "precipitation": sum(precipitation) if precipitation else None,
             "avg_humidity": sum(humidity) / len(humidity) if humidity else None,
             "avg_wind_speed": sum(wind_speed) / len(wind_speed) if wind_speed else None,
+            "snow_depth": max(snow) if snow else None,
             "sample_count": len(samples),
             "upload_batch_id": batch_id,
             "created_at": now,
@@ -500,6 +505,7 @@ def _refresh_meal_period_weather(db: Session, rows: list[dict[str, Any]], batch_
             "precipitation": statement.excluded.precipitation,
             "avg_humidity": statement.excluded.avg_humidity,
             "avg_wind_speed": statement.excluded.avg_wind_speed,
+            "snow_depth": statement.excluded.snow_depth,
             "sample_count": statement.excluded.sample_count,
             "upload_batch_id": statement.excluded.upload_batch_id,
             "updated_at": statement.excluded.updated_at,
@@ -622,6 +628,7 @@ def apply_weather_file(path: Path, db: Session, filename: str, checksum: str, us
                 "precipitation": row["precipitation"],
                 "humidity": row["humidity"],
                 "wind_speed": row["wind_speed"],
+                "snow_depth": row.get("snow_depth"),
                 "source_kind": row["source_kind"] or None,
                 "upload_batch_id": batch.id,
                 "created_at": now,
@@ -638,6 +645,7 @@ def apply_weather_file(path: Path, db: Session, filename: str, checksum: str, us
                         "precipitation": statement.excluded.precipitation,
                         "humidity": statement.excluded.humidity,
                         "wind_speed": statement.excluded.wind_speed,
+                        "snow_depth": statement.excluded.snow_depth,
                         "source_kind": statement.excluded.source_kind,
                         "upload_batch_id": statement.excluded.upload_batch_id,
                         "updated_at": statement.excluded.updated_at,
