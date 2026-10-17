@@ -2655,7 +2655,7 @@ function analysisMonthsBack(end, months) {
 
 function analysisDefaults(){
   const end=new Date();end.setHours(12,0,0,0);
-  return {tab:'daily', start:isoDate(analysisMonthsBack(end,3)), end:isoDate(end), quickKey:'3m', mealType:'LUNCH', showWeather:false, menuMode:'group', menuItems:[], menuItemScopes:{}, menuScope:'main_dish', popScope:'main_dish', popSel:{basis:null, items:[], scopes:{}, version:0, carried:0}, ingMode:'name', ingItems:[], ingUsageMode:'group', ingUsageItems:[], popBasis:'name', popOrder:'top', popLimit:10, popMinDays:ANALYSIS_MIN_DAYS.LUNCH, weatherFilter:'all', showDetail:false, result:null, query:null, band:null};
+  return {tab:'daily', start:isoDate(analysisMonthsBack(end,3)), end:isoDate(end), quickKey:'3m', mealType:'LUNCH', showWeather:false, menuMode:'group', menuItems:[], menuItemScopes:{}, menuScope:'main_dish', popScope:'main_dish', popSel:{basis:null, items:[], scopes:{}, version:0, carried:0}, ingMode:'name', ingItems:[], ingGroupFilter:'', ingGroupCatalog:null, ingUsageMode:'group', ingUsageItems:[], popBasis:'name', popOrder:'top', popLimit:10, popMinDays:ANALYSIS_MIN_DAYS.LUNCH, weatherFilter:'all', showDetail:false, result:null, query:null, band:null};
 }
 
 function analysisState(){ if(!state.analysis) state.analysis=analysisDefaults(); return state.analysis; }
@@ -2892,6 +2892,7 @@ function renderAnalysisConditions(){
     `;
   } else if (a.tab === 'ingredient') {
     const basisOptions = Object.entries(pk.modes).map(([k,v])=>[k, ANALYSIS_ING_MODES_SHORT[k]||v, v]);
+    const groupMode = a[pk.modeKey] === 'group';
 
     contentHtml = `
       <div class="an-groups cols-3">
@@ -2907,6 +2908,14 @@ function renderAnalysisConditions(){
         <div class="an-group">
           <div class="an-group-title">🔍 재료 검색 (비교)</div>
           <div class="an-group-body">
+            ${groupMode ? `
+            <div class="an-item">
+              <span class="an-label">대표 재료</span>
+              <div class="an-search-wrap">
+                <input id="an-rep-filter" autocomplete="off" placeholder="대표 재료명 찾기" value="${escapeHtml(a.ingGroupFilter||'')}">
+                <div class="an-rep-list" id="an-rep-list" role="listbox" aria-label="대표 재료명 목록"><div class="an-search-empty">불러오는 중...</div></div>
+              </div>
+            </div>` : `
             <div class="an-item">
               <span class="an-label">재료</span>
               <div class="an-search-wrap">
@@ -2916,11 +2925,11 @@ function renderAnalysisConditions(){
                 </div>
                 <div class="an-search-list hidden" id="an-search-list"></div>
               </div>
-            </div>
+            </div>`}
             <div class="an-item">
               <span class="an-label">선택 재료</span>
               <div class="an-chips" id="an-chips">
-                ${a[pk.itemsKey].map((name,i)=>`<span class="an-chip" style="--chip:${ANALYSIS_COLORS[i%ANALYSIS_COLORS.length]}">${escapeHtml(name)}<button type="button" data-remove-chip="${i}" aria-label="${escapeHtml(name)} 빼기">×</button></span>`).join('')||`<span class="muted" style="font-size:12px">${pk.noun} 검색 추가 (최대 ${ANALYSIS_MAX_MENUS}개)</span>`}
+                ${a[pk.itemsKey].map((name,i)=>`<span class="an-chip" style="--chip:${ANALYSIS_COLORS[i%ANALYSIS_COLORS.length]}">${escapeHtml(name)}<button type="button" data-remove-chip="${i}" aria-label="${escapeHtml(name)} 빼기">×</button></span>`).join('')||`<span class="muted" style="font-size:12px">${groupMode?`목록에서 대표 재료명을 고르세요 (최대 ${ANALYSIS_MAX_MENUS}개)`:`${pk.noun} 검색 추가 (최대 ${ANALYSIS_MAX_MENUS}개)`}</span>`}
               </div>
             </div>
             ${queryBtnHtml}
@@ -3107,7 +3116,51 @@ function renderAnalysisConditions(){
   $('#an-weather-filter')?.addEventListener('change',e=>{a.weatherFilter=e.target.value;updateAnalysisConditionSummary(root);});
   $('#an-show-weather')?.addEventListener('change',e=>{a.showWeather=e.target.checked;updateAnalysisConditionSummary(root);if(a.result)renderAnalysisResult();});
   $('#an-query').addEventListener('click',runAnalysisQuery);
-  if(a.tab==='menu'||a.tab==='ingredient'||a.tab==='ing-usage') bindAnalysisSearch();
+  if(a.tab==='ingredient' && a.ingMode==='group') bindRepIngredientList();
+  else if(a.tab==='menu'||a.tab==='ingredient'||a.tab==='ing-usage') bindAnalysisSearch();
+}
+
+function bindRepIngredientList(){
+  const a=analysisState();
+  const list=$('#an-rep-list');
+  const input=$('#an-rep-filter');
+  if(!list) return;
+  const paint=items=>{
+    const q=(a.ingGroupFilter||'').trim().toLowerCase();
+    const shown=(items||[]).filter(item=>!q || String(item.name).toLowerCase().includes(q));
+    const picked=new Set(a.ingItems);
+    list.innerHTML=shown.length
+      ? `<div class="an-search-hint">눌러서 선택 · 최대 ${ANALYSIS_MAX_MENUS}개</div>`+shown.map((item,i)=>`<button type="button" data-rep="${i}" class="${picked.has(item.name)?'is-picked':''}" aria-pressed="${picked.has(item.name)}"><span>${escapeHtml(item.name)}</span><small>${picked.has(item.name)?'선택됨 · ':''}${numberText(item.served)}회 제공</small></button>`).join('')
+      : `<div class="an-search-empty">${q?'찾는 대표 재료명이 없습니다.':'식단에 쓰인 대표 재료명이 없습니다.'}</div>`;
+    $$('button[data-rep]',list).forEach(b=>b.addEventListener('click',()=>toggleRepIngredient(shown[Number(b.dataset.rep)])));
+  };
+  input?.addEventListener('input',()=>{ a.ingGroupFilter=input.value; paint(a.ingGroupCatalog||[]); });
+  if(a.ingGroupCatalog){ paint(a.ingGroupCatalog); return; }
+  if(!a.ingGroupCatalogPromise){
+    a.ingGroupCatalogPromise=api('/api/analysis/ingredient-keys/search?mode=group&limit=500').then(data=>{
+      a.ingGroupCatalog=data.items||[];
+      return a.ingGroupCatalog;
+    }).catch(e=>{ a.ingGroupCatalogPromise=null; throw e; });
+  }
+  a.ingGroupCatalogPromise.then(items=>{
+    const cur=analysisState();
+    if(cur.tab!=='ingredient'||cur.ingMode!=='group'||!$('#an-rep-list')) return;
+    paint(items);
+  }).catch(e=>{
+    const box=$('#an-rep-list');
+    if(box) box.innerHTML=`<div class="an-search-empty">${escapeHtml(e.message)}</div>`;
+  });
+}
+
+function toggleRepIngredient(item){
+  if(!item) return;
+  const a=analysisState();
+  const items=a.ingItems;
+  const at=items.indexOf(item.name);
+  if(at>=0){ items.splice(at,1); renderAnalysisConditions(); return; }
+  if(items.length>=ANALYSIS_MAX_MENUS){ toast(`대표 재료명은 최대 ${ANALYSIS_MAX_MENUS}개까지 비교할 수 있습니다.`,true); return; }
+  items.push(item.name);
+  renderAnalysisConditions();
 }
 
 function bindAnalysisSearch(){

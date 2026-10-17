@@ -484,6 +484,8 @@ def test_ingredient_compare_api_detail_highlight_and_excel(engine):
         assert client.get("/api/analysis/ingredients", params=[*params, ("mode", "x"), ("names", "돼지고기")]).status_code == 400
         found = client.get("/api/analysis/ingredient-keys/search", params={"mode": "group", "q": "돼"}).json()["items"]
         assert found == [{"name": "돼지고기", "served": 3}]
+        listed = client.get("/api/analysis/ingredient-keys/search", params={"mode": "group", "limit": 500}).json()["items"]
+        assert {item["name"] for item in listed} == {"돼지고기", "콩류"}
         detail = client.get("/api/analysis/date-detail", params=[
             ("date", (MONDAY + timedelta(days=3)).isoformat()), ("meal_type", "LUNCH"),
             ("ing_mode", "name"), ("ing_names", "돼지고기 앞다리"), ("ing_names", "두부"),

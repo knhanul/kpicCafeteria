@@ -79,8 +79,11 @@ def ingredients_search(q: str = "", db: Session = Depends(get_db), user: User = 
 
 
 @router.get("/ingredient-keys/search")
-def ingredient_keys_search(q: str = "", mode: str = "name", db: Session = Depends(get_db), user: User = Depends(current_user)):
-    return {"items": _run(analysis.search_ingredient_keys, db, mode, q)}
+def ingredient_keys_search(
+    q: str = "", mode: str = "name", limit: int = Query(default=30, ge=1, le=500),
+    db: Session = Depends(get_db), user: User = Depends(current_user),
+):
+    return {"items": _run(analysis.search_ingredient_keys, db, mode, q, limit)}
 
 
 @router.get("/ingredients")

@@ -405,6 +405,12 @@ body.ui-locked{overflow:hidden}
 .an-search-list button:hover{background:#eef5fb}
 .an-search-list small{color:var(--muted);font-weight:500}
 .an-search-empty{padding:6px 9px;color:var(--muted);font-size:12px}
+.an-rep-list{margin-top:4px;max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;background:#fff}
+.an-rep-list button{display:flex;justify-content:space-between;align-items:center;width:100%;border:0;border-bottom:1px solid #f0f4f8;background:#fff;padding:6px 9px;text-align:left;gap:8px;color:var(--ink);font-weight:600;font-size:12px;cursor:pointer}
+.an-rep-list button:last-child{border-bottom:0}
+.an-rep-list button:hover,.an-rep-list button.is-picked{background:#eef5fb}
+.an-rep-list button.is-picked{box-shadow:inset 3px 0 0 #1d5f9a}
+.an-rep-list small{color:var(--muted);font-weight:500;white-space:nowrap}
 
 /* 칩 */
 .an-chips{display:inline-flex;gap:4px;align-items:center;flex-wrap:wrap;min-height:24px}
