@@ -26,8 +26,33 @@ MAX_ROWS = 100_000
 PREVIEW_TTL = timedelta(minutes=30)
 # Hourly observations that make up each meal's serving-time weather (weather_meal_period).
 MEAL_WEATHER_HOURS: dict[str, tuple[int, ...]] = {"LUNCH": (11, 12), "DINNER": (17, 18)}
+# 1시간 강수량이 확인된 경우에만 사용. 12시 값 = 11~12시, 직전은 10시+11시 값(09~11시).
+PRE_MEAL_HOURS: dict[str, tuple[int, ...]] = {"LUNCH": (10, 11), "DINNER": (16, 17)}
+# ASOS 시간자료는 일과 시간만 저장한다. 08시와 18시를 포함한다.
+ASOS_KEEP_HOURS = range(8, 19)
+# 배식 구간 강수는 '그 시각 값이 직전 1시간량'임이 헤더로 확인될 때만 쓴다.
+# 기상자료개방포털 ASOS의 '강수량'은 겨울(11~3월)에 3시간 간격이라는 안내만 있고,
+# 받은 파일 샘플로 1시간/3시간/일누적을 확정하지 못했다.
+ASOS_PRECIP_INTERVAL = "unconfirmed"
+INTERPRETATION_VERSION = "2026-10-asos-1"
 DAILY_MIN_HOURLY_SAMPLES = 20  # hourly -> daily aggregate only for (nearly) complete days
-HOURLY_COMPARE_FIELDS = ("station_name", "temperature", "precipitation", "humidity", "wind_speed", "snow_depth", "source_kind")
+HOURLY_COMPARE_FIELDS = (
+    "station_name", "temperature", "precipitation", "humidity", "wind_speed", "snow_depth",
+    "precip_state", "precip_interval", "snow_state", "snow_new_3h", "snow_new_state", "phenomenon", "source_kind",
+)
+# A later file that simply omits a column must not wipe a value already stored.
+_ABSENT_COLUMN_FIELDS = {
+    "temperature": ("temperature",),
+    "precipitation": ("precipitation", "precip_state", "precip_interval"),
+    "humidity": ("humidity",),
+    "wind_speed": ("wind_speed",),
+    "snow_depth": ("snow_depth", "snow_state"),
+    "snow_new_3h": ("snow_new_3h", "snow_new_state"),
+    "phenomenon": ("phenomenon",),
+}
+PRECIP_DAY_NAMES = {"일강수량", "일강수"}
+PRECIP_3H_NAMES = {"3시간강수량", "3시간강수"}
+PRECIP_1H_NAMES = {"1시간강수량", "1시간강수"}
 NULL_MARKERS = {"", "-", "--", "n/a", "na", "null"}
 WEATHER_FIELDS = (
     "avg_temp", "min_temp", "max_temp", "precipitation",
@@ -46,6 +71,10 @@ HEADER_ALIASES = {
     "avg_humidity": {"평균습도", "평균상대습도", "일평균상대습도"},
     "humidity": {"습도", "humidity"},
     "snow_depth": {"적설", "최심적설", "일최심적설", "최심신적설", "snow_depth", "snowdepth", "적설snowdepth"},
+    "snow_new_3h": {"3시간신적설", "hr3fhsc"},
+    "phenomenon": {"현상번호", "일기현상"},
+    "temp_qc": {"기온qc플래그", "taqcflag"},
+    "precip_qc": {"강수량qc플래그", "rnqcflag"},
     "sunshine_hours": {"일조시간", "합계일조시간", "일조"},
     "wind_speed": {"풍속", "wind_speed"},
     "source_kind": {"자료구분", "source_kind"},
@@ -78,18 +107,38 @@ NORMALIZED_ALIASES = {
 
 
 def map_headers(headers: list[Any]) -> tuple[dict[str, int], list[str]]:
-    mapping: dict[str, int] = {}
     unknown: list[str] = []
+    pending: list[tuple[int, str, str]] = []
     for index, raw in enumerate(headers):
         header = str(raw or "").strip()
         normalized = normalize_header(raw)
         if not normalized:
             continue
-        matched = [field for field, aliases in NORMALIZED_ALIASES.items() if normalized in aliases]
-        if not matched:
-            unknown.append(header)
-            continue
-        field = matched[0]
+        if normalized in PRECIP_3H_NAMES:
+            field = "precip_3h"
+        elif normalized in PRECIP_1H_NAMES:
+            field = "precipitation"
+        else:
+            matched = [name for name, aliases in NORMALIZED_ALIASES.items() if normalized in aliases]
+            if not matched:
+                unknown.append(header)
+                continue
+            field = matched[0]
+        pending.append((index, header, field))
+    precip = [item for item in pending if item[2] == "precipitation"]
+    if len(precip) > 1:
+        day_items = [item for item in precip if normalize_header(item[1]) in PRECIP_DAY_NAMES]
+        rest = [item for item in precip if item not in day_items]
+        if len(rest) == 1 and day_items:
+            day_keys = set(day_items)
+            pending = [
+                (index, header, "precip_day") if (index, header, field) in day_keys else (index, header, field)
+                for index, header, field in pending
+            ]
+        else:
+            raise WeatherImportError("'precipitation'에 매핑되는 헤더가 여러 개입니다.")
+    mapping: dict[str, int] = {}
+    for index, _header, field in pending:
         if field in mapping:
             raise WeatherImportError(f"'{field}'에 매핑되는 헤더가 여러 개입니다.")
         mapping[field] = index
@@ -255,9 +304,66 @@ def _name_station_id(name: str) -> str:
 
 
 def _fingerprint(rows: list[dict[str, Any]]) -> str:
-    comparable = [{key: value for key, value in row.items() if key not in {"status", "existing"}} for row in rows]
+    comparable = [{key: value for key, value in row.items() if key not in {"status", "existing", "raw_payload"}} for row in rows]
     raw = json.dumps(comparable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _qc_code(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text if text in {"0", "1", "9"} else None
+
+
+def _element_state(number: float | None, qc: str | None) -> tuple[float | None, str]:
+    """QC 0/1/9 is documented for several ASOS elements. Blank is not treated as zero."""
+    if qc == "1":
+        return None, "error"
+    if qc == "9":
+        return None, "missing"
+    if number is None:
+        return None, "missing"
+    return number, "value"
+
+
+def _asos_headers(mapped_headers: dict[str, str]) -> bool:
+    # Exact names only. 평균기온·일강수량·최심적설 are daily columns and must stay daily.
+    names = {normalize_header(value) for value in mapped_headers.values()}
+    return bool(names & {
+        "기온", "1시간강수량", "1시간강수", "3시간강수량", "3시간강수",
+        "3시간신적설", "현상번호", "일기현상", "기온qc플래그", "강수량qc플래그",
+    })
+
+
+def _explicit_clock(value: Any) -> datetime | None:
+    """A real clock time. Midnight on an Excel date cell is not a clock."""
+    if isinstance(value, datetime) and (value.hour or value.minute or value.second):
+        return value.replace(tzinfo=None)
+    text = str(value or "").strip()
+    if ":" not in text:
+        return None
+    return _parse_datetime(text)
+
+
+def _precip_interval(mapped_headers: dict[str, str], asos: bool) -> str:
+    header = (mapped_headers.get("precipitation") or mapped_headers.get("precip_3h") or "").replace(" ", "")
+    if "1시간강수" in header:
+        return "1h"
+    if "3시간강수" in header:
+        return "3h"
+    if asos:
+        return ASOS_PRECIP_INTERVAL
+    return "legacy_1h"
+
+
+def _fields_absent_from_file(mapped_headers: dict[str, str]) -> set[str]:
+    present = set(mapped_headers)
+    if "precip_3h" in present:
+        present.add("precipitation")
+    skip: set[str] = set()
+    for column, fields in _ABSENT_COLUMN_FIELDS.items():
+        if column not in present:
+            skip.update(fields)
+    return skip
 
 
 def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
@@ -267,16 +373,20 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
     unknown_headers: list[str] = []
     selected_sheet = ""
     header_row = 0
+    header_cells: list[Any] = []
     rows: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     seen: set[tuple[Any, str]] = set()
     duplicate_keys: set[tuple[Any, str]] = set()
     hourly_mode = False
+    asos_mode = False
+    precip_interval = "legacy_1h"
     source_rows = 0
     source_note = ""
     first_seen: dict[tuple[Any, str], dict[str, Any]] = {}
     duplicate_rows = 0
     precipitation_blank_as_zero = 0
+    outside_hour_rows = 0
 
     with tabular_rows(path) as source:
         for sheet_name, row_number, values in source:
@@ -291,8 +401,11 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
                 except WeatherImportError:
                     continue
                 mapping, unknown_headers, selected_sheet, header_row = candidate, unknown, sheet_name, row_number
+                header_cells = list(values)
                 mapped_headers = {field: str(values[index] or "").strip() for field, index in candidate.items()}
                 hourly_mode = "observation_datetime" in mapping
+                asos_mode = _asos_headers(mapped_headers)
+                precip_interval = _precip_interval(mapped_headers, asos_mode)
                 continue
             if sheet_name != selected_sheet or row_number <= header_row:
                 continue
@@ -302,8 +415,25 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
             if source_rows > MAX_ROWS:
                 raise WeatherImportError(f"최대 {MAX_ROWS:,}행까지 업로드할 수 있습니다.")
             get = lambda field: values[mapping[field]] if field in mapping and mapping[field] < len(values) else None
-            observed_at = _parse_datetime(get("observation_datetime")) if hourly_mode else None
-            observed = observed_at.date() if observed_at else _parse_date(get("observation_date"))
+            raw_time = get("observation_datetime") if "observation_datetime" in mapping else get("observation_date")
+            clock = _explicit_clock(raw_time)
+            if hourly_mode:
+                observed_at = _parse_datetime(get("observation_datetime")) if "observation_datetime" in mapping else clock
+                if observed_at:
+                    observed_at = observed_at.replace(second=0, microsecond=0)
+                    observed = observed_at.date()
+                else:
+                    observed = _parse_date(get("observation_date"))
+            elif clock and asos_mode:
+                hourly_mode = True
+                observed_at = clock.replace(second=0, microsecond=0)
+                observed = observed_at.date()
+            else:
+                observed_at = None
+                observed = _parse_date(get("observation_date"))
+            if hourly_mode and asos_mode and observed_at and observed_at.hour not in ASOS_KEEP_HOURS:
+                outside_hour_rows += 1
+                continue
             station_name = _station_value(get("station_name"))
             station_id = _station_value(get("station_id"))
             row_errors: list[str] = []
@@ -314,28 +444,75 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
                 row_errors.append("관측지점 번호와 지점명이 모두 없습니다.")
             if not station_id and station_name:
                 station_id = _name_station_id(station_name)
-            fields = ("temperature", "precipitation", "humidity", "wind_speed", "snow_depth") if hourly_mode else WEATHER_FIELDS
+            fields = ("temperature", "precipitation", "humidity", "wind_speed", "snow_depth", "snow_new_3h") if hourly_mode else WEATHER_FIELDS
             weather: dict[str, float | None] = {}
+            precipitation_filled = False
             for field in fields:
-                value, error = _parse_number(get(field))
+                if field not in mapping and field in {"snow_new_3h"}:
+                    continue
+                if field == "precipitation" and field not in mapping and "precip_3h" in mapping:
+                    value, error = _parse_number(get("precip_3h"))
+                else:
+                    value, error = _parse_number(get(field))
                 weather[field] = value
                 if error:
                     warnings.append(f"{field}: {error} NULL로 처리합니다.")
-            if hourly_mode and "precipitation" in mapping and weather.get("precipitation") is None and not str(get("precipitation") or "").strip() \
-                    and (weather.get("temperature") is not None or weather.get("humidity") is not None):
-                # KMA hourly observations leave precipitation blank when it did not rain.
-                weather["precipitation"] = 0.0
-                precipitation_filled = True
+            temp_qc = _qc_code(get("temp_qc")) if "temp_qc" in mapping else None
+            precip_qc = _qc_code(get("precip_qc")) if "precip_qc" in mapping else None
+            precip_mapped = "precipitation" in mapping or "precip_3h" in mapping
+            if hourly_mode and asos_mode:
+                weather["temperature"], _temp_state = _element_state(weather.get("temperature"), temp_qc)
+                if precip_mapped:
+                    weather["precipitation"], precip_state = _element_state(weather.get("precipitation"), precip_qc)
+                else:
+                    precip_state = "absent"
+                if "snow_depth" in mapping:
+                    weather["snow_depth"], snow_state = _element_state(weather.get("snow_depth"), None)
+                else:
+                    snow_state = "absent"
+                if "snow_new_3h" in mapping:
+                    weather["snow_new_3h"], snow_new_state = _element_state(weather.get("snow_new_3h"), None)
+                else:
+                    snow_new_state = "absent"
             else:
+                temp_state = "value" if weather.get("temperature") is not None else "missing"
+                precip_state = "value" if weather.get("precipitation") is not None else "missing"
+                snow_state = "value" if weather.get("snow_depth") is not None else ("absent" if "snow_depth" not in mapping else "missing")
+                snow_new_state = "absent"
+                if hourly_mode and "precipitation" in mapping and weather.get("precipitation") is None and not str(get("precipitation") or "").strip() \
+                        and (weather.get("temperature") is not None or weather.get("humidity") is not None):
+                    # 기존 weather.nuni 시간 CSV만. ASOS 공란은 0으로 바꾸지 않는다.
+                    weather["precipitation"] = 0.0
+                    precip_state = "legacy_blank"
+                    precipitation_filled = True
+                else:
+                    precipitation_filled = False
+                if hourly_mode and "snow_depth" in mapping and weather.get("snow_depth") is None and not str(get("snow_depth") or "").strip():
+                    weather["snow_depth"] = 0.0
+                    snow_state = "legacy_blank"
+            if asos_mode:
                 precipitation_filled = False
-            if hourly_mode and "snow_depth" in mapping and weather.get("snow_depth") is None and not str(get("snow_depth") or "").strip():
-                # Blank snow depth means no snow on the ground.
-                weather["snow_depth"] = 0.0
+            phenomenon = str(get("phenomenon") or "").strip() if "phenomenon" in mapping else ""
+            if phenomenon.endswith(".0") and phenomenon[:-2].isdigit():
+                phenomenon = phenomenon[:-2]
+            raw_payload = None
+            if asos_mode and hourly_mode and header_cells:
+                raw_payload = {}
+                for index, header in enumerate(header_cells):
+                    key = str(header or "").strip() or f"col{index}"
+                    if index >= len(values):
+                        continue
+                    cell = values[index]
+                    raw_payload[key] = cell.isoformat() if isinstance(cell, (datetime, date)) else cell
             identical_duplicate = False
             key_value = observed_at if hourly_mode else observed
             if key_value and station_id and not row_errors:
                 key = (key_value, station_id)
-                comparable = {"station_name": station_name, **weather, "source_kind": _station_value(get("source_kind")) if hourly_mode else ""}
+                comparable = {
+                    "station_name": station_name, **weather,
+                    "source_kind": _station_value(get("source_kind")) if hourly_mode else "",
+                    "precip_state": precip_state, "snow_state": snow_state, "snow_new_state": snow_new_state,
+                }
                 if key in seen:
                     if first_seen.get(key) == comparable:
                         identical_duplicate = True  # e.g. "01:00" and "01:00:00" rows with the same values
@@ -355,6 +532,14 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
                 "station_id": station_id,
                 "station_name": station_name,
                 **weather,
+                "snow_new_3h": weather.get("snow_new_3h"),
+                "precip_state": precip_state,
+                "snow_state": snow_state,
+                "snow_new_state": snow_new_state,
+                "phenomenon": phenomenon,
+                "precip_interval": precip_interval if hourly_mode and precip_mapped else None,
+                "source_format": "asos_hourly" if asos_mode and hourly_mode else ("hourly" if hourly_mode else "daily"),
+                "raw_payload": raw_payload,
                 "source_kind": _station_value(get("source_kind")) if hourly_mode else "",
                 "warnings": warnings,
                 "error": "; ".join(row_errors),
@@ -388,7 +573,8 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
                 )
             ).all()
             existing_map = {(row.observation_datetime, row.station_id): row for row in existing_rows}
-            compare_fields = HOURLY_COMPARE_FIELDS
+            skip = _fields_absent_from_file(mapped_headers)
+            compare_fields = [field for field in HOURLY_COMPARE_FIELDS if field not in skip]
             for row in valid_rows:
                 existing = existing_map.get((datetime.fromisoformat(row["observation_datetime"]), row["station_id"]))
                 row["existing"] = existing.id if existing else None
@@ -434,6 +620,13 @@ def parse_weather_file(path: Path, db: Session | None = None) -> dict[str, Any]:
         "source_note": source_note,
         "duplicate_rows": duplicate_rows,
         "precipitation_blank_as_zero": precipitation_blank_as_zero,
+        "outside_hour_rows": outside_hour_rows,
+        "file_format": "asos_hourly" if asos_mode and hourly_mode else ("hourly" if hourly_mode else "daily"),
+        "precip_interval": precip_interval if hourly_mode else "daily",
+        "missing_temperature": sum(row.get("temperature") is None for row in valid_rows),
+        "missing_precipitation": sum(row.get("precipitation") is None for row in valid_rows),
+        "missing_snow": sum(row.get("snow_depth") is None for row in valid_rows) if "snow_depth" in mapped_headers else None,
+        "missing_snow_new": sum(row.get("snow_new_3h") is None for row in valid_rows) if "snow_new_3h" in mapped_headers else None,
         "daily_aggregate_days": sum(count >= DAILY_MIN_HOURLY_SAMPLES for count in hours_per_day.values()),
         "partial_days": sum(count < DAILY_MIN_HOURLY_SAMPLES for count in hours_per_day.values()),
         "daily_min_hourly_samples": DAILY_MIN_HOURLY_SAMPLES if hourly_mode else None,
@@ -456,41 +649,119 @@ def _refresh_meal_period_weather(db: Session, rows: list[dict[str, Any]], batch_
             WeatherHourly.station_id.in_(station_ids),
         )
     ).all()
-    grouped: dict[tuple[date, str, str], list[WeatherHourly]] = {}
+    by_day: dict[tuple[date, str], dict[int, WeatherHourly]] = {}
     for row in hourly_rows:
         key = (row.observation_datetime.date(), row.station_id)
         if key not in affected:
             continue
-        meal_type = next((code for code, hours in MEAL_WEATHER_HOURS.items() if row.observation_datetime.hour in hours), None)
-        if meal_type:
-            grouped.setdefault((*key, meal_type), []).append(row)
+        by_day.setdefault(key, {})[row.observation_datetime.hour] = row
     values = []
-    for (observation_date, station_id, meal_type), samples in grouped.items():
-        def numbers(field: str) -> list[float]:
-            return [float(value) for sample in samples if (value := getattr(sample, field)) is not None]
+    for (observation_date, station_id), by_hour in by_day.items():
+        for meal_type, meal_hours in MEAL_WEATHER_HOURS.items():
+            samples = [by_hour[hour] for hour in meal_hours if hour in by_hour]
+            if not samples:
+                continue
 
-        temperatures = numbers("temperature")
-        precipitation = numbers("precipitation")
-        humidity = numbers("humidity")
-        wind_speed = numbers("wind_speed")
-        snow = numbers("snow_depth")
-        values.append({
-            "observation_date": observation_date,
-            "station_id": station_id,
-            "station_name": next((sample.station_name for sample in samples if sample.station_name), None),
-            "meal_type": meal_type,
-            "avg_temp": sum(temperatures) / len(temperatures) if temperatures else None,
-            "min_temp": min(temperatures) if temperatures else None,
-            "max_temp": max(temperatures) if temperatures else None,
-            "precipitation": sum(precipitation) if precipitation else None,
-            "avg_humidity": sum(humidity) / len(humidity) if humidity else None,
-            "avg_wind_speed": sum(wind_speed) / len(wind_speed) if wind_speed else None,
-            "snow_depth": max(snow) if snow else None,
-            "sample_count": len(samples),
-            "upload_batch_id": batch_id,
-            "created_at": now,
-            "updated_at": now,
-        })
+            def numbers(field: str, chosen: list[WeatherHourly] = samples) -> list[float]:
+                return [float(value) for sample in chosen if (value := getattr(sample, field)) is not None]
+
+            temperatures = numbers("temperature")
+            precipitation = numbers("precipitation")
+            humidity = numbers("humidity")
+            wind_speed = numbers("wind_speed")
+            snow = numbers("snow_depth")
+            asos = any(getattr(sample, "source_format", None) == "asos_hourly" for sample in samples)
+            if asos:
+                end_hour = max(meal_hours)
+                temp_rows = [by_hour.get(hour) for hour in meal_hours]
+                temp_values = [float(row.temperature) for row in temp_rows if row is not None and row.temperature is not None]
+                temp_complete = len(temp_values) == len(meal_hours)
+                intervals = {sample.precip_interval for sample in samples if sample.precip_interval}
+                interval = next(iter(intervals)) if len(intervals) == 1 else (ASOS_PRECIP_INTERVAL if not intervals else "unconfirmed")
+                if interval == "1h":
+                    end = by_hour.get(end_hour)
+                    if end is not None and end.precip_state == "value" and end.precipitation is not None:
+                        precip_amount, precip_state = float(end.precipitation), "ok"
+                    else:
+                        precip_amount, precip_state = None, "unavailable"
+                    pre_rows = [by_hour.get(hour) for hour in PRE_MEAL_HOURS[meal_type]]
+                    if all(row is not None and row.precip_state == "value" and row.precipitation is not None for row in pre_rows):
+                        pre_amount, pre_state = sum(float(row.precipitation) for row in pre_rows), "ok"
+                    else:
+                        pre_amount, pre_state = None, "unavailable"
+                    method = "1h_end"
+                else:
+                    precip_amount, precip_state, pre_amount, pre_state, method = None, "unavailable", None, "unavailable", interval
+                snow_rows = [by_hour.get(hour) for hour in meal_hours]
+                snow_known = [row for row in snow_rows if row is not None and row.snow_state == "value" and row.snow_depth is not None]
+                if len(snow_known) == len(meal_hours):
+                    snow_amount, snow_state = max(float(row.snow_depth) for row in snow_known), "ok"
+                elif snow_known:
+                    snow_amount, snow_state = max(float(row.snow_depth) for row in snow_known), "partial"
+                else:
+                    snow_amount, snow_state = None, "missing"
+                fresh = by_hour.get(end_hour)
+                if fresh is not None and fresh.snow_new_state == "value" and fresh.snow_new_3h is not None:
+                    fresh_amount, fresh_state = float(fresh.snow_new_3h), "value"
+                elif fresh is not None and fresh.snow_new_state == "missing":
+                    fresh_amount, fresh_state = None, "missing"
+                else:
+                    fresh_amount, fresh_state = None, "absent"
+                values.append({
+                    "observation_date": observation_date,
+                    "station_id": station_id,
+                    "station_name": next((sample.station_name for sample in samples if sample.station_name), None),
+                    "meal_type": meal_type,
+                    "avg_temp": sum(temp_values) / len(temp_values) if temp_values else None,
+                    "min_temp": min(temp_values) if temp_values else None,
+                    "max_temp": max(temp_values) if temp_values else None,
+                    "precipitation": precip_amount,
+                    "avg_humidity": sum(humidity) / len(humidity) if humidity else None,
+                    "avg_wind_speed": sum(wind_speed) / len(wind_speed) if wind_speed else None,
+                    "snow_depth": snow_amount,
+                    "snow_state": snow_state,
+                    "snow_new_3h": fresh_amount,
+                    "snow_new_state": fresh_state,
+                    "precip_state": precip_state,
+                    "precip_method": method,
+                    "pre_precip": pre_amount,
+                    "pre_precip_state": pre_state,
+                    "temp_complete": temp_complete,
+                    "interpretation": INTERPRETATION_VERSION,
+                    "sample_count": len(samples),
+                    "upload_batch_id": batch_id,
+                    "created_at": now,
+                    "updated_at": now,
+                })
+                continue
+            legacy_precip = "legacy_blank" if any(sample.precip_state == "legacy_blank" for sample in samples) else ("legacy" if precipitation else None)
+            legacy_snow = "legacy_blank" if any(sample.snow_state == "legacy_blank" for sample in samples) else ("legacy" if snow else None)
+            values.append({
+                "observation_date": observation_date,
+                "station_id": station_id,
+                "station_name": next((sample.station_name for sample in samples if sample.station_name), None),
+                "meal_type": meal_type,
+                "avg_temp": sum(temperatures) / len(temperatures) if temperatures else None,
+                "min_temp": min(temperatures) if temperatures else None,
+                "max_temp": max(temperatures) if temperatures else None,
+                "precipitation": sum(precipitation) if precipitation else None,
+                "avg_humidity": sum(humidity) / len(humidity) if humidity else None,
+                "avg_wind_speed": sum(wind_speed) / len(wind_speed) if wind_speed else None,
+                "snow_depth": max(snow) if snow else None,
+                "snow_state": legacy_snow,
+                "snow_new_3h": None,
+                "snow_new_state": None,
+                "precip_state": legacy_precip,
+                "precip_method": "legacy_sum",
+                "pre_precip": None,
+                "pre_precip_state": None,
+                "temp_complete": len(temperatures) == len(meal_hours),
+                "interpretation": "legacy_hourly",
+                "sample_count": len(samples),
+                "upload_batch_id": batch_id,
+                "created_at": now,
+                "updated_at": now,
+            })
     if not values:
         return
     insert = pg_insert(MealPeriodWeather) if db.bind and db.bind.dialect.name == "postgresql" else sqlite_insert(MealPeriodWeather)
@@ -506,6 +777,15 @@ def _refresh_meal_period_weather(db: Session, rows: list[dict[str, Any]], batch_
             "avg_humidity": statement.excluded.avg_humidity,
             "avg_wind_speed": statement.excluded.avg_wind_speed,
             "snow_depth": statement.excluded.snow_depth,
+            "snow_state": statement.excluded.snow_state,
+            "snow_new_3h": statement.excluded.snow_new_3h,
+            "snow_new_state": statement.excluded.snow_new_state,
+            "precip_state": statement.excluded.precip_state,
+            "precip_method": statement.excluded.precip_method,
+            "pre_precip": statement.excluded.pre_precip,
+            "pre_precip_state": statement.excluded.pre_precip_state,
+            "temp_complete": statement.excluded.temp_complete,
+            "interpretation": statement.excluded.interpretation,
             "sample_count": statement.excluded.sample_count,
             "upload_batch_id": statement.excluded.upload_batch_id,
             "updated_at": statement.excluded.updated_at,
@@ -549,6 +829,8 @@ def _refresh_daily_weather_from_hourly(db: Session, rows: list[dict[str, Any]], 
             grouped.setdefault(key, []).append(row)
     values = []
     for (observation_date, station_id), samples in grouped.items():
+        if any(getattr(sample, "source_format", None) == "asos_hourly" for sample in samples):
+            continue
         if len(samples) < DAILY_MIN_HOURLY_SAMPLES:
             continue
 
@@ -629,11 +911,37 @@ def apply_weather_file(path: Path, db: Session, filename: str, checksum: str, us
                 "humidity": row["humidity"],
                 "wind_speed": row["wind_speed"],
                 "snow_depth": row.get("snow_depth"),
+                "snow_state": row.get("snow_state"),
+                "snow_new_3h": row.get("snow_new_3h"),
+                "snow_new_state": row.get("snow_new_state"),
+                "precip_state": row.get("precip_state"),
+                "precip_interval": row.get("precip_interval"),
+                "phenomenon": row.get("phenomenon") or None,
+                "source_format": row.get("source_format"),
+                "raw_payload": row.get("raw_payload"),
                 "source_kind": row["source_kind"] or None,
                 "upload_batch_id": batch.id,
                 "created_at": now,
                 "updated_at": now,
             } for row in changed]
+            mapped = summary.get("mapped_headers") or {}
+            skip = _fields_absent_from_file(mapped)
+            if skip:
+                moments = [item["observation_datetime"] for item in values]
+                existing_rows = db.scalars(
+                    select(WeatherHourly).where(
+                        WeatherHourly.observation_datetime.between(min(moments), max(moments)),
+                        WeatherHourly.station_id.in_({item["station_id"] for item in values}),
+                    )
+                ).all()
+                existing_map = {(row.observation_datetime, row.station_id): row for row in existing_rows}
+                for item in values:
+                    current = existing_map.get((item["observation_datetime"], item["station_id"]))
+                    if not current:
+                        continue
+                    for name in skip:
+                        if hasattr(current, name):
+                            item[name] = getattr(current, name)
             insert = pg_insert(WeatherHourly) if db.bind and db.bind.dialect.name == "postgresql" else sqlite_insert(WeatherHourly)
             for start in range(0, len(values), 1000):
                 statement = insert.values(values[start:start + 1000])
@@ -646,6 +954,14 @@ def apply_weather_file(path: Path, db: Session, filename: str, checksum: str, us
                         "humidity": statement.excluded.humidity,
                         "wind_speed": statement.excluded.wind_speed,
                         "snow_depth": statement.excluded.snow_depth,
+                        "snow_state": statement.excluded.snow_state,
+                        "snow_new_3h": statement.excluded.snow_new_3h,
+                        "snow_new_state": statement.excluded.snow_new_state,
+                        "precip_state": statement.excluded.precip_state,
+                        "precip_interval": statement.excluded.precip_interval,
+                        "phenomenon": statement.excluded.phenomenon,
+                        "source_format": statement.excluded.source_format,
+                        "raw_payload": statement.excluded.raw_payload,
                         "source_kind": statement.excluded.source_kind,
                         "upload_batch_id": statement.excluded.upload_batch_id,
                         "updated_at": statement.excluded.updated_at,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
+import pytest
 from openpyxl import Workbook
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -319,3 +320,124 @@ def test_hourly_daily_aggregate_skips_partial_days_and_keeps_official_daily(tmp_
     assert rows[date(2026, 9, 1)].avg_temp == 21.5 and rows[date(2026, 9, 1)].precipitation == 0
     assert rows[date(2026, 9, 1)].source == "KMA_HOURLY"
     assert rows[date(2026, 9, 2)].avg_temp == 99 and rows[date(2026, 9, 2)].source == "KMA_FILE"
+
+
+def test_asos_keeps_workday_hours_and_does_not_fill_blanks(tmp_path):
+    path = tmp_path / "asos.csv"
+    path.write_text(
+        "일시,지점,지점명,기온(°C),강수량(mm),적설(cm),3시간신적설(cm),기온 QC플래그,강수량 QC플래그\n"
+        "2026-04-13 07:00,156,광주,1,9,0,0,0,0\n"
+        "2026-04-13 08:00,156,광주,-1.5,,, ,0,\n"
+        "2026-04-13 10:00,156,광주,2,0.2,0,0,0,0\n"
+        "2026-04-13 11:00,156,광주,3,0.4,1,0,0,0\n"
+        "2026-04-13 12:00,156,광주,4,1.5,2,0.3,0,0\n"
+        "2026-04-13 18:00,156,광주,6,0,0,0,0,0\n"
+        "2026-04-13 19:00,156,광주,7,8,0,0,0,0\n"
+        "2026-04-13 13:00,156,광주,-3,1,0,0,0,1\n"
+        "2026-04-13 14:00,156,광주,5,0,0,0,9,0\n",
+        encoding="utf-8",
+    )
+    engine = make_db(tmp_path)
+    with Session(engine) as db:
+        preview = parse_weather_file(path, db)
+        assert preview["summary"]["outside_hour_rows"] == 2
+        assert preview["summary"]["valid_rows"] == 7
+        assert preview["summary"]["file_format"] == "asos_hourly"
+        assert preview["summary"]["precip_interval"] == "unconfirmed"
+        kept = {row["observation_datetime"]: row for row in preview["rows"] if not row["error"]}
+        assert "2026-04-13T07:00" not in kept and "2026-04-13T19:00" not in kept
+        assert kept["2026-04-13T08:00"]["temperature"] == -1.5
+        assert kept["2026-04-13T08:00"]["precipitation"] is None
+        assert kept["2026-04-13T08:00"]["snow_depth"] is None
+        assert kept["2026-04-13T13:00"]["precipitation"] is None
+        assert kept["2026-04-13T13:00"]["precip_state"] == "error"
+        assert kept["2026-04-13T14:00"]["temperature"] is None
+        assert kept["2026-04-13T12:00"]["raw_payload"]["지점명"] == "광주"
+        apply_weather_file(path, db, path.name, sha256_file(path), 1, preview["summary"]["rows_fingerprint"])
+        db.commit()
+        assert db.query(WeatherHourly).count() == 7
+        lunch = db.scalar(select(MealPeriodWeather).where(MealPeriodWeather.meal_type == "LUNCH"))
+        dinner = db.scalar(select(MealPeriodWeather).where(MealPeriodWeather.meal_type == "DINNER"))
+        assert lunch.avg_temp == 3.5 and lunch.temp_complete is True
+        assert lunch.precipitation is None and lunch.precip_state == "unavailable"
+        assert lunch.snow_depth == 2 and lunch.snow_state == "ok"
+        assert lunch.snow_new_3h == 0.3
+        assert dinner.precipitation is None
+        assert dinner.temp_complete is False
+        assert db.query(WeatherHistory).count() == 0
+        again = parse_weather_file(path, db)
+        assert again["summary"]["skipped_rows"] == 7
+
+
+def test_asos_one_hour_precip_uses_end_hour_and_pre_window(tmp_path):
+    path = tmp_path / "asos-1h.csv"
+    path.write_text(
+        "일시,지점,지점명,기온(°C),1시간강수량(mm),적설(cm)\n"
+        "2026-04-13 10:00,156,광주,2,0.2,0\n"
+        "2026-04-13 11:00,156,광주,3,0.4,1\n"
+        "2026-04-13 12:00,156,광주,4,1.5,2\n"
+        "2026-04-13 16:00,156,광주,5,0,0\n"
+        "2026-04-13 17:00,156,광주,6,0,0\n"
+        "2026-04-13 18:00,156,광주,7,0,0\n",
+        encoding="utf-8",
+    )
+    engine = make_db(tmp_path)
+    with Session(engine) as db:
+        preview = parse_weather_file(path, db)
+        assert preview["summary"]["precip_interval"] == "1h"
+        apply_weather_file(path, db, path.name, sha256_file(path), 1, preview["summary"]["rows_fingerprint"])
+        db.commit()
+        lunch = db.scalar(select(MealPeriodWeather).where(MealPeriodWeather.meal_type == "LUNCH"))
+        dinner = db.scalar(select(MealPeriodWeather).where(MealPeriodWeather.meal_type == "DINNER"))
+    assert lunch.precipitation == 1.5 and lunch.precip_method == "1h_end"
+    assert lunch.pre_precip == pytest.approx(0.6) and lunch.pre_precip_state == "ok"
+    assert lunch.snow_depth == 2
+    assert dinner.precipitation == 0 and dinner.pre_precip == 0
+    assert dinner.temp_complete is True
+
+
+def test_reupload_without_a_column_keeps_the_stored_value(tmp_path):
+    full = tmp_path / "full.csv"
+    full.write_text(
+        "일시,지점,기온(°C),강수량(mm)\n2026-04-13 12:00,156,-2.5,1.2\n",
+        encoding="utf-8",
+    )
+    temp_only = tmp_path / "temp.csv"
+    temp_only.write_text(
+        "일시,지점,기온(°C)\n2026-04-13 12:00,156,-2.5\n",
+        encoding="utf-8",
+    )
+    engine = make_db(tmp_path)
+    with Session(engine) as db:
+        first = parse_weather_file(full, db)
+        apply_weather_file(full, db, full.name, sha256_file(full), 1, first["summary"]["rows_fingerprint"])
+        db.commit()
+        second = parse_weather_file(temp_only, db)
+        assert second["summary"]["skipped_rows"] == 1
+        apply_weather_file(temp_only, db, temp_only.name, sha256_file(temp_only), 1, second["summary"]["rows_fingerprint"])
+        db.commit()
+        row = db.scalar(select(WeatherHourly))
+    assert row.temperature == -2.5
+    assert row.precipitation == 1.2
+    assert row.precip_state == "value"
+
+
+def test_three_hour_precip_is_not_used_as_meal_rain(tmp_path):
+    path = tmp_path / "asos-3h.csv"
+    path.write_text(
+        "일시,지점,기온(°C),3시간강수량(mm)\n"
+        "2026-04-13 11:00,156,3,1\n"
+        "2026-04-13 12:00,156,4,9\n",
+        encoding="utf-8",
+    )
+    engine = make_db(tmp_path)
+    with Session(engine) as db:
+        preview = parse_weather_file(path, db)
+        assert preview["summary"]["precip_interval"] == "3h"
+        assert preview["rows"][1]["precipitation"] == 9
+        apply_weather_file(path, db, path.name, sha256_file(path), 1, preview["summary"]["rows_fingerprint"])
+        db.commit()
+        lunch = db.scalar(select(MealPeriodWeather).where(MealPeriodWeather.meal_type == "LUNCH"))
+    assert lunch.precipitation is None
+    assert lunch.precip_state == "unavailable"
+    assert lunch.precip_method == "3h"

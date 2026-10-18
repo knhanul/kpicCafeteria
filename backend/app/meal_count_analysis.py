@@ -7,8 +7,9 @@ difference between them (명). No index, score or statistical model.
 364 days (1 year) before that date. Only meals that have menu data and an actual count are used, so
 closed days (no menu or no actual count) drop out by themselves. The date itself is never included.
 
-Weather is the serving-time weather already stored by the weather upload (weather_meal_period):
-temperature = mean of the meal's hourly observations, rain = sum of their precipitation.
+Weather on the other tabs is the serving-time row in weather_meal_period.
+The weather tab does not use this module's 364-day usual count. Its baseline is
+the same-weekday average in weather_meal_stats.
 """
 from __future__ import annotations
 
@@ -62,17 +63,17 @@ WEATHER_FILTERS = {
 }
 RAIN_BANDS = [("rain", "강수 있음"), ("dry", "강수 없음")]
 SNOW_BANDS = [("snow", "적설 있음"), ("clear", "적설 없음")]
-# 보통 기온은 10℃ 단위. 더위(28℃부터)와 추위(영하)만 정도별로 나눈다. 배식시간 평균기온 기준.
+# 보통 기온은 10℃ 단위. 더위·추위 구간은 정도만 나누고, 화면 이름은 숫자 범위다.
 TEMP_BANDS = [
-    ("lt-10", "매우 추움 · 영하 10℃ 미만", None, -10.0),
-    ("m10tom5", "많이 추움 · 영하 10~5℃", -10.0, -5.0),
-    ("m5to0", "조금 추움 · 영하 5~0℃", -5.0, 0.0),
+    ("lt-10", "-10℃ 미만", None, -10.0),
+    ("m10tom5", "-10~-5℃", -10.0, -5.0),
+    ("m5to0", "-5~0℃", -5.0, 0.0),
     ("0to10", "0~10℃", 0.0, 10.0),
     ("10to20", "10~20℃", 10.0, 20.0),
     ("20to28", "20~28℃", 20.0, HOT_TEMP),
-    ("28to32", "조금 더움 · 28~32℃", HOT_TEMP, 32.0),
-    ("32to35", "많이 더움 · 32~35℃", 32.0, 35.0),
-    ("35plus", "매우 더움 · 35℃ 이상", 35.0, None),
+    ("28to32", "28~32℃", HOT_TEMP, 32.0),
+    ("32to35", "32~35℃", 32.0, 35.0),
+    ("35plus", "35℃ 이상", 35.0, None),
 ]
 
 
@@ -202,6 +203,7 @@ def _weather_map(db: Session, meal_type: str, dates: list[date]) -> dict[date, d
             "temp": temp,
             "rain_mm": rain,
             "is_rain": bool(rain and rain > 0),
+            "is_snow": False,
             "snow_cm": snow,
             "has_snow": bool(snow and snow > 0),
             "station": row.station_name or row.station_id,
@@ -374,44 +376,15 @@ def temp_band(temp: float | None) -> str | None:
     return None
 
 
-def weather_bands(db: Session, meal_type: str, start: date, end: date) -> dict[str, Any]:
-    check_meal_type(meal_type)
-    check_period(start, end)
-    points = [p for p in _build_points(db, meal_type, start, end) if p["weather"] and p["usual"] is not None]
-
-    def band(key: str, label: str, members: list[dict[str, Any]]) -> dict[str, Any]:
-        return {
-            "key": key,
-            "label": label,
-            "days": len(members),
-            "avg_actual": _avg([p["actual"] for p in members]),
-            "avg_usual": _avg([p["usual"] for p in members]),
-            "avg_diff": _avg([p["diff"] for p in members]),
-            "low_sample_note": low_sample_note(len(members)),
-            "points": members,
-        }
-
-    rain_groups = [
-        band(key, label, [p for p in points if p["weather"]["rain_mm"] is not None and (p["weather"]["is_rain"] if key == "rain" else not p["weather"]["is_rain"])])
-        for key, label in RAIN_BANDS
-    ]
-    temp_groups = [band(key, label, [p for p in points if temp_band(p["weather"]["temp"]) == key]) for key, label, _low, _high in TEMP_BANDS]
-    known_snow = [p for p in points if p["weather"].get("snow_cm") is not None]
-    snow_groups = [
-        band(key, label, [p for p in known_snow if p["weather"]["has_snow"] == (key == "snow")])
-        for key, label in SNOW_BANDS
-    ]
-    return {
-        "meal_type": meal_type,
-        "meal_type_name": MEAL_TYPES[meal_type],
-        "start": start.isoformat(),
-        "end": end.isoformat(),
-        "weather_window": weather_window_label(meal_type),
-        "days": len(points),
-        "rain": rain_groups,
-        "temperature": temp_groups,
-        "snow": snow_groups,
-    }
+def weather_bands(
+    db: Session, meal_type: str, start: date, end: date,
+    weekday: int | None = None, period: str = "all", include_off: bool = False, station_id: str = "",
+) -> dict[str, Any]:
+    from .weather_meal_stats import build_weather_bands
+    return build_weather_bands(
+        db, meal_type, start, end,
+        weekday=weekday, period=period, include_off=include_off, station_id=station_id,
+    )
 
 
 def _stat_group(key: str, label: str, members: list[dict[str, Any]]) -> dict[str, Any]:

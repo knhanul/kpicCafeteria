@@ -60,6 +60,42 @@ def upgrade_existing_schema(engine: Engine) -> None:
             else:
                 connection.execute(text(f"ALTER TABLE {table} ADD COLUMN snow_depth {kind}"))
 
+    hourly_extra = {
+        "snow_state": "VARCHAR(20)",
+        "snow_new_3h": "DOUBLE PRECISION" if dialect == "postgresql" else "FLOAT",
+        "snow_new_state": "VARCHAR(20)",
+        "precip_state": "VARCHAR(20)",
+        "precip_interval": "VARCHAR(20)",
+        "phenomenon": "VARCHAR(40)",
+        "source_format": "VARCHAR(40)",
+        "raw_payload": "JSONB" if dialect == "postgresql" else "JSON",
+    }
+    meal_extra = {
+        "snow_state": "VARCHAR(20)",
+        "snow_new_3h": "DOUBLE PRECISION" if dialect == "postgresql" else "FLOAT",
+        "snow_new_state": "VARCHAR(20)",
+        "precip_state": "VARCHAR(20)",
+        "precip_method": "VARCHAR(40)",
+        "pre_precip": "DOUBLE PRECISION" if dialect == "postgresql" else "FLOAT",
+        "pre_precip_state": "VARCHAR(20)",
+        "temp_complete": "BOOLEAN" if dialect == "postgresql" else "INTEGER",
+        "interpretation": "VARCHAR(40)",
+    }
+    additions = {"weather_hourly": hourly_extra, "weather_meal_period": meal_extra}
+    for table, columns_to_add in additions.items():
+        if table not in inspector.get_table_names():
+            continue
+        present = {col["name"] for col in inspector.get_columns(table)}
+        missing = {name: decl for name, decl in columns_to_add.items() if name not in present}
+        if not missing:
+            continue
+        with engine.begin() as connection:
+            for name, decl in missing.items():
+                if dialect == "postgresql":
+                    connection.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {decl}"))
+                else:
+                    connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {decl}"))
+
     if "recipes" not in inspector.get_table_names():
         return
     legacy_service_menu_columns = {

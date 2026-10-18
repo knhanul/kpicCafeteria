@@ -374,6 +374,14 @@ class WeatherHourly(Base):
     humidity: Mapped[float | None] = mapped_column(Float, nullable=True)
     wind_speed: Mapped[float | None] = mapped_column(Float, nullable=True)
     snow_depth: Mapped[float | None] = mapped_column(Float, nullable=True)
+    snow_state: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    snow_new_3h: Mapped[float | None] = mapped_column(Float, nullable=True)
+    snow_new_state: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    precip_state: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    precip_interval: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    phenomenon: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    source_format: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    raw_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     source_kind: Mapped[str | None] = mapped_column(String(80), nullable=True)
     upload_batch_id: Mapped[int | None] = mapped_column(
         ForeignKey("weather_upload_history.id", ondelete="SET NULL"), nullable=True, index=True
@@ -398,6 +406,15 @@ class MealPeriodWeather(Base):
     avg_humidity: Mapped[float | None] = mapped_column(Float, nullable=True)
     avg_wind_speed: Mapped[float | None] = mapped_column(Float, nullable=True)
     snow_depth: Mapped[float | None] = mapped_column(Float, nullable=True)
+    snow_state: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    snow_new_3h: Mapped[float | None] = mapped_column(Float, nullable=True)
+    snow_new_state: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    precip_state: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    precip_method: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    pre_precip: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pre_precip_state: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    temp_complete: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    interpretation: Mapped[str | None] = mapped_column(String(40), nullable=True)
     sample_count: Mapped[int] = mapped_column(Integer, default=0)
     upload_batch_id: Mapped[int | None] = mapped_column(
         ForeignKey("weather_upload_history.id", ondelete="SET NULL"), nullable=True, index=True

@@ -192,43 +192,71 @@ def test_ingredient_filter_only_counts_meals_with_that_ingredient(engine):
     assert found[0]["name"] == "두부" and found[0]["served"] == 2
 
 
-def test_weather_bands_rain_and_temperature_boundaries(engine):
+def test_weather_bands_use_same_weekday_baseline_not_year_average(engine):
+    day = date(2026, 4, 13)  # Monday, not a public holiday
     with Session(engine) as db:
         b = Builder(db)
-        b.meal(MONDAY - timedelta(weeks=1), 400)  # gives every Monday below a usual count
-        cases = [(-0.1, 0.0, 380), (0.0, 0.0, 390), (10.0, 2.5, 360), (20.0, 0.0, 420), (28.0, 0.0, 440), (27.9, 1.0, 350)]
-        for week, (temp, rain, actual) in enumerate(cases):
-            b.meal(MONDAY + timedelta(weeks=week), actual, weather=(temp, rain))
-        b.meal(MONDAY + timedelta(weeks=10), 999)  # no weather: left out of weather bands
+        for week in range(1, 5):
+            b.meal(day - timedelta(weeks=week), 400)
+        b.meal(day, 380, weather=(-0.1, 0.0))
+        b.meal(day + timedelta(weeks=1), 390, weather=(0.0, 0.0))
+        b.meal(day + timedelta(weeks=2), 360, weather=(10.0, 2.5))
+        b.meal(day + timedelta(days=1), 999, weather=(28.0, 0.0))
         db.commit()
-        result = analysis.weather_bands(db, "LUNCH", MONDAY, MONDAY + timedelta(weeks=11))
+        result = analysis.weather_bands(db, "LUNCH", day - timedelta(weeks=4), day + timedelta(weeks=2), include_off=True)
+        narrowed = analysis.weather_bands(db, "LUNCH", day, day, weekday=0, period="m4", include_off=False)
+    assert result["baseline_name"] == "최근 같은 요일 평균"
     rain = {band["key"]: band for band in result["rain"]}
-    temp = {band["key"]: band for band in result["temperature"]}
-    assert rain["rain"]["days"] == 2 and rain["dry"]["days"] == 4
-    assert rain["rain"]["avg_actual"] == 355
-    assert {k: v["days"] for k, v in temp.items()} == {
-        "lt-10": 0, "m10tom5": 0, "m5to0": 1,
-        "0to10": 1, "10to20": 1, "20to28": 2,
-        "28to32": 1, "32to35": 0, "35plus": 0,
-    }
-    assert temp["m5to0"]["low_sample_note"] == "1일뿐이라 참고만 하세요."
-    assert result["days"] == 6
-    band = temp["20to28"]
-    assert band["avg_actual"] == round((420 + 350) / 2)
-    assert band["avg_diff"] == round(sum(p["diff"] for p in band["points"]) / 2)
-    assert result["weather_window"] == "11:00~12:00"
-    assert {band["key"]: band["days"] for band in result["snow"]} == {"snow": 0, "clear": 0}
+    assert rain["rain"]["days"] == 1
+    monday = next(point for point in result["points"] if point["date"] == day.isoformat())
+    assert monday["baseline_weeks"] == 8 and monday["baseline_days"] == 4
+    assert monday["diff"] == round(380 - 400, 2)
+    assert narrowed["points"][0]["baseline_exact"] == monday["baseline_exact"]
+    assert result["seasonal"]["active"] is False
+    assert "15일" in result["seasonal"]["reason"]
+    temp = {band["key"]: band["days"] for band in result["temperature"]}
+    assert temp["m5to0"] == 1 and temp["0to10"] == 1 and temp["10to20"] == 1
+    assert rain["dry"]["days"] >= 1
+
+
+def test_same_weekday_baseline_extends_then_stays_empty():
+    from app.weather_meal_stats import same_weekday_baseline
+    target = date(2026, 8, 3)
+    extended = same_weekday_baseline({target - timedelta(weeks=week): 100 + week for week in (6, 7, 8, 9)}, target)
+    assert extended["weeks"] == 12 and extended["days"] == 4
+    missing = same_weekday_baseline({target - timedelta(weeks=week): 100 for week in (1, 2, 3)}, target)
+    assert missing["baseline"] is None and missing["weeks"] is None
+    ready = same_weekday_baseline({target - timedelta(weeks=week): 200 for week in range(1, 5)}, target)
+    assert ready["weeks"] == 8 and ready["baseline"] == 200
+
+
+def test_holiday_monday_does_not_borrow_normal_mondays(engine):
+    holiday = date(2026, 3, 2)
+    with Session(engine) as db:
+        b = Builder(db)
+        for week in (1, 3, 4, 5):
+            b.meal(holiday - timedelta(weeks=week), 400)
+        b.meal(holiday, 380, weather=(5.0, 0.0))
+        db.commit()
+        result = analysis.weather_bands(db, "LUNCH", holiday, holiday, include_off=True)
+    point = result["points"][0]
+    assert point["actual"] == 380
+    assert point["baseline"] is None
+    assert point["compare_note"] == "비교 자료 부족"
+    assert result["holiday_notice"] == ""
 
 
 def test_weather_bands_split_snow_only_when_depth_is_known(engine):
+    day = date(2026, 4, 13)
     with Session(engine) as db:
         b = Builder(db)
-        b.meal(MONDAY - timedelta(days=1), 400)
-        b.meal(MONDAY, 410, weather=(1.0, 0.0, 2.0))
-        b.meal(MONDAY + timedelta(days=1), 390, weather=(3.0, 0.0, 0.0))
-        b.meal(MONDAY + timedelta(days=2), 400, weather=(5.0, 1.0))
+        for week in range(1, 5):
+            b.meal(day - timedelta(weeks=week), 400)
+        b.meal(day, 410, weather=(1.0, 0.0, 2.0))
+        b.meal(day + timedelta(weeks=1), 390, weather=(3.0, 0.0, 0.0))
+        b.meal(day + timedelta(weeks=2), 400, weather=(5.0, 1.0))
         db.commit()
-        result = analysis.weather_bands(db, "LUNCH", MONDAY, MONDAY + timedelta(days=3))
+        result = analysis.weather_bands(db, "LUNCH", day, day + timedelta(weeks=2), include_off=True)
     snow = {band["key"]: band["days"] for band in result["snow"]}
     assert snow == {"snow": 1, "clear": 1}
     assert result["days"] == 3

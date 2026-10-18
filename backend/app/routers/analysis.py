@@ -103,8 +103,13 @@ def ingredient(
 
 
 @router.get("/weather")
-def weather(start: date, end: date, meal_type: str = "LUNCH", db: Session = Depends(get_db), user: User = Depends(current_user)):
-    return _run(analysis.weather_bands, db, meal_type, start, end)
+def weather(
+    start: date, end: date, meal_type: str = "LUNCH",
+    weekday: int | None = Query(default=None, ge=0, le=6),
+    period: str = "all", include_off: bool = False, station_id: str = "",
+    db: Session = Depends(get_db), user: User = Depends(current_user),
+):
+    return _run(analysis.weather_bands, db, meal_type, start, end, weekday, period, include_off, station_id)
 
 
 @router.get("/weekday")
@@ -168,6 +173,7 @@ def export_xlsx(
     weather: str = "all", mode: str = "group", names: list[str] = Query(default=[]),
     basis: str = "name", order: str = "top", limit: int = 10, min_days: int | None = None, main_only: bool = False,
     scope: str | None = None, scopes: list[str] = Query(default=[]),
+    weekday: int | None = Query(default=None, ge=0, le=6), period: str = "all", include_off: bool = False, station_id: str = "",
     db: Session = Depends(get_db), user: User = Depends(current_user),
 ):
     wb = Workbook()
@@ -209,19 +215,40 @@ def export_xlsx(
         label = f"재료별식수_{data['ingredient']['name']}"
         _sheet(wb, "재료별식수", INGREDIENT_POINT_HEADERS, _point_rows(data["points"], meal_name, with_weather=False), first=True)
     elif tab == "weather":
-        data = _run(analysis.weather_bands, db, meal_type, start, end)
+        data = _run(analysis.weather_bands, db, meal_type, start, end, weekday, period, include_off, station_id)
         label = "날씨별식수"
         summary = [
-            [group_name, band["label"], band["days"], band["avg_actual"], band["avg_usual"], band["avg_diff"], band["low_sample_note"] or ""]
-            for group_name, groups in (("강수량", data["rain"]), ("기온", data["temperature"]), ("적설", data.get("snow") or []))
+            [group_name, band["label"], band["days"], band["avg_actual"], band["avg_baseline"], band["avg_diff"], band["low_sample_note"] or ""]
+            for group_name, groups in (
+                ("강수량", data["rain"]), ("강수량 상세", data["rain_detail"]), ("직전 강수", data["pre_rain"]),
+                ("기온", data["temperature"]), ("적설", data.get("snow") or []), ("신적설", data.get("snow_new") or []),
+                ("이 시기 평균", (data.get("seasonal") or {}).get("bands") or []),
+            )
             for band in groups
         ]
-        _sheet(wb, "날씨별 요약", ["구분", "날씨", "일수", "평균 실제(명)", "평균 평소(명)", "평균 차이(명)", "참고"], summary, first=True)
+        ws = _sheet(wb, "날씨별 요약", ["구분", "날씨", "비교 일수", "평균 실제(명)", "최근 같은 요일 기준(명)", "평균 차이(명)", "참고"], summary, first=True)
+        ws.append([])
+        ws.append([data["baseline_rule"]])
+        ws.append([data["help"]])
+        if data.get("precip_note"):
+            ws.append([data["precip_note"]])
+        if data.get("holiday_notice"):
+            ws.append([data["holiday_notice"]])
         rows = []
-        for group_name, groups in (("강수량", data["rain"]), ("기온", data["temperature"]), ("적설", data.get("snow") or [])):
-            for band in groups:
-                rows += [[f"{group_name}: {band['label']}", *row] for row in _point_rows(band["points"], meal_name)]
-        _sheet(wb, "날짜 목록", ["날씨", *POINT_HEADERS], rows)
+        for point in data.get("points") or []:
+            rows.append([
+                point["date"], point["weekday"], meal_name, point["actual"],
+                point["baseline"], point["diff"], point["baseline_days"], point["baseline_weeks"] or "",
+                point.get("compare_note") or "", point.get("temp"), point.get("temp_raw"), point.get("precip_mm"),
+                point.get("snow_cm") if point.get("snow_cm") is not None else point.get("snow_partial_cm"),
+                point.get("snow_new_cm"), point.get("humidity"), point.get("wind_speed"),
+                point.get("station") or "", point.get("notes") or point.get("weather_text") or "",
+            ])
+        _sheet(
+            wb, "날짜 목록",
+            ["날짜", "요일", "배식", "실제(명)", "최근 같은 요일 기준(명)", "차이(명)", "기준 일수", "기준 주수", "비교", "기온(비교)", "기온(관측)", "강수량(mm)", "적설(cm)", "3시간 신적설(cm)", "습도", "풍속", "지점", "자료"],
+            rows,
+        )
     elif tab in ("weekday", "monthly"):
         weekly = tab == "weekday"
         data = _run(analysis.weekday_stats if weekly else analysis.monthly_stats, db, meal_type, start, end)

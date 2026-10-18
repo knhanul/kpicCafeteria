@@ -1371,11 +1371,12 @@ async function loadMasterData(){
 
 async function renderWeatherView(root){
   root.innerHTML=`<div class="weather-management">
-    <section class="narrow-card"><h2>날씨정보 관리</h2><p>일별 자료와 시간별 관측자료를 저장합니다. 시간별 자료의 11·12시는 중식, 17·18시는 석식 시간대 날씨로 함께 저장되고, 하루 20시간 이상 있는 날은 일별 자료(평균·최저·최고기온, 강수 합계, 평균습도)도 자동으로 만듭니다.</p>
+    <section class="narrow-card"><h2>날씨정보 관리</h2><p>일별 자료와 시간별 관측자료를 저장합니다. 기상자료개방포털 ASOS 시간자료는 한국시간 08:00~18:00만 저장합니다(양 끝 포함, 하루 최대 11행). 중식은 11·12시, 석식은 17·18시입니다. 그 밖의 시각은 저장하지 않습니다.</p>
       <details class="weather-format-help"><summary>지원하는 파일 형식</summary><ul>
-        <li><strong>weather.nuni.co.kr 시간별 내려받기 CSV</strong> (권장): 첫 줄 <code># source=KMA …</code> 안내행, 열 <code>observation_datetime, station_id, station_name, temperature, precipitation, humidity, wind_speed, snow_depth, source_kind</code>. 적설(snow_depth)을 넣으면 날씨별 식수의 적설 여부에 쓰입니다.</li>
+        <li><strong>ASOS 시간자료</strong>: 일시·지점·기온·강수량·적설·3시간신적설 열을 원본 레이아웃 그대로 올립니다. 08시 전과 18시 후는 제외하고 건수를 보여 줍니다. 빈 강수량·적설은 0이 아닙니다. 기온 QC 1(오류)·9(결측)은 빼고, 영하 기온은 그대로 둡니다. 헤더가 1시간강수량이면 12시·18시 값만 배식 구간 강수로 씁니다. 그냥 강수량이고 1시간인지 3시간인지 확인되지 않으면 배식 강수는 계산하지 않습니다. 3시간 신적설은 적설과 따로 둡니다.</li>
+        <li><strong>weather.nuni.co.kr 시간별 내려받기 CSV</strong>: 첫 줄 <code># source=KMA …</code>, 열 <code>observation_datetime, station_id, station_name, temperature, precipitation, humidity, wind_speed, snow_depth, source_kind</code>. 이 파일만 빈 강수·적설 칸을 0으로 둡니다. 다시 올릴 ASOS 자료가 있으면 그 시각은 갱신됩니다. 과거 0은 일괄로 지우지 않습니다.</li>
         <li>같은 시각이 <code>01:00</code>과 <code>01:00:00</code>처럼 두 번 들어 있고 값이 같으면 한 건만 저장합니다. 값이 다르면 오류로 표시합니다.</li>
-        <li>시간별 자료에서 강수량 칸이 비어 있으면 비가 오지 않은 것(0mm)으로, 적설 칸이 비어 있으면 땅에 눈이 없는 것(0cm)으로 저장합니다.</li>
+        <li>시간별 자료에서 weather.nuni 형식만 빈 강수칸을 0mm, 빈 적설칸을 0cm로 저장합니다. ASOS 공란은 결측입니다.</li>
         <li>기상청 일별 자료(일시·지점·평균기온·최저기온·최고기온·일강수량·평균상대습도·적설·일조) XLSX/XLS/CSV도 그대로 지원합니다. 기상청 일별 파일로 올린 날은 시간별 집계가 덮어쓰지 않습니다.</li>
         <li>인코딩: UTF-8(BOM 포함), CP949/EUC-KR 자동 인식 · 최대 20MB, 10만 행.</li>
         <li>같은 파일을 다시 올려도 날짜·시각·지점 기준으로 덮어쓰므로 중복 저장되지 않습니다. ‘파일 분석’만으로는 저장되지 않고 ‘DB 반영’을 눌러야 저장됩니다.</li>
@@ -1395,7 +1396,7 @@ function renderWeatherPreview(response){
   state.weatherUpload=response;const s=response.summary;const root=$('#weather-preview-result');const hourly=s.data_granularity==='hourly';const labels={observation_date:'관측일자',observation_datetime:'관측일시',station_id:'지점번호',station_name:'지점명',avg_temp:'평균기온',temperature:'기온',min_temp:'최저기온',max_temp:'최고기온',precipitation:'강수량',avg_humidity:'평균습도',humidity:'습도',snow_depth:'적설',sunshine_hours:'일조시간',wind_speed:'풍속',source_kind:'자료구분'};
   const table=hourly?`<div class="table-wrap"><table class="data-table"><thead><tr><th>행</th><th>관측일시</th><th>지점</th><th>기온</th><th>강수</th><th>습도</th><th>풍속</th><th>적설</th><th>적용 배식</th><th>상태</th><th>확인사항</th></tr></thead><tbody>${response.preview_rows.map(row=>{const hour=Number((row.observation_datetime||'').slice(11,13));const meal=[11,12].includes(hour)?'중식':[17,18].includes(hour)?'석식':'배식시간 외';return `<tr><td>${row.source_row}</td><td>${escapeHtml(row.observation_datetime||'—')}</td><td>${escapeHtml(row.station_name||row.station_id||'—')}<small class="muted"> ${escapeHtml(row.station_id||'')}</small></td><td>${weatherNumber(row.temperature,'℃')}</td><td>${weatherNumber(row.precipitation,'mm')}</td><td>${weatherNumber(row.humidity,'%')}</td><td>${weatherNumber(row.wind_speed,'m/s')}</td><td>${weatherNumber(row.snow_depth,'cm')}</td><td>${meal}</td><td><span class="badge ${row.status==='오류'?'badge-fail':row.status==='수정'?'badge-warn':row.status==='신규'?'badge-ok':'badge-inactive'}">${row.status}</span></td><td class="${row.error?'form-error':'muted'}">${escapeHtml(row.error||row.warnings.join(' · '))}</td></tr>`;}).join('')}</tbody></table></div>`:`<div class="table-wrap"><table class="data-table"><thead><tr><th>행</th><th>날짜</th><th>지점</th><th>평균</th><th>최저</th><th>최고</th><th>강수</th><th>습도</th><th>상태</th><th>확인사항</th></tr></thead><tbody>${response.preview_rows.map(row=>`<tr><td>${row.source_row}</td><td>${row.observation_date||'—'}</td><td>${escapeHtml(row.station_name||row.station_id||'—')}<small class="muted"> ${escapeHtml(row.station_id||'')}</small></td><td>${weatherNumber(row.avg_temp,'℃')}</td><td>${weatherNumber(row.min_temp,'℃')}</td><td>${weatherNumber(row.max_temp,'℃')}</td><td>${weatherNumber(row.precipitation,'mm')}</td><td>${weatherNumber(row.avg_humidity,'%')}</td><td><span class="badge ${row.status==='오류'?'badge-fail':row.status==='수정'?'badge-warn':row.status==='신규'?'badge-ok':'badge-inactive'}">${row.status}</span></td><td class="${row.error?'form-error':'muted'}">${escapeHtml(row.error||row.warnings.join(' · '))}</td></tr>`).join('')}</tbody></table></div>`;
   root.innerHTML=`<div class="result-card"><h3>파일 분석 결과</h3><div class="stats-mini"><div class="stat-mini-card"><strong>파일</strong><span>${escapeHtml(response.filename)}</span></div><div class="stat-mini-card"><strong>자료 유형</strong><span>${hourly?'시간별 관측자료':'일별 날씨자료'}</span></div><div class="stat-mini-card"><strong>기간</strong><span>${s.date_from||'—'} ~ ${s.date_to||'—'}</span></div><div class="stat-mini-card"><strong>관측지점</strong><span>${numberText(s.stations.length)}개</span></div><div class="stat-mini-card"><strong>전체/정상</strong><span>${numberText(s.total_rows)} / ${numberText(s.valid_rows)}건</span></div><div class="stat-mini-card"><strong>신규/갱신/동일</strong><span>${numberText(s.inserted_rows)} / ${numberText(s.updated_rows)} / ${numberText(s.skipped_rows)}건</span></div><div class="stat-mini-card"><strong>오류/필드 확인</strong><span>${numberText(s.error_rows)} / ${numberText(s.warning_fields)}건</span></div>${hourly?`<div class="stat-mini-card"><strong>같은 값 중복 제외</strong><span>${numberText(s.duplicate_rows||0)}건</span></div><div class="stat-mini-card"><strong>강수 빈칸 → 0mm</strong><span>${numberText(s.precipitation_blank_as_zero||0)}건</span></div><div class="stat-mini-card"><strong>일별 자료 생성 예정</strong><span>${numberText(s.daily_aggregate_days||0)}일${s.partial_days?` · ${numberText(s.partial_days)}일은 20시간 미만이라 제외`:''}</span></div>`:''}</div>${s.source_note?`<p class="muted">파일 정보: ${escapeHtml(s.source_note)}</p>`:''}
-  ${hourly?'<div class="aggregation-note">시간별 원본을 그대로 저장하며 11·12시 관측값은 중식, 17·18시 관측값은 석식 시간대 날씨로 함께 저장합니다.</div>':''}<div class="validation-result"><strong>자동 인식 컬럼</strong><div class="placeholder-list">${Object.entries(s.mapped_headers).map(([field,header])=>`<span class="placeholder-chip">${escapeHtml(header)} → ${labels[field]||field}</span>`).join('')}</div>${s.unknown_headers.length?`<p class="muted">사용하지 않은 컬럼: ${s.unknown_headers.map(escapeHtml).join(', ')}</p>`:''}</div>${table}
+  ${hourly?`<div class="aggregation-note">${s.file_format==='asos_hourly'?`ASOS 시간자료입니다. 08~18시만 저장했고 시간 범위 밖 ${numberText(s.outside_hour_rows||0)}행은 제외했습니다. 강수 간격: ${escapeHtml(s.precip_interval||'')} . 기온 결측 ${numberText(s.missing_temperature||0)}행, 강수 결측 ${numberText(s.missing_precipitation||0)}행. 배식 시간은 11·12시, 17·18시입니다. 11행만으로는 하루 일별 자료를 만들지 않습니다.`:`시간별 원본을 그대로 저장하며 11·12시 관측값은 중식, 17·18시 관측값은 석식 시간대 날씨로 함께 저장합니다.`}</div>`:''}<div class="validation-result"><strong>자동 인식 컬럼</strong><div class="placeholder-list">${Object.entries(s.mapped_headers).map(([field,header])=>`<span class="placeholder-chip">${escapeHtml(header)} → ${labels[field]||field}</span>`).join('')}</div>${s.unknown_headers.length?`<p class="muted">사용하지 않은 컬럼: ${s.unknown_headers.map(escapeHtml).join(', ')}</p>`:''}</div>${table}
   ${response.errors.length?`<div class="validation-result"><strong>오류 ${numberText(s.error_rows)}건</strong><p class="muted">오류 행은 제외하고 정상 ${numberText(s.valid_rows)}건만 반영할 수 있습니다.</p>${response.errors.slice(0,20).map(error=>`<p class="form-error">${error.row}행: ${escapeHtml(error.message)}</p>`).join('')}</div>`:''}
   <div class="save-bar"><span class="save-state">분석만으로는 자료가 저장되지 않습니다.</span><button class="primary-button" id="weather-apply" ${s.valid_rows?'':'disabled'}>DB 반영</button></div></div>`;
   $('#weather-apply')?.addEventListener('click',applyWeatherFile);
@@ -2655,7 +2656,7 @@ function analysisMonthsBack(end, months) {
 
 function analysisDefaults(){
   const end=new Date();end.setHours(12,0,0,0);
-  return {tab:'daily', start:isoDate(analysisMonthsBack(end,3)), end:isoDate(end), quickKey:'3m', mealType:'LUNCH', showWeather:false, menuMode:'group', menuItems:[], menuItemScopes:{}, menuScope:'main_dish', popScope:'main_dish', popSel:{basis:null, items:[], scopes:{}, version:0, carried:0}, ingMode:'name', ingItems:[], ingGroupFilter:'', ingGroupCatalog:null, ingRepOpen:false, ingUsageMode:'group', ingUsageItems:[], ingUsageFilter:'', popBasis:'name', popOrder:'top', popLimit:10, popMinDays:ANALYSIS_MIN_DAYS.LUNCH, weatherFilter:'all', showDetail:false, result:null, query:null, band:null};
+  return {tab:'daily', start:isoDate(analysisMonthsBack(end,3)), end:isoDate(end), quickKey:'3m', mealType:'LUNCH', showWeather:false, menuMode:'group', menuItems:[], menuItemScopes:{}, menuScope:'main_dish', popScope:'main_dish', popSel:{basis:null, items:[], scopes:{}, version:0, carried:0}, ingMode:'name', ingItems:[], ingGroupFilter:'', ingGroupCatalog:null, ingRepOpen:false, ingUsageMode:'group', ingUsageItems:[], ingUsageFilter:'', popBasis:'name', popOrder:'top', popLimit:10, popMinDays:ANALYSIS_MIN_DAYS.LUNCH, weatherFilter:'all', weatherWeekday:'', weatherPeriod:'all', weatherIncludeOff:false, weatherStation:'', weatherSort:'date', showDetail:false, result:null, query:null, band:null};
 }
 
 function analysisState(){ if(!state.analysis) state.analysis=analysisDefaults(); return state.analysis; }
@@ -2672,7 +2673,7 @@ function initAnalysis(){
 }
 
 // 탭마다 조회 조건과 결과를 따로 보관해서, 다른 탭에 다녀와도 다시 조회하지 않고 그대로 보여줍니다.
-const ANALYSIS_TAB_KEYS=['start','end','mealType','showWeather','weatherFilter','result','query','band','popMinDays','quickKey','showDetail'];
+const ANALYSIS_TAB_KEYS=['start','end','mealType','showWeather','weatherFilter','weatherWeekday','weatherPeriod','weatherIncludeOff','weatherStation','weatherSort','result','query','band','popMinDays','quickKey','showDetail'];
 function switchAnalysisTab(tab){
   const a=analysisState();
   if(a.tab===tab) return;
@@ -2737,6 +2738,13 @@ function getAnalysisConditionSummary(a){
       if (a.ingUsageItems.length === 1) parts.push(a.ingUsageItems[0]);
       else parts.push(`${a.ingUsageItems[0]} 외 ${a.ingUsageItems.length - 1}개`);
     }
+  } else if (a.tab === 'weather') {
+    const weekName = ['월','화','수','목','금','토','일'][Number(a.weatherWeekday)];
+    if (a.weatherWeekday !== '' && weekName) parts.push(weekName);
+    if (a.weatherPeriod && a.weatherPeriod !== 'all') {
+      parts.push(a.weatherPeriod.startsWith('m') ? `${Number(a.weatherPeriod.slice(1))}월` : ({spring:'봄',summer:'여름',autumn:'가을',winter:'겨울'}[a.weatherPeriod] || a.weatherPeriod));
+    }
+    parts.push(a.weatherIncludeOff ? '주말·공휴일 포함' : '평일');
   }
 
   return parts.filter(Boolean).join(' · ');
@@ -2968,15 +2976,20 @@ function renderAnalysisConditions(){
       </div>
     `;
   } else if (a.tab === 'weather') {
+    const weekOpts = [['','전체 요일'],['0','월'],['1','화'],['2','수'],['3','목'],['4','금'],['5','토'],['6','일']];
+    const periodOpts = [['all','전체 시기'],['spring','봄'],['summer','여름'],['autumn','가을'],['winter','겨울'], ...Array.from({length:12},(_,i)=>[`m${i+1}`,`${i+1}월`])];
     contentHtml = `
       <div class="an-groups cols-2">
         ${periodGroup(false)}
         <div class="an-group">
-          <div class="an-group-title">🍽️ 기본 조건</div>
+          <div class="an-group-title">🍽️ 날씨 조건</div>
           <div class="an-group-body">
             <div class="an-item"><span class="an-label">배식</span><div class="an-seg">${seg('meal',[['LUNCH','중식','중식 식수'],['DINNER','석식','석식 식수']],a.mealType)}</div></div>
+            <div class="an-item"><span class="an-label">요일</span><select id="an-wx-weekday">${weekOpts.map(([k,v])=>`<option value="${k}" ${String(a.weatherWeekday)===k?'selected':''}>${v}</option>`).join('')}</select></div>
+            <div class="an-item"><span class="an-label">시기</span><select id="an-wx-period">${periodOpts.map(([k,v])=>`<option value="${k}" ${a.weatherPeriod===k?'selected':''}>${v}</option>`).join('')}</select></div>
+            <div class="an-item"><label><input id="an-wx-off" type="checkbox" ${a.weatherIncludeOff?'checked':''}> 주말·공휴일 포함</label></div>
             <div class="an-item">
-              <span class="muted" style="font-size:12px;padding-left:2px">강수량, 기온, 적설 여부</span>
+              <span class="muted" style="font-size:12px">기본은 평일입니다. 비교는 최근 같은 요일 평균입니다.</span>
               <button type="button" class="primary-button an-query" id="an-query" style="margin-left:auto" title="${escapeHtml(summaryText)}">조회</button>
             </div>
           </div>
@@ -3107,6 +3120,9 @@ function renderAnalysisConditions(){
   segBind('menu-scope',v=>{a.menuScope=v;a.menuItemScopes=Object.fromEntries(a.menuItems.map(n=>[n,v]));$('#an-search-list')?.classList.add('hidden');renderAnalysisConditions();});
   $$('[data-remove-chip]',root).forEach(b=>b.addEventListener('click',()=>{const [gone]=a[pk.itemsKey].splice(Number(b.dataset.removeChip),1);if(a.tab==='menu'&&a.menuItemScopes)delete a.menuItemScopes[gone];renderAnalysisConditions();}));
   $('#an-weather-filter')?.addEventListener('change',e=>{a.weatherFilter=e.target.value;updateAnalysisConditionSummary(root);});
+  $('#an-wx-weekday')?.addEventListener('change',e=>{a.weatherWeekday=e.target.value;updateAnalysisConditionSummary(root);});
+  $('#an-wx-period')?.addEventListener('change',e=>{a.weatherPeriod=e.target.value;updateAnalysisConditionSummary(root);});
+  $('#an-wx-off')?.addEventListener('change',e=>{a.weatherIncludeOff=e.target.checked;updateAnalysisConditionSummary(root);});
   $('#an-show-weather')?.addEventListener('change',e=>{a.showWeather=e.target.checked;updateAnalysisConditionSummary(root);if(a.result)renderAnalysisResult();});
   $('#an-query').addEventListener('click',runAnalysisQuery);
   if((a.tab==='ingredient' && a.ingMode==='group') || a.tab==='ing-usage') bindRepIngredientList();
@@ -3215,6 +3231,12 @@ function analysisQueryParams(){
   if(a.tab==='popular'){ const md=Number(a.popMinDays); if(!Number.isInteger(md)||md<1||md>365) throw new Error('최소 등장 횟수는 1~365 사이로 입력해 주세요.'); Object.assign(params,{basis:a.popBasis,order:a.popOrder,limit:a.popLimit,min_days:md,scope:a.popScope}); }
   if(a.tab==='ingredient'){ if(!a.ingItems.length) throw new Error('목록에서 재료를 하나 이상 골라 주세요.'); params.mode=a.ingMode; params.names=[...a.ingItems]; }
   if(a.tab==='ing-usage'){ if(!(a.ingUsageItems||[]).length) throw new Error('목록에서 대표 재료명을 하나 이상 골라 주세요.'); params.names=[...a.ingUsageItems]; }
+  if(a.tab==='weather'){
+    if(a.weatherWeekday!=='' && a.weatherWeekday!==null && a.weatherWeekday!==undefined) params.weekday=a.weatherWeekday;
+    params.period=a.weatherPeriod||'all';
+    params.include_off=a.weatherIncludeOff?'true':'false';
+    if(a.weatherStation) params.station_id=a.weatherStation;
+  }
   return params;
 }
 function analysisSearchParams(params){ const sp=new URLSearchParams(); Object.entries(params).forEach(([k,v])=>{ if(Array.isArray(v)) v.forEach(x=>sp.append(k,x)); else sp.append(k,v); }); return sp; }
@@ -3237,9 +3259,10 @@ async function runAnalysisQuery(){
 
 function analysisDiffText(diff){ if(diff===null||diff===undefined) return '—'; if(diff>0) return `${numberText(diff)}명 많음`; if(diff<0) return `${numberText(-diff)}명 적음`; return '같음'; }
 function analysisDiffClass(diff){ return diff>0?'an-more':diff<0?'an-less':''; }
-function analysisWeatherIcon(w){ if(!w) return ''; if(w.is_rain) return (w.temp!==null&&w.temp<=1)?'🌨':'🌧'; return ''; }
+function analysisWeatherIcon(w){ if(!w) return ''; if(w.is_snow) return '🌨'; if(w.is_rain) return '🌧'; return ''; }
 function analysisTempClass(t){ if(t===null||t===undefined) return ''; if(t>=28) return 'an-hot'; if(t<0) return 'an-cold'; return ''; }
 function analysisNum(v){ return v===null||v===undefined?'—':numberText(v); }
+function analysisPeople(v){ if(v===null||v===undefined||v==='') return '—'; return Math.round(Number(v)).toLocaleString('ko-KR'); }
 
 function renderAnalysisResult(){
   const a=analysisState();const root=$('#analysis-result');if(!root)return;
@@ -3536,34 +3559,140 @@ function drawAnalysisMultiChart(container, r, {showWeather=false, onClick}={}){
 
 function renderAnalysisWeather(root, r){
   const a=analysisState();
-  const section=(key,title,bands,{keepEmpty=false}={})=>{
-    const visible=keepEmpty?bands:bands.filter(b=>b.days>0);
+  const diffText=value=>{
+    if(value===null||value===undefined) return '—';
+    const n=Math.round(Number(value));
+    if(n>0) return `${n.toLocaleString('ko-KR')}명 많음`;
+    if(n<0) return `${(-n).toLocaleString('ko-KR')}명 적음`;
+    return '같음';
+  };
+  const section=(key,title,bands,{keepEmpty=false,extra=''}={})=>{
+    const visible=keepEmpty?bands:bands.filter(b=>b.days>0||(b.uncompared||[]).length);
     if(!visible.length) return '';
     const maxAbs=Math.max(5,...visible.map(b=>Math.abs(b.avg_diff||0)));
-    const bars=visible.map(b=>{const has=b.days>0&&b.avg_diff!==null;const pct=has?Math.abs(b.avg_diff)/maxAbs*50:0;
-      const parts=String(b.label).split(' · ');
-      const range=parts.length>1?parts.slice(1).join(' · '):'';
-      return `<button type="button" class="an-bar-row ${a.band===`${key}:${b.key}`?'active':''}" data-band="${key}:${b.key}" ${b.days?'':'disabled'}>
-        <span class="an-bar-label">${escapeHtml(parts[0])}<small>${range?`${escapeHtml(range)} · `:''}${numberText(b.days)}일</small></span>
+    const bars=visible.map(b=>{
+      const has=b.days>0&&b.avg_diff!==null&&b.avg_diff!==undefined;
+      const pct=has?Math.abs(b.avg_diff)/maxAbs*50:0;
+      const openable=b.days>0||(b.uncompared||[]).length>0;
+      return `<button type="button" class="an-bar-row ${a.band===`${key}:${b.key}`?'active':''}" data-band="${key}:${b.key}" ${openable?'':'disabled'}>
+        <span class="an-bar-label">${escapeHtml(b.label)}${b.hint?`<small>${escapeHtml(b.hint)}</small>`:''}<small>${numberText(b.days)}일</small></span>
         <span class="an-bar-track"><span class="an-bar-zero"></span>${has?`<span class="an-bar ${b.avg_diff>=0?'pos':'neg'}" style="${b.avg_diff>=0?`left:50%;width:${pct}%`:`right:50%;width:${pct}%`}"></span>`:''}</span>
-        <span class="an-bar-value ${analysisDiffClass(b.avg_diff)}">${has?(b.avg_diff===0?'평소와 같음':`평소보다 ${analysisDiffText(b.avg_diff)}`):'0일'}</span></button>`;}).join('');
-    const rows=visible.map(b=>`<tr data-band="${key}:${b.key}" class="${b.days?'':'an-row-empty'}"><td>${escapeHtml(b.label)}</td><td class="num">${numberText(b.days)}일</td><td class="num">${b.days?analysisNum(b.avg_actual)+'명':'—'}</td><td class="num">${b.days?analysisNum(b.avg_usual)+'명':'—'}</td><td class="num ${analysisDiffClass(b.avg_diff)}">${b.days?analysisDiffText(b.avg_diff):'—'}</td><td>${b.low_sample_note?`<span class="an-note-inline">${escapeHtml(b.low_sample_note)}</span>`:''}</td></tr>`).join('');
+        <span class="an-bar-value ${analysisDiffClass(b.avg_diff)}">${has?(Math.round(b.avg_diff)===0?'기준과 같음':`기준보다 ${diffText(b.avg_diff)}`):'—'}</span></button>`;
+    }).join('');
+    const rows=visible.map(b=>`<tr data-band="${key}:${b.key}" class="${b.days?'':'an-row-empty'}"><td>${escapeHtml(b.label)}${b.hint?` <small class="muted">${escapeHtml(b.hint)}</small>`:''}</td><td class="num">${numberText(b.days)}일</td><td class="num">${b.days?analysisPeople(b.avg_actual)+'명':'—'}</td><td class="num">${b.days?analysisPeople(b.avg_baseline)+'명':'—'}</td><td class="num ${analysisDiffClass(b.avg_diff)}">${b.days?diffText(b.avg_diff):'—'}</td><td>${b.low_sample_note?`<span class="an-note-inline">${escapeHtml(b.low_sample_note)}</span>`:''}</td></tr>`).join('');
     return `<div class="an-card"><div class="an-card-head"><h3>${title}</h3></div>
       <div class="an-bars">${bars}</div>
-      <div class="table-wrap"><table class="data-table an-table"><thead><tr><th>구분</th><th class="num">일수</th><th class="num">평균 실제</th><th class="num">평균 평소</th><th class="num">평균 차이(명)</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+      <div class="table-wrap"><table class="data-table an-table"><thead><tr><th>구분</th><th class="num">비교 일수</th><th class="num">평균 실제</th><th class="num">평균 기준</th><th class="num">평균 차이</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>${extra}</div>`;
   };
+  const counts=r.counts||{};
+  const station=r.station;
+  const stationChoices=r.stations||[];
+  const stationHtml=stationChoices.length>1
+    ? `<label class="an-item"><span class="an-label">관측지점</span><select id="an-wx-station">${stationChoices.map(item=>`<option value="${escapeHtml(item.station_id)}" ${station&&item.station_id===station.station_id?'selected':''}>${escapeHtml(item.station_name||item.station_id)} · ${numberText(item.days)}일</option>`).join('')}</select></label>`
+    : (station?`<span>관측지점 ${escapeHtml(station.station_name||station.station_id)}</span>`:'');
+  const rainExtra=`<details class="an-fold"><summary>강수량 상세 · 식사 직전</summary>
+      <p class="an-sub">상세 구간은 초기 분석용이며 공식 약한 비·강한 비 기준이 아닙니다. 배식 구간은 1시간, 직전은 2시간이라 같은 강도처럼 보지 않습니다.</p>
+      ${(r.rain_detail||[]).map(b=>`<p>${escapeHtml(b.label)} ${numberText(b.days)}일 · 평균 실제 ${b.days?analysisPeople(b.avg_actual)+'명':'—'} · 기준 ${b.days?analysisPeople(b.avg_baseline)+'명':'—'} · ${b.days?diffText(b.avg_diff):'—'}${b.low_sample_note?` · ${escapeHtml(b.low_sample_note)}`:''}</p>`).join('')}
+      <p class="an-sub">식사 직전 강수는 시점만 나눠 보는 참고입니다. 왜 식수가 달라졌는지는 말하지 않습니다. 한쪽이 비어 있으면 없음으로 넣지 않습니다.</p>
+      ${(r.pre_rain||[]).some(b=>b.days)?(r.pre_rain||[]).map(b=>`<p>${escapeHtml(b.label)} ${numberText(b.days)}일 · ${b.days?diffText(b.avg_diff):'—'}</p>`).join(''):'<p class="muted">직전과 배식 구간이 모두 확인된 날이 없습니다.</p>'}
+    </details>`;
+  const tempExtra=`<details class="an-fold"><summary>기온과 식수 차이</summary>
+      <p class="an-sub">점은 날짜입니다. 색은 측정 강수량이 있는 날입니다. 회귀선이나 예측은 그리지 않습니다. 같은 기온 구간에도 시기·메뉴 차이가 남아 있습니다.</p>
+      <div class="an-chart" id="an-wx-scatter"></div>
+    </details>`;
+  const snowNew=(r.snow_new||[]);
+  const snowExtra=snowNew.length?`<details class="an-fold"><summary>최근 3시간 신적설</summary>
+      <p class="an-sub">배식 종료 시각에 적힌 3시간 신적설입니다. 그 1시간에 내린 눈이 아니고, 쌓인 눈(적설)과 더하지 않습니다.</p>
+      ${snowNew.map(b=>`<p>${escapeHtml(b.label)} ${numberText(b.days)}일 · 평균 실제 ${b.days?analysisPeople(b.avg_actual)+'명':'—'} · ${b.days?diffText(b.avg_diff):'—'}${b.low_sample_note?` · ${escapeHtml(b.low_sample_note)}`:''}</p>`).join('')}
+    </details>`:'';
   const snow=r.snow||[];
-  const snowDays=snow.reduce((sum,b)=>sum+(b.days||0),0);
-  const snowHtml=snowDays?section('snow','적설 여부',snow,{keepEmpty:true}):`<div class="an-card"><div class="an-card-head"><h3>적설 여부</h3></div><div class="an-empty">이 기간에는 적설 자료가 없습니다. 기상청 시간 자료에 적설(snow_depth)을 넣어 다시 올려 주세요.</div></div>`;
-  const groups=[...(r.rain||[]).map(b=>({...b,group:'rain'})),...(r.temperature||[]).map(b=>({...b,group:'temp'})),...snow.map(b=>({...b,group:'snow'}))];
-  const selected=a.band?groups.find(b=>`${b.group}:${b.key}`===a.band&&b.days):null;
+  const snowKnown=snow.some(b=>b.days>0||(b.uncompared||[]).length);
+  const snowHtml=snowKnown?section('snow','적설',snow,{keepEmpty:true,extra:snowExtra}):`<div class="an-card"><div class="an-card-head"><h3>적설</h3></div><div class="an-empty">배식 시각의 적설이 두 시각 모두 있는 날이 없습니다. 부분 관측은 평균에 넣지 않습니다.</div></div>`;
+  const seasonal=r.seasonal||{};
+  const seasonalHtml=seasonal.active
+    ? section('season','이 시기 평균보다',seasonal.bands||[],{keepEmpty:true,extra:`<p class="an-sub">${escapeHtml(seasonal.reason||'')}</p>`})
+    : `<div class="an-card"><div class="an-card-head"><h3>이 시기 평균보다</h3></div><p class="an-sub">${escapeHtml(seasonal.reason||'장기 기온 자료가 없어 이 카드는 꺼져 있습니다.')}</p></div>`;
+  const groups=[...(r.rain||[]).map(b=>({...b,group:'rain'})),...(r.temperature||[]).map(b=>({...b,group:'temp'})),...snow.map(b=>({...b,group:'snow'})),...((seasonal.bands)||[]).map(b=>({...b,group:'season'}))];
+  const selected=a.band?groups.find(b=>`${b.group}:${b.key}`===a.band):null;
+  const listed=(selected?[...(selected.points||[]),...(selected.uncompared||[])]:(r.points||[])).slice();
+  listed.sort((p,q)=>{
+    if(a.weatherSort==='diff'){
+      if(p.diff===null&&q.diff===null) return p.date<q.date?-1:1;
+      if(p.diff===null) return 1;
+      if(q.diff===null) return -1;
+      return q.diff-p.diff || p.date.localeCompare(q.date);
+    }
+    return p.date<q.date?-1:1;
+  });
+  const dateRows=listed.map(p=>`<tr data-an-date="${p.date}" tabindex="0" title="${escapeHtml([p.temp!=null?`기온 ${p.temp}℃`:'', p.baseline_exact!=null?`기준 ${p.baseline_exact}`:'', p.notes||''].filter(Boolean).join(' · '))}">
+      <td>${p.date} (${escapeHtml(p.weekday)})</td>
+      <td class="num">${numberText(p.actual)}명</td>
+      <td class="num">${p.baseline===null?'—':analysisPeople(p.baseline)+'명'}</td>
+      <td class="num ${analysisDiffClass(p.diff)}">${p.diff===null?escapeHtml(p.compare_note||'비교 자료 부족'):diffText(p.diff)}</td>
+      <td class="num">${p.baseline_weeks?`${p.baseline_days}일/${p.baseline_weeks}주`:'—'}</td>
+      <td class="num">${p.temp===null||p.temp===undefined?'—':numberText(p.temp)+'℃'}</td>
+      <td class="num">${p.precip_mm===null||p.precip_mm===undefined?'—':numberText(p.precip_mm)+'mm'}</td>
+      <td class="num">${p.snow_cm===null||p.snow_cm===undefined?(p.snow_partial_cm!=null?numberText(p.snow_partial_cm)+'cm 부분':'—'):numberText(p.snow_cm)+'cm'}</td>
+      <td class="num">${p.snow_new_cm===null||p.snow_new_cm===undefined?'—':numberText(p.snow_new_cm)+'cm'}</td>
+      <td>${escapeHtml(p.notes||'')}</td></tr>`).join('');
   root.innerHTML=`<div class="an-card an-card-plain"><div class="an-card-head"><h3>날씨별 식수 · ${escapeHtml(r.meal_type_name)} · ${escapeHtml(r.start)} ~ ${escapeHtml(r.end)}</h3><button type="button" class="secondary-button" data-an-download>Excel 내려받기</button></div>
-      <p class="an-sub">${escapeHtml(r.meal_type_name)} 배식시간(${escapeHtml(r.weather_window)}) 기준입니다. 강수량은 그 시간 합계, 기온은 평균, 적설은 그 시간 최댓값입니다. 날씨 자료와 평소 식수가 모두 있는 ${numberText(r.days)}일만 셉니다. 더운 날과 추운 날은 정도별로 나누고, 기온은 0일인 구간을 숨깁니다. 막대나 표를 누르면 해당 날짜가 보여요.</p></div>
-    <div class="an-weather-grid">${section('rain','강수량',r.rain,{keepEmpty:true})}${section('temp','기온',r.temperature)}${snowHtml}</div>
-    <div id="an-band-dates">${selected?`<div class="an-card"><div class="an-card-head"><h3>${escapeHtml(selected.label)} · ${numberText(selected.days)}일</h3></div>${selected.low_sample_note?`<div class="an-note">${escapeHtml(selected.low_sample_note)}</div>`:''}${analysisTableHtml(selected.points,true,false)}</div>`:''}</div>`;
-  $$('[data-band]',root).forEach(el=>el.addEventListener('click',()=>{if(el.disabled)return;a.band=el.dataset.band;renderAnalysisWeather(root,r);$('#an-band-dates')?.scrollIntoView({behavior:'smooth',block:'start'});}));
+      <p class="an-sub">${escapeHtml(r.meal_type_name)} ${escapeHtml(r.weather_window)} · ${escapeHtml(r.period_name||'전체')} · ${r.include_off?'주말·공휴일 포함':'평일만'}. 비교 기준은 ${escapeHtml(r.baseline_name||'최근 같은 요일 평균')}입니다. 08~18시 자료이며 하루 전체가 아닙니다.</p>
+      <p class="an-wx-meta"><span>식수 ${numberText(counts.meal_days||r.days)}일</span><span>기온 비교 ${numberText(counts.temp_days||0)}일</span><span>강수 비교 ${numberText(counts.precip_days||0)}일</span><span>적설 비교 ${numberText(counts.snow_days||0)}일</span><span>신적설 비교 ${numberText(counts.snow_new_days||0)}일</span><span>기준 부족 ${numberText(counts.baseline_missing||0)}일</span><span>강수 확인 불가 ${numberText(counts.precip_unavailable||0)}일</span>${stationHtml}</p>
+      <p class="an-sub">${escapeHtml(r.baseline_rule||'')}</p>
+      <p class="an-sub">${escapeHtml(r.help||'')} 같은 기온 구간에도 시기와 메뉴 차이가 남아 있습니다.</p>
+      ${r.holiday_notice?`<div class="an-note">${escapeHtml(r.holiday_notice)}</div>`:''}
+      ${r.precip_note?`<div class="an-note">${escapeHtml(r.precip_note)}</div>`:''}
+    </div>
+    <div class="an-weather-grid">${section('rain','측정 강수량',r.rain||[],{keepEmpty:true,extra:rainExtra})}${section('temp','기온',r.temperature||[],{extra:tempExtra})}${snowHtml}${seasonalHtml}</div>
+    <div id="an-band-dates"><div class="an-card"><div class="an-card-head"><h3>${selected?escapeHtml(selected.label):'날짜 목록'} · ${numberText(listed.length)}일</h3>
+        <span><button type="button" class="ghost-button" data-wx-sort="date">날짜순</button><button type="button" class="ghost-button" data-wx-sort="diff">차이순</button></span></div>
+      ${selected&&selected.low_sample_note?`<div class="an-note">${escapeHtml(selected.low_sample_note)}</div>`:''}
+      <div class="an-chart" id="an-wx-trend"></div>
+      <div class="table-wrap an-table-wrap"><table class="data-table an-table"><thead><tr><th>날짜</th><th class="num">실제</th><th class="num">같은 요일 기준</th><th class="num">차이</th><th class="num">기준</th><th class="num">기온</th><th class="num">강수</th><th class="num">적설</th><th class="num">3시간 신적설</th><th>상태</th></tr></thead><tbody>${dateRows||'<tr><td colspan="10" class="muted">날짜가 없습니다.</td></tr>'}</tbody></table></div></div></div>`;
+  drawWeatherTrend($('#an-wx-trend'), listed.filter(p=>p.diff!==null).slice().sort((p,q)=>p.date<q.date?-1:1));
+  drawWeatherScatter($('#an-wx-scatter'), r.scatter||[]);
+  $$('[data-band]',root).forEach(el=>el.addEventListener('click',()=>{if(el.disabled)return;a.band=a.band===el.dataset.band?null:el.dataset.band;renderAnalysisWeather(root,r);$('#an-band-dates')?.scrollIntoView({behavior:'smooth',block:'start'});}));
+  $$('[data-wx-sort]',root).forEach(el=>el.addEventListener('click',()=>{a.weatherSort=el.dataset.wxSort;renderAnalysisWeather(root,r);}));
+  $('#an-wx-station')?.addEventListener('change',e=>{a.weatherStation=e.target.value;runAnalysisQuery();});
   bindAnalysisTable(root);
 }
+
+function drawWeatherTrend(container, points){
+  if(!container) return;
+  const rows=points.filter(p=>p.actual!==null&&p.actual!==undefined);
+  if(rows.length<2){ container.innerHTML='<p class="muted">추이로 볼 날짜가 2일 미만입니다.</p>'; return; }
+  const width=Math.max(560,container.clientWidth||960), top=18, bottom=36, left=52, right=16, height=240;
+  const plotW=width-left-right, plotH=height-top-bottom;
+  const values=rows.flatMap(p=>[p.actual, p.baseline].filter(v=>v!==null&&v!==undefined));
+  const {lo,hi,ticks}=analysisNiceTicks(Math.max(0,Math.min(...values)-10), Math.max(...values)+10);
+  const x=i=>rows.length>1?left+(i/(rows.length-1))*plotW:left+plotW/2;
+  const y=v=>top+plotH-(v-lo)/(hi-lo||1)*plotH;
+  const line=(key)=>{let d='',open=false;rows.forEach((p,i)=>{const v=p[key];if(v===null||v===undefined){open=false;return;}d+=`${open?'L':'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`;open=true;});return d;};
+  const grid=ticks.map(t=>`<line x1="${left}" x2="${width-right}" y1="${y(t)}" y2="${y(t)}" class="an-grid"/><text x="${left-8}" y="${y(t)+4}" class="an-axis" text-anchor="end">${analysisPeople(t)}</text>`).join('');
+  container.innerHTML=`<svg class="an-svg" viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="실제 식수와 최근 같은 요일 기준">
+      ${grid}<path d="${line('baseline')}" class="an-line-usual"/><path d="${line('actual')}" class="an-line-actual"/>
+    </svg><p class="an-sub">실선은 실제 식수, 점선은 최근 같은 요일 기준입니다.</p>`;
+}
+
+function drawWeatherScatter(container, points){
+  if(!container) return;
+  const rows=points.filter(p=>p.temp!==null&&p.temp!==undefined&&p.diff!==null&&p.diff!==undefined);
+  if(!rows.length){ container.innerHTML='<p class="muted">기온과 기준이 모두 있는 날이 없습니다.</p>'; return; }
+  const width=Math.max(560,container.clientWidth||960), top=16, bottom=36, left=52, right=16, height=260;
+  const plotW=width-left-right, plotH=height-top-bottom;
+  const temps=rows.map(p=>p.temp), diffs=rows.map(p=>p.diff);
+  const tLo=Math.min(...temps)-1, tHi=Math.max(...temps)+1, dLo=Math.min(...diffs,-5), dHi=Math.max(...diffs,5);
+  const x=t=>left+(t-tLo)/(tHi-tLo||1)*plotW;
+  const y=d=>top+plotH-(d-dLo)/(dHi-dLo||1)*plotH;
+  const dots=rows.map(p=>`<circle cx="${x(p.temp).toFixed(1)}" cy="${y(p.diff).toFixed(1)}" r="4" fill="${p.rain?'#e46b5f':'#5b8fd6'}"><title>${p.date} · ${p.temp}℃ · ${p.diff}명</title></circle>`).join('');
+  container.innerHTML=`<svg class="an-svg" viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="기온과 식수 차이 산점도">
+      <line x1="${left}" x2="${width-right}" y1="${y(0)}" y2="${y(0)}" class="an-baseline"/>
+      <text x="${left}" y="${height-8}" class="an-axis">기온</text><text x="8" y="${top}" class="an-axis">차이</text>
+      ${dots}
+    </svg><p class="an-sub"><span style="color:#e46b5f">●</span> 측정 강수량 있음 <span style="color:#5b8fd6">●</span> 측정 강수량 없음</p>`;
+}
+
+// 요일별·월별 식수: 막대는 평균 실제 식수(명), 표에 평균 평소와 차이. 막대나 행을 누르면 그 묶음의 날짜 목록을 보여줍니다.
 
 // 요일별·월별 식수: 막대는 평균 실제 식수(명), 표에 평균 평소와 차이. 막대나 행을 누르면 그 묶음의 날짜 목록을 보여줍니다.
 function analysisGroupValue(group, key){
