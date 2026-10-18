@@ -5,9 +5,11 @@ import io
 import secrets
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
+from openpyxl import Workbook
 from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -24,6 +26,7 @@ from ..weather_import import (
     parse_weather_file,
     sha256_file,
 )
+from ..weather_meal_stats import meal_chart_series
 
 router = APIRouter(prefix="/api/weather", tags=["weather"])
 
@@ -221,9 +224,71 @@ def meal_period_weather_records(
             "avg_humidity": row.avg_humidity,
             "avg_wind_speed": row.avg_wind_speed,
             "snow_depth": row.snow_depth,
+            "snow_state": row.snow_state,
+            "snow_new_3h": row.snow_new_3h,
+            "snow_new_state": row.snow_new_state,
+            "precip_state": row.precip_state,
+            "precip_method": row.precip_method,
+            "pre_precip": row.pre_precip,
+            "pre_precip_state": row.pre_precip_state,
+            "temp_complete": row.temp_complete,
             "sample_count": row.sample_count,
         } for row in rows],
     }
+
+
+@router.get("/meal-chart")
+def meal_weather_chart(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    station: str = Query("", max_length=120),
+    meal_type: str = Query("LUNCH", pattern="^(LUNCH|DINNER)$"),
+    db: Session = Depends(get_db),
+    user: User = Depends(admin_user),
+):
+    return meal_chart_series(db, meal_type, start_date, end_date, station, 800)
+
+
+@router.get("/meal-chart.xlsx")
+def meal_weather_chart_xlsx(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    station: str = Query("", max_length=120),
+    meal_type: str = Query("LUNCH", pattern="^(LUNCH|DINNER)$"),
+    db: Session = Depends(get_db),
+    user: User = Depends(admin_user),
+):
+    data = meal_chart_series(db, meal_type, start_date, end_date, station, None)
+    meal_label = "중식" if data["meal_type"] == "LUNCH" else "석식"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "배식날씨"
+    sheet.append(["날짜", "배식", "지점번호", "지점명", "기온", "1시간강수", "강수해석", "직전강수", "적설", "3시간신적설", "습도", "풍속", "실제식수"])
+    for point in data["points"]:
+        sheet.append([
+            point["date"], meal_label, data["station_id"], data["station_name"],
+            point["temp"], point["precip"], point["precip_note"] or "", point["pre_precip"],
+            point["snow"], point["snow_new"], point["humidity"], point["wind"], point["headcount"],
+        ])
+    note = workbook.create_sheet("기준")
+    note.append(["항목", "내용"])
+    note.append(["기간", f"{data['date_from'] or '—'} ~ {data['date_to'] or '—'}"])
+    note.append(["배식", meal_label])
+    note.append(["지점", f"{data['station_name']} {data['station_id']}".strip()])
+    note.append(["기온", "11·12시(중식) 또는 17·18시(석식)가 둘 다 있을 때만 평균을 적습니다."])
+    note.append(["1시간강수", "4~10월의 끝 시각 값만 적습니다. 11시와 12시를 더하지 않습니다."])
+    note.append(["11~3월", "강수는 3시간 값입니다. 1시간 칸은 비우고 강수해석에 적습니다."])
+    note.append(["적설", "두 시각이 모두 있을 때만 적습니다. 3시간 신적설은 적설에 더하지 않습니다."])
+    note.append(["실제식수", "같은 날짜·배식의 실제식수입니다. 비어 있거나 0이면 칸을 비웁니다. 날씨만의 영향이 아닙니다."])
+    note.append(["기간을 비운 조회", "가장 최근 날부터 90일입니다."])
+    stream = io.BytesIO()
+    workbook.save(stream)
+    filename = f"배식날씨_{meal_label}.xlsx"
+    return Response(
+        content=stream.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=\"meal-weather.xlsx\"; filename*=UTF-8''{quote(filename)}"},
+    )
 
 
 @router.get("/records")

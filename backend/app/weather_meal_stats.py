@@ -9,7 +9,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .meal_count_analysis import (
@@ -27,7 +27,7 @@ from .meal_count_analysis import (
     low_sample_note,
     temp_band,
 )
-from .models import MealPeriodWeather
+from .models import MealActual, MealPeriodWeather, MealService
 
 SAME_WEEKDAY_WEEKS = 8
 SAME_WEEKDAY_WEEKS_MAX = 12
@@ -462,3 +462,119 @@ def _weather_line(weather: MealPeriodWeather | None, temp: float | None, precip_
     if snow_ok and weather.snow_depth is not None and weather.snow_depth > 0:
         parts.append(f"적설 {weather.snow_depth:g}cm")
     return " · ".join(parts)
+
+
+CHART_NOTE = (
+    "기온 선은 배식 두 시각이 모두 있을 때만 잇습니다. "
+    "강수 막대는 4~10월의 1시간 끝값(중식 12시, 석식 18시)만 그립니다. "
+    "11~3월 강수는 3시간 값이라 막대로 그리지 않습니다. "
+    "적설 표시는 두 시각이 모두 있을 때만입니다. "
+    "식수 선은 같은 날짜·배식의 실제식수입니다. 식수가 비어 있거나 0이면 잇지 않습니다."
+)
+
+
+def chart_point(row: MealPeriodWeather, headcount: int | None = None) -> dict:
+    note = None
+    precip = None
+    if row.precip_state == "ok" and row.precipitation is not None:
+        precip = row.precipitation
+    elif row.precip_method == "3h":
+        note = "3시간 강수라 1시간으로 표시하지 않습니다."
+    elif row.precip_state in {"legacy", "legacy_blank"}:
+        precip = row.precipitation
+        note = "기존 파일의 두 시각 합입니다. 1시간 끝값과 다릅니다."
+    elif row.precip_state == "unavailable":
+        note = "강수 시간범위를 확인하지 못해 1시간 값으로 쓰지 않습니다."
+    snow = row.snow_depth if row.snow_state in {"ok", "legacy", "legacy_blank"} and row.snow_depth is not None else None
+    return {
+        "date": row.observation_date.isoformat(),
+        "temp": row.avg_temp if row.temp_complete else None,
+        "precip": precip,
+        "precip_note": note,
+        "snow": snow,
+        "snow_new": row.snow_new_3h if row.snow_new_state == "value" else None,
+        "humidity": row.avg_humidity,
+        "wind": row.avg_wind_speed,
+        "pre_precip": row.pre_precip if row.pre_precip_state == "ok" else None,
+        "headcount": headcount,
+    }
+
+
+def meal_chart_series(
+    db: Session,
+    meal_type: str,
+    start_date: date | None,
+    end_date: date | None,
+    station: str,
+    limit: int | None,
+) -> dict:
+    meal = meal_type if meal_type in {"LUNCH", "DINNER"} else "LUNCH"
+    filters = [MealPeriodWeather.meal_type == meal]
+    station = (station or "").strip()
+    if station:
+        term = f"%{station}%"
+        filters.append(or_(MealPeriodWeather.station_id.ilike(term), MealPeriodWeather.station_name.ilike(term)))
+    if start_date is None and end_date is None:
+        latest = db.scalar(select(func.max(MealPeriodWeather.observation_date)).where(*filters))
+        if latest is not None:
+            end_date = latest
+            start_date = latest - timedelta(days=89)
+    if start_date is not None:
+        filters.append(MealPeriodWeather.observation_date >= start_date)
+    if end_date is not None:
+        filters.append(MealPeriodWeather.observation_date <= end_date)
+    picked = db.execute(
+        select(MealPeriodWeather.station_id, func.max(MealPeriodWeather.station_name), func.count())
+        .where(*filters)
+        .group_by(MealPeriodWeather.station_id)
+        .order_by(func.count().desc(), MealPeriodWeather.station_id.asc())
+    ).first()
+    empty = {
+        "meal_type": meal,
+        "station_id": "",
+        "station_name": "",
+        "date_from": start_date.isoformat() if start_date else None,
+        "date_to": end_date.isoformat() if end_date else None,
+        "total": 0,
+        "truncated": False,
+        "note": CHART_NOTE,
+        "points": [],
+    }
+    if not picked:
+        return empty
+    station_id, station_name, total = picked
+    rows = db.scalars(
+        select(MealPeriodWeather)
+        .where(*filters, MealPeriodWeather.station_id == station_id)
+        .order_by(MealPeriodWeather.observation_date.asc())
+    ).all()
+    counts: dict[date, int] = {}
+    if rows:
+        counts = {
+            day: count
+            for day, count in db.execute(
+                select(MealService.service_date, MealActual.actual_count)
+                .join(MealActual, MealActual.meal_service_id == MealService.id)
+                .where(
+                    MealService.meal_type == meal,
+                    MealService.service_date >= rows[0].observation_date,
+                    MealService.service_date <= rows[-1].observation_date,
+                    MealActual.actual_count.is_not(None),
+                    MealActual.actual_count > 0,
+                )
+            )
+        }
+    points = [chart_point(row, counts.get(row.observation_date)) for row in rows]
+    truncated = bool(limit and len(points) > limit)
+    shown = points[-limit:] if truncated else points
+    return {
+        "meal_type": meal,
+        "station_id": station_id,
+        "station_name": station_name or "",
+        "date_from": shown[0]["date"] if shown else None,
+        "date_to": shown[-1]["date"] if shown else None,
+        "total": int(total),
+        "truncated": truncated,
+        "note": CHART_NOTE,
+        "points": shown,
+    }

@@ -441,3 +441,87 @@ def test_three_hour_precip_is_not_used_as_meal_rain(tmp_path):
     assert lunch.precipitation is None
     assert lunch.precip_state == "unavailable"
     assert lunch.precip_method == "3h"
+
+
+def test_hub_full_layout_uses_seasonal_precip_and_keeps_blanks(tmp_path):
+    path = tmp_path / "weather-hourly-108.csv"
+    path.write_text(
+        "observation_datetime,station_id,station_name,temperature,precipitation,snow_depth,snow_new_3h,phenomenon_code,ta_qcflg,rn_qcflg\n"
+        "2026-01-15 7:00,108,서울,-2,,,,,,,,\n"
+        "2026-01-15 8:00,108,서울,-1.2,,,,,,,\n"
+        "2026-01-15 11:00,108,서울,0.5,0,1.0,0,,,\n"
+        "2026-01-15 12:00,108,서울,1.1,,2.0,0.4,,9\n"
+        "2026-03-02 11:00,108,서울,5,,,,,,,\n"
+        "2026-03-02 12:00,108,서울,6,4.0,,,,,\n"
+        "2026-07-15 11:00,108,서울,28,,,,,,,\n"
+        "2026-07-15 12:00,108,서울,29,2.0,,,,,\n"
+        "2026-07-15 17:00,108,서울,27,,,,,,,\n"
+        "2026-07-15 18:00,108,서울,26,0,,,,,\n",
+        encoding="utf-8",
+    )
+    engine = make_db(tmp_path)
+    with Session(engine) as db:
+        preview = parse_weather_file(path, db)
+        assert preview["summary"]["file_format"] == "hub_hourly"
+        assert preview["summary"]["precip_interval"] == "seasonal"
+        assert preview["summary"]["outside_hour_rows"] == 1
+        assert preview["summary"]["precipitation_blank_as_zero"] == 0
+        kept = {row["observation_datetime"]: row for row in preview["rows"] if not row["error"]}
+        assert "2026-01-15T07:00" not in kept
+        assert kept["2026-01-15T08:00"]["temperature"] == -1.2
+        assert kept["2026-01-15T08:00"]["precipitation"] is None
+        assert kept["2026-01-15T12:00"]["precip_interval"] == "3h"
+        assert kept["2026-01-15T12:00"]["precipitation"] is None
+        assert kept["2026-01-15T12:00"]["snow_new_3h"] == 0.4
+        assert kept["2026-03-02T12:00"]["precip_interval"] == "3h"
+        assert kept["2026-03-02T12:00"]["precipitation"] == 4.0
+        assert kept["2026-07-15T12:00"]["precip_interval"] == "1h"
+        assert kept["2026-07-15T12:00"]["precipitation"] == 2.0
+        apply_weather_file(path, db, path.name, sha256_file(path), 1, preview["summary"]["rows_fingerprint"])
+        db.commit()
+        meals = {
+            (row.observation_date.isoformat(), row.meal_type): row
+            for row in db.scalars(select(MealPeriodWeather))
+        }
+        winter = meals[("2026-01-15", "LUNCH")]
+        march = meals[("2026-03-02", "LUNCH")]
+        summer = meals[("2026-07-15", "LUNCH")]
+        dinner = meals[("2026-07-15", "DINNER")]
+        assert winter.precipitation is None and winter.precip_method == "3h"
+        assert winter.snow_depth == 2 and winter.snow_new_3h == 0.4
+        assert march.precipitation is None and march.precip_method == "3h"
+        assert summer.precipitation == 2.0 and summer.precip_method == "1h_end"
+        assert summer.avg_temp == 28.5 and summer.temp_complete is True
+        assert dinner.precipitation == 0 and dinner.precip_method == "1h_end"
+        assert db.query(WeatherHistory).count() == 0
+
+
+def test_meal_chart_joins_headcount_and_xlsx(tmp_path):
+    from app.weather_meal_stats import meal_chart_series
+
+    path = tmp_path / "weather-hourly-108.csv"
+    path.write_text(
+        "observation_datetime,station_id,station_name,temperature,precipitation,snow_depth,snow_new_3h,phenomenon_code,ta_qcflg,rn_qcflg\n"
+        "2026-07-15 11:00,108,서울,28,,,,,,,\n"
+        "2026-07-15 12:00,108,서울,30,2.0,,,,,\n"
+        "2026-07-16 11:00,108,서울,22,,,,,,,\n"
+        "2026-07-16 12:00,108,서울,24,0,,,,,\n",
+        encoding="utf-8",
+    )
+    engine = make_db(tmp_path)
+    with Session(engine) as db:
+        preview = parse_weather_file(path, db)
+        apply_weather_file(path, db, path.name, sha256_file(path), 1, preview["summary"]["rows_fingerprint"])
+        service = MealService(service_date=date(2026, 7, 15), meal_type="LUNCH", planned_count=0)
+        db.add(service)
+        db.flush()
+        db.add(MealActual(meal_service_id=service.id, actual_count=412))
+        db.commit()
+        chart = meal_chart_series(db, "LUNCH", date(2026, 7, 15), date(2026, 7, 16), "108", 800)
+    by_date = {point["date"]: point for point in chart["points"]}
+    assert by_date["2026-07-15"]["temp"] == 29
+    assert by_date["2026-07-15"]["precip"] == 2.0
+    assert by_date["2026-07-15"]["headcount"] == 412
+    assert by_date["2026-07-16"]["precip"] == 0
+    assert by_date["2026-07-16"]["headcount"] is None
+
