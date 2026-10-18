@@ -213,12 +213,12 @@ label.field input[type="checkbox"]{width:auto;margin:0}
 .weather-chart svg{display:block;width:100%;height:auto}
 .weather-chart-tip{position:absolute;background:#14263a;color:#fff;border-radius:10px;padding:8px 11px;font-size:12px;line-height:1.5;pointer-events:none;display:grid;gap:2px;white-space:nowrap;box-shadow:0 8px 20px rgba(0,0,0,.2);z-index:5}
 .weather-chart-tip.hidden{display:none}
-.weather-legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:#29445c;margin:8px 2px}
-.weather-legend i{display:inline-block;width:18px;height:0;border-top:3px solid;margin-right:5px;vertical-align:middle}
-.lg-temp{border-color:#e06a4f}
-.lg-count{border-color:#0b7a58;border-top-style:dashed}
-.lg-rain{width:10px;height:10px;border:0;background:#5aa0d6;border-radius:2px;vertical-align:middle}
-.lg-snow{width:9px;height:9px;border:2px solid #1d4f78;border-radius:50%;background:#fff;vertical-align:middle}
+.weather-legend{display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:12px;color:#29445c;margin:8px 2px}
+.weather-legend i{display:inline-block;width:22px;margin-right:6px;vertical-align:middle;box-sizing:border-box}
+.weather-legend .lg-temp{height:0;border-top:3px solid #e06a4f}
+.weather-legend .lg-count{height:0;border-top:2px dashed #0b7a58}
+.weather-legend .lg-rain{width:10px;height:12px;border-radius:2px;background:#5aa0d6}
+.weather-legend .lg-snow{width:10px;height:10px;border:2px solid #1d4f78;border-radius:50%;background:#fff}
 
 /* ==================== 발주 관리 ==================== */
 .orders-toolbar{display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin-bottom:12px}
