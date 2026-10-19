@@ -156,7 +156,11 @@
       <div class="page-card">
         <div class="section-heading">
           <div><h2>시스템 데이터 백업</h2><p>현재 구내식당 시스템의 모든 업무 데이터를 백업파일로 저장합니다. 문제가 발생했을 때 시스템 데이터를 복구하는 데 사용할 수 있으므로 정기적으로 별도 저장장치에 보관하는 것을 권장합니다.</p></div>
-          <button class="primary-button" id="create-backup-btn">지금 백업</button>
+          <div class="archive-controls">
+            <button class="primary-button" id="create-backup-btn">지금 백업</button>
+            <button class="ghost-button" id="restore-upload-btn">백업파일로 복원</button>
+            <input type="file" id="restore-upload-input" accept=".db,.sqlite,.sqlite3,.dump" hidden>
+          </div>
         </div>
         <div id="backup-root"></div>
       </div>

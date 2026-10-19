@@ -18,6 +18,7 @@ from ..deps import admin_user, current_user
 from ..importer import MigrationImporter
 from .admin import create_backup
 from ..models import ImportJob, MealActual, MealService, User
+from ..storage_resolver import import_job_file
 
 router = APIRouter(prefix="/api/setup", tags=["setup"])
 
@@ -94,7 +95,7 @@ def _run_migration_import_inner(token: str, mode: str, user_id: int, progress) -
         if not job or job.status != "PROCESSING":
             return
         try:
-            result = MigrationImporter(Path(job.storage_path)).apply(db, mode=mode, user_id=user_id, progress=progress)
+            result = MigrationImporter(import_job_file(job.storage_path)).apply(db, mode=mode, user_id=user_id, progress=progress)
             job = db.scalar(select(ImportJob).where(ImportJob.token == token))
             if job:
                 job.status = "COMPLETED"
@@ -213,7 +214,7 @@ def apply_actual_meals_upload(
         created_at = created_at.replace(tzinfo=timezone.utc)
     if created_at and datetime.now(timezone.utc) - created_at > timedelta(minutes=30):
         raise HTTPException(status_code=400, detail="Preview가 만료되었습니다. 파일을 다시 검증해 주세요.")
-    source = Path(job.storage_path)
+    source = import_job_file(job.storage_path)
     if not source.is_file() or sha256_file(source) != (job.summary or {}).get("file_sha256"):
         raise HTTPException(status_code=400, detail="Preview 이후 업로드 파일이 변경되었거나 삭제되었습니다.")
     try:

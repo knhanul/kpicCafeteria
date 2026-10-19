@@ -17,6 +17,7 @@ from ..db import get_db
 from ..deps import current_user
 from ..hwpx_service import HwpxTemplateError, validate_hwpx
 from ..models import DocumentTemplate, MealTypeSetting, User
+from ..storage_resolver import document_template_file
 
 router = APIRouter(prefix="/api/master-data", tags=["master-data"])
 
@@ -196,7 +197,7 @@ def validate_template(
     row = db.get(DocumentTemplate, template_id)
     if not row:
         raise HTTPException(status_code=404, detail="템플릿을 찾을 수 없습니다.")
-    path = Path(row.storage_path)
+    path = document_template_file(row)
     if not path.exists():
         row.is_valid = False
         row.validation_message = "파일이 존재하지 않습니다."
@@ -223,7 +224,7 @@ def activate_template(
     row = db.get(DocumentTemplate, template_id)
     if not row:
         raise HTTPException(status_code=404, detail="템플릿을 찾을 수 없습니다.")
-    path = Path(row.storage_path)
+    path = document_template_file(row)
     if not path.exists():
         raise HTTPException(status_code=400, detail="템플릿 파일이 존재하지 않습니다.")
     try:
@@ -263,7 +264,7 @@ def download_template(
     row = db.get(DocumentTemplate, template_id)
     if not row:
         raise HTTPException(status_code=404, detail="템플릿을 찾을 수 없습니다.")
-    path = Path(row.storage_path)
+    path = document_template_file(row)
     if not path.exists():
         raise HTTPException(status_code=404, detail="템플릿 파일이 존재하지 않습니다.")
     return FileResponse(
@@ -284,7 +285,7 @@ def delete_template(
         raise HTTPException(status_code=404, detail="템플릿을 찾을 수 없습니다.")
     if row.active:
         raise HTTPException(status_code=400, detail="활성 템플릿은 삭제할 수 없습니다. 먼저 비활성화해 주세요.")
-    path = Path(row.storage_path)
+    path = document_template_file(row)
     db.delete(row)
     db.commit()
     path.unlink(missing_ok=True)

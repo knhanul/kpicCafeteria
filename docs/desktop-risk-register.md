@@ -19,7 +19,9 @@ DSK-026 binary/data directory 분리
 DSK-036 Windows mutex single-instance
 ```
 
-남은 주요 위험은 실제 운영 데이터 이전, active HWPX template 확보, SQLite restore UI, installer/code signing, 서명된 EXE와 실제 사용자 acceptance다. 현재 개발 PC에서는 source-mode WebView smoke가 성공했지만 unsigned PyInstaller EXE는 Application Control 정책에 의해 실행이 차단되었다.
+남은 주요 위험은 실제 운영 데이터 이전, active HWPX template 확보, installer/code signing, 서명된 EXE와 실제 사용자 acceptance다.
+
+2026-10-19 후속 보강: `.xls` 날씨 파일용 `xlrd`를 desktop requirements에 추가했고, DB `storage_path`는 `storage_resolver.py`가 현재 데이터 루트 기준으로 재해석한다(서버↔PC DB 이동 대응). `시스템 데이터 백업` 화면에 restore-before-backup 정책의 복원 기능(SQLite online restore + pg_restore)을 추가했다. 현재 개발 PC에서는 source-mode WebView smoke가 성공했지만 unsigned PyInstaller EXE는 Application Control 정책에 의해 실행이 차단되었다.
 
 ## 1. 평가 기준
 
@@ -43,7 +45,7 @@ DSK-036 Windows mutex single-instance
 | DSK-005 | Migration | 기존 SQLite constraint migration이 불완전 | source 주석에 legacy unique constraint in-place 제거 불가 명시 | 중간 | 기존 DB upgrade 실패 | High | clean SQLite import를 기본으로 하고 table rebuild migration test | 확인됨 |
 | DSK-006 | Data migration | 운영 PostgreSQL 실제 데이터와 runtime asset을 보지 못함 | 운영 접근 금지, dump/active template 미제공 | 높음 | 전환 누락/데이터 손실 | Critical | 익명화 dump + storage manifest 확보 후 격리 rehearsal | 확인 필요 |
 | DSK-007 | Data migration | PostgreSQL과 SQLite의 JSON/date/time/index/constraint 의미 차이 | SQLAlchemy generic types이나 dialect 차이 존재 | 중간 | 값 또는 제약 불일치 | High | entity별 canonical export/import, row/FK/hash/sample 비교 | 미검증 |
-| DSK-008 | Storage | Docker absolute `storage_path`가 Windows에서 무효 | `DocumentTemplate.storage_path`, `ImportJob.storage_path` 문자열 저장 | 높음 | template/Import file 접근 불가 | Critical | relative storage key로 migration, data-root resolver 도입 | 확인됨 |
+| DSK-008 | Storage | Docker absolute `storage_path`가 Windows에서 무효 | `DocumentTemplate.storage_path`, `ImportJob.storage_path` 문자열 저장 | 높음 | template/Import file 접근 불가 | Critical | `storage_resolver.py` data-root resolver로 현재 루트 기준 재해석 | 완화됨 |
 | DSK-009 | Storage | CWD 상대경로가 설치 폴더에 생성될 수 있음 | config 기본 `./storage`, `./data`, `./cafeteria.db`; import 시 mkdir | 높음 | UAC/access denied 또는 데이터 위치 혼란 | Critical | `%LOCALAPPDATA%`/정책 경로를 app 시작 전에 주입 | 확인됨 |
 | DSK-010 | Storage | DB backup만으로 HWPX template file이 복원되지 않음 | template metadata는 DB, 실제 파일은 storage | 높음 | 출력 기능 불능 | High | DB+storage manifest를 하나의 backup set으로 구성 | 확인됨 |
 | DSK-011 | Auth | 로그인 UI만 제거하면 업무 API는 계속 401 반환 | 대부분 router가 `Depends(current_user)` 사용 | 높음 | 전체 업무 기능 불능 | Critical | local principal compatibility layer를 먼저 설계 | 확인됨 |
@@ -56,8 +58,8 @@ DSK-036 Windows mutex single-instance
 | DSK-018 | PDF tests | 자동 테스트가 실제 COM 변환을 검증하지 않음 | `test_hwpx_pdf_renderer.py`가 fake renderer monkeypatch | 높음 | CI PASS인데 실제 PDF 실패 | High | Windows 전용 smoke test를 별도 운영 | 확인됨 |
 | DSK-019 | HWPX | 운영 활성 template가 저장소 template와 동일한지 알 수 없음 | runtime storage 제외, DB row 미확인 | 높음 | 출력 layout/placeholder 오류 | Critical | 운영 template bundle과 checksum manifest 확보 | 확인 필요 |
 | DSK-020 | HWPX | HWPX engine 변경 없이도 한컴 버전별 rendering 차이 가능 | ZIP/XML render 후 한컴이 실제 표시 | 중간 | 문서 layout 깨짐 | High | 세 문서 유형 golden-file 및 실제 한컴 열기 검증 | 미검증 |
-| DSK-021 | Backup | 현재 in-app backup은 SQLite를 명시적으로 거부 | `admin.py`: SQLite URL이면 HTTP 400 | 높음 | PC backup 기능 없음 | Critical | SQLite online backup/restore 구현 및 integrity check | 확인됨 |
-| DSK-022 | Backup | WAL 상태에서 단순 DB file copy는 일관되지 않을 수 있음 | SQLite 전환 시 예상 | 중간 | 복원 불가능 backup | Critical | SQLite backup API 사용, restore rehearsal | 미검증 |
+| DSK-021 | Backup | 현재 in-app backup은 SQLite를 명시적으로 거부 | `admin.py`: SQLite URL이면 HTTP 400 | 높음 | PC backup 기능 없음 | Critical | SQLite online backup/restore 구현 및 integrity check | 완화됨 |
+| DSK-022 | Backup | WAL 상태에서 단순 DB file copy는 일관되지 않을 수 있음 | SQLite 전환 시 예상 | 중간 | 복원 불가능 backup | Critical | SQLite backup API 사용(backup/restore 모두), restore rehearsal | 완화됨 |
 | DSK-023 | Desktop shell | shell 기술 미확정 | pywebview/PyInstaller 미설치, package 설정 없음 | 높음 | 구현/배포 계획 미확정 | High | WebView2 wrapper와 기본 browser prototype 비교 | 확인 필요 |
 | DSK-024 | WebView | Blob CSV, file upload/download, `window.open`, inline PDF가 shell별로 다름 | `app.js`에서 Blob/anchor/window.open/location 사용 | 중간 | 출력·Import UX 실패 | High | target WebView acceptance matrix | 확인됨 |
 | DSK-025 | Packaging | Jinja/static/HWPX reference/hidden import 누락 가능 | 현재 Docker COPY만 존재, desktop spec 없음 | 높음 | 실행 또는 화면/출력 실패 | High | package manifest, clean VM install test | 확인됨 |

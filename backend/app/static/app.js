@@ -328,6 +328,13 @@ function bindGlobal() {
   $('#logout-button')?.addEventListener('click',async()=>{await api('/api/auth/logout',{method:'POST'});location.href='/login';});
   $('#change-password-button')?.addEventListener('click',()=>openChangePasswordModal(false));
   $('#create-backup-btn')?.addEventListener('click',createBackup);
+  $('#restore-upload-btn')?.addEventListener('click',()=>$('#restore-upload-input')?.click());
+  $('#restore-upload-input')?.addEventListener('change',e=>{
+    const input=e.target;
+    const file=input.files&&input.files[0];
+    input.value='';
+    if(file)confirmRestoreUpload(file);
+  });
   $('#create-archive-btn')?.addEventListener('click',createArchive);
   $('#orders-query-btn')?.addEventListener('click',loadOrders);
   $$('#orders-view-tabs button').forEach(button=>button.addEventListener('click',()=>{state.ordersView=button.dataset.orderView;$$('#orders-view-tabs button').forEach(x=>x.classList.toggle('active',x===button));renderOrders();}));
@@ -2129,6 +2136,7 @@ async function loadBackupList() {
       <td>${r.status==='completed'?'<span class="badge badge-ok">정상</span>':'<span class="badge badge-warn">오류</span>'}</td>
       <td>
         <button class="ghost-button" data-act="download" data-id="${r.id}">다운로드</button>
+        ${r.status==='completed'?`<button class="ghost-button" data-act="restore" data-id="${r.id}" data-name="${escapeHtml(r.filename)}">복원</button>`:''}
         ${r.backup_type==='manual'?`<button class="ghost-button" data-act="delete" data-id="${r.id}">삭제</button>`:''}
       </td>
     </tr>`).join('')}</tbody></table></div>`;
@@ -2136,6 +2144,7 @@ async function loadBackupList() {
       const act = btn.dataset.act;
       const id = btn.dataset.id;
       if (act === 'download') downloadBackup(id);
+      else if (act === 'restore') confirmRestore(id, btn.dataset.name||'');
       else if (act === 'delete') confirmDeleteBackup(id, btn.closest('tr'));
     }));
   } catch (e) {
@@ -2162,6 +2171,56 @@ async function createBackup() {
 function downloadBackup(id) {
   window.location.href = `/api/admin/backups/${id}/download`;
   toast('다운로드를 시작했습니다. 중요한 백업파일은 PC 외의 별도 저장장치에도 보관하는 것을 권장합니다.');
+}
+
+const RESTORE_WARNING='현재 데이터가 선택한 백업 시점으로 되돌아갑니다. 복원 전에 현재 상태의 안전 백업이 자동으로 만들어집니다.';
+
+function confirmRestore(id, name) {
+  modal(`<h3>백업파일 복원</h3>
+  <p>${escapeHtml(name)} 파일로 복원하시겠습니까?</p>
+  <p>${RESTORE_WARNING}</p>
+  <div class="save-bar"><button type="button" class="ghost-button" id="br-cancel">취소</button><button type="button" class="danger-button" id="br-confirm">복원</button></div>`);
+  $('#br-cancel').addEventListener('click', closeModal);
+  $('#br-confirm').addEventListener('click', async () => {
+    closeModal();
+    const lock = lockUI('백업파일로 복원하고 있습니다. 잠시만 기다려 주세요.');
+    try {
+      const result = await api(`/api/admin/backups/${id}/restore`, { method: 'POST' });
+      toast(`복원이 완료되었습니다. (안전 백업: ${result.safety_backup||'생성됨'})`);
+      setTimeout(() => location.reload(), 800);
+    } catch (e) {
+      toast(e.message, true);
+      lock.release();
+    }
+  });
+}
+
+function confirmRestoreUpload(file) {
+  modal(`<h3>백업파일로 복원</h3>
+  <p>${escapeHtml(file.name)} 파일로 복원하시겠습니까?</p>
+  <p>${RESTORE_WARNING}</p>
+  <div class="save-bar"><button type="button" class="ghost-button" id="bru-cancel">취소</button><button type="button" class="danger-button" id="bru-confirm">복원</button></div>`);
+  $('#bru-cancel').addEventListener('click', closeModal);
+  $('#bru-confirm').addEventListener('click', async () => {
+    closeModal();
+    const lock = lockUI('백업파일로 복원하고 있습니다. 잠시만 기다려 주세요.');
+    try {
+      const form = new FormData();
+      form.append('file', file, file.name);
+      const response = await fetch('/api/admin/backups/restore-upload', { method: 'POST', body: form });
+      if (!response.ok) {
+        let message = `오류가 발생했습니다. (${response.status})`;
+        try { const data = await response.json(); if (data && data.detail) message = data.detail; } catch {}
+        throw new Error(message);
+      }
+      const result = await response.json();
+      toast(`복원이 완료되었습니다. (안전 백업: ${result.safety_backup||'생성됨'})`);
+      setTimeout(() => location.reload(), 800);
+    } catch (e) {
+      toast(e.message, true);
+      lock.release();
+    }
+  });
 }
 
 async function confirmDeleteBackup(id, row) {

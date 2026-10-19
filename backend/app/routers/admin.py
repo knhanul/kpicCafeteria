@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import secrets
 import shutil
 import sqlite3
 import subprocess
-from datetime import date, datetime, timedelta, timezone
+import tempfile
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
@@ -16,8 +19,12 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from ..config import settings
-from ..db import get_db
+from ..db import Base, SessionLocal, engine, get_db
+from ..default_templates import ensure_default_templates
 from ..deps import admin_user
+from ..desktop_schema import ensure_desktop_schema_version
+from ..schema_upgrade import upgrade_existing_schema
+from ..security import hash_password
 from ..models import (
     AuditLog,
     BackupRecord,
@@ -89,35 +96,19 @@ def _create_sqlite_backup(database_url: str, destination: Path) -> None:
 
 # ==================== Backup ====================
 
-@router.get("/backups")
-def list_backups(db: Session = Depends(get_db), user: User = Depends(admin_user)):
-    rows = db.scalars(
-        select(BackupRecord).order_by(BackupRecord.created_at.desc())
-    ).all()
-    return {
-        "items": [
-            {
-                "id": r.id,
-                "filename": r.filename,
-                "file_size": r.file_size,
-                "backup_type": r.backup_type,
-                "status": r.status,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-                "created_by": r.created_by,
-            }
-            for r in rows
-        ]
-    }
-
-
-@router.post("/backups")
-def create_backup(db: Session = Depends(get_db), user: User = Depends(admin_user)):
+def _perform_backup(db: Session, user: User, backup_type: str) -> BackupRecord:
     now = _utcnow()
     ts = now.strftime("%Y%m%d_%H%M%S")
     extension = "db" if settings.database_url.startswith("sqlite") else "dump"
-    stored_filename = f"cafeteria_db_backup_manual_{ts}.{extension}"
-    download_filename = stored_filename
-    dest = settings.backup_manual_dir / stored_filename
+    stored_filename = f"cafeteria_db_backup_{backup_type}_{ts}.{extension}"
+    dest_dir = settings.backup_auto_dir if backup_type == "auto" else settings.backup_manual_dir
+    dest = dest_dir / stored_filename
+    # 복원 직전 안전 백업처럼 같은 초 안에 연속 생성되면 기존 파일을 덮어쓰지 않도록 번호를 붙인다.
+    counter = 0
+    while dest.exists():
+        counter += 1
+        stored_filename = f"cafeteria_db_backup_{backup_type}_{ts}_{counter}.{extension}"
+        dest = dest_dir / stored_filename
 
     if settings.database_url.startswith("sqlite"):
         try:
@@ -129,7 +120,7 @@ def create_backup(db: Session = Depends(get_db), user: User = Depends(admin_user
         params = _parse_db_url(settings.database_url)
         env = {
             "PGPASSWORD": params["password"],
-            "PATH": __import__("os").environ.get("PATH", ""),
+            "PATH": os.environ.get("PATH", ""),
         }
         cmd = [
             "pg_dump",
@@ -157,10 +148,10 @@ def create_backup(db: Session = Depends(get_db), user: User = Depends(admin_user
 
     checksum = _sha256(dest)
     record = BackupRecord(
-        filename=download_filename,
+        filename=stored_filename,
         stored_filename=stored_filename,
         file_size=file_size,
-        backup_type="manual",
+        backup_type=backup_type,
         status="completed",
         checksum_sha256=checksum,
         created_by=user.username,
@@ -171,10 +162,37 @@ def create_backup(db: Session = Depends(get_db), user: User = Depends(admin_user
         action="backup_create",
         entity_type="backup",
         entity_id=str(record.id) if record.id else None,
-        detail={"filename": download_filename, "type": "manual"},
+        detail={"filename": stored_filename, "type": backup_type},
     ))
     db.commit()
     db.refresh(record)
+    return record
+
+
+@router.get("/backups")
+def list_backups(db: Session = Depends(get_db), user: User = Depends(admin_user)):
+    rows = db.scalars(
+        select(BackupRecord).order_by(BackupRecord.created_at.desc())
+    ).all()
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "filename": r.filename,
+                "file_size": r.file_size,
+                "backup_type": r.backup_type,
+                "status": r.status,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "created_by": r.created_by,
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.post("/backups")
+def create_backup(db: Session = Depends(get_db), user: User = Depends(admin_user)):
+    record = _perform_backup(db, user, "manual")
     return {
         "id": record.id,
         "filename": record.filename,
@@ -185,11 +203,7 @@ def create_backup(db: Session = Depends(get_db), user: User = Depends(admin_user
     }
 
 
-@router.get("/backups/{backup_id}/download")
-def download_backup(backup_id: int, db: Session = Depends(get_db), user: User = Depends(admin_user)):
-    record = db.get(BackupRecord, backup_id)
-    if not record:
-        raise HTTPException(status_code=404, detail="백업파일을 찾을 수 없습니다.")
+def _backup_file_path(record: BackupRecord) -> Path:
     base_dir = settings.backup_dir.resolve()
     if record.backup_type == "auto":
         file_path = (settings.backup_auto_dir / record.stored_filename).resolve()
@@ -199,6 +213,15 @@ def download_backup(backup_id: int, db: Session = Depends(get_db), user: User = 
         file_path.relative_to(base_dir)
     except ValueError:
         raise HTTPException(status_code=404, detail="백업파일을 찾을 수 없습니다.")
+    return file_path
+
+
+@router.get("/backups/{backup_id}/download")
+def download_backup(backup_id: int, db: Session = Depends(get_db), user: User = Depends(admin_user)):
+    record = db.get(BackupRecord, backup_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="백업파일을 찾을 수 없습니다.")
+    file_path = _backup_file_path(record)
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="백업파일을 찾을 수 없습니다.")
     return FileResponse(
@@ -213,15 +236,7 @@ def delete_backup(backup_id: int, db: Session = Depends(get_db), user: User = De
     record = db.get(BackupRecord, backup_id)
     if not record:
         raise HTTPException(status_code=404, detail="백업파일을 찾을 수 없습니다.")
-    base_dir = settings.backup_dir.resolve()
-    if record.backup_type == "auto":
-        file_path = (settings.backup_auto_dir / record.stored_filename).resolve()
-    else:
-        file_path = (settings.backup_manual_dir / record.stored_filename).resolve()
-    try:
-        file_path.relative_to(base_dir)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="백업파일을 찾을 수 없습니다.")
+    file_path = _backup_file_path(record)
     if file_path.is_file():
         file_path.unlink()
     db.add(AuditLog(
@@ -234,6 +249,166 @@ def delete_backup(backup_id: int, db: Session = Depends(get_db), user: User = De
     db.delete(record)
     db.commit()
     return {"ok": True}
+
+
+# ==================== Restore ====================
+
+def _validate_sqlite_backup(path: Path) -> None:
+    try:
+        with path.open("rb") as source:
+            magic = source.read(16)
+    except OSError:
+        raise HTTPException(status_code=400, detail="백업 파일을 읽을 수 없습니다.")
+    if magic != b"SQLite format 3\x00":
+        raise HTTPException(status_code=400, detail="이 DB의 백업 파일 형식이 아닙니다. SQLite(.db) 백업만 복원할 수 있습니다.")
+    try:
+        with sqlite3.connect(path) as verification:
+            result = verification.execute("PRAGMA integrity_check").fetchone()
+    except sqlite3.Error:
+        raise HTTPException(status_code=400, detail="손상된 백업 파일입니다.")
+    if not result or result[0] != "ok":
+        raise HTTPException(status_code=400, detail="백업 파일 무결성 검사에 실패했습니다.")
+
+
+def _validate_pg_dump(path: Path) -> None:
+    try:
+        result = subprocess.run(
+            ["pg_restore", "-l", str(path)],
+            capture_output=True, text=True, timeout=60,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="복원 도구(pg_restore)를 찾을 수 없습니다.")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=400, detail="백업 파일 검증에 실패했습니다.")
+    if result.returncode != 0:
+        raise HTTPException(status_code=400, detail="이 DB의 백업 파일 형식이 아닙니다. PostgreSQL(.dump) 백업만 복원할 수 있습니다.")
+
+
+def _restore_sqlite(source: Path) -> None:
+    target_path = _sqlite_database_path(settings.database_url)
+    with sqlite3.connect(source, timeout=30) as src, sqlite3.connect(target_path, timeout=30) as dst:
+        src.backup(dst)
+
+
+def _restore_postgres(source: Path) -> None:
+    params = _parse_db_url(settings.database_url)
+    env = {
+        "PGPASSWORD": params["password"],
+        "PATH": os.environ.get("PATH", ""),
+    }
+    cmd = [
+        "pg_restore",
+        "-h", params["host"],
+        "-p", params["port"],
+        "-U", params["user"],
+        "-d", params["dbname"],
+        "--clean",
+        "--if-exists",
+        "--no-owner",
+        "-F", "c",
+        str(source),
+    ]
+    try:
+        subprocess.run(cmd, env=env, check=True, capture_output=True, text=True, timeout=600)
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="복원 도구(pg_restore)를 찾을 수 없습니다.")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=500, detail="시스템 데이터 복원에 실패했습니다.")
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip().splitlines()
+        tail = detail[-1] if detail else ""
+        raise HTTPException(status_code=500, detail=f"시스템 데이터 복원에 실패했습니다. {tail}".strip())
+
+
+def _post_restore_maintenance() -> None:
+    """Re-align a restored DB with the running code and desktop bootstrap data."""
+    engine.dispose()
+    upgrade_existing_schema(engine)
+    Base.metadata.create_all(engine)
+    if engine.dialect.name == "sqlite":
+        ensure_desktop_schema_version(engine)
+    with SessionLocal() as db:
+        if settings.desktop_mode:
+            user = db.scalar(select(User).where(User.username == settings.desktop_username))
+            if not user:
+                db.add(User(
+                    username=settings.desktop_username,
+                    password_hash=hash_password(secrets.token_urlsafe(32)),
+                    display_name=settings.desktop_display_name,
+                    role="admin",
+                ))
+            else:
+                user.active = True
+                user.role = "admin"
+                user.display_name = settings.desktop_display_name
+        defaults = [
+            ("LUNCH", "중식", 400, time(11, 40), 1),
+            ("DINNER", "석식", 100, time(17, 30), 2),
+        ]
+        for code, name, count, svc_time, sort_order in defaults:
+            if not db.scalar(select(MealTypeSetting).where(MealTypeSetting.code == code)):
+                db.add(MealTypeSetting(
+                    code=code, name=name, default_planned_count=count,
+                    default_service_time=svc_time, sort_order=sort_order, active=True,
+                ))
+        db.commit()
+        try:
+            ensure_default_templates(db, settings.template_dir)
+        except Exception:
+            db.rollback()
+
+
+def _run_restore(source: Path, db: Session, user: User, restored_from: str) -> dict:
+    is_sqlite = settings.database_url.startswith("sqlite")
+    if is_sqlite:
+        _validate_sqlite_backup(source)
+    else:
+        _validate_pg_dump(source)
+    # Never overwrite the live database without a fresh safety backup.
+    safety = _perform_backup(db, user, "auto")
+    if is_sqlite:
+        _restore_sqlite(source)
+    else:
+        _restore_postgres(source)
+    _post_restore_maintenance()
+    with SessionLocal() as audit_db:
+        audit_db.add(AuditLog(
+            user_id=user.id,
+            action="backup_restore",
+            entity_type="backup",
+            entity_id=str(safety.id),
+            detail={"restored_from": restored_from, "safety_backup": safety.filename},
+        ))
+        audit_db.commit()
+    return {"ok": True, "restored_from": restored_from, "safety_backup": safety.filename}
+
+
+@router.post("/backups/restore-upload")
+def restore_uploaded_backup(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(admin_user),
+):
+    suffix = Path(file.filename or "backup").suffix or (".db" if settings.database_url.startswith("sqlite") else ".dump")
+    with tempfile.NamedTemporaryFile(prefix="restore-upload-", suffix=suffix, delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+        shutil.copyfileobj(file.file, tmp)
+    try:
+        result = _run_restore(tmp_path, db, user, file.filename or tmp_path.name)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    return result
+
+
+@router.post("/backups/{backup_id}/restore")
+def restore_backup(backup_id: int, db: Session = Depends(get_db), user: User = Depends(admin_user)):
+    record = db.get(BackupRecord, backup_id)
+    if not record or record.status != "completed":
+        raise HTTPException(status_code=404, detail="복원할 수 있는 백업파일을 찾을 수 없습니다.")
+    file_path = _backup_file_path(record)
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="백업파일을 찾을 수 없습니다.")
+    return _run_restore(file_path, db, user, record.filename)
 
 
 # ==================== Excel Archive ====================

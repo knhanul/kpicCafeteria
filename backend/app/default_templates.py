@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from .hwpx_service import validate_hwpx
 from .models import DocumentTemplate
+from .storage_resolver import document_template_file
 
 DEFAULT_TEMPLATE_SPECS = (
     ("MEAL_PLAN", "식단표_템플릿.hwpx", "식단표"),
@@ -91,7 +92,7 @@ def ensure_default_templates(
                 .order_by(DocumentTemplate.version.desc())
             )
             if existing:
-                existing_path = Path(existing.storage_path)
+                existing_path = document_template_file(existing)
                 if existing_path.is_file() and _sha256(existing_path) == checksum:
                     continue
                 destination, created = _copy_default_template(source, template_dir, document_type, checksum)

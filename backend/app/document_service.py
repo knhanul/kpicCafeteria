@@ -22,6 +22,7 @@ from .models import (
 )
 from .serializers import MEAL_NAMES
 from .hwpx_service import active_template
+from .storage_resolver import document_template_file
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
@@ -266,4 +267,4 @@ def render_pdf(db: Session, preview: DocumentPreview) -> tuple[bytes, str]:
     services = resolve_services(db, preview.service_ids)
     if not services:
         raise ValueError("출력할 배식이 없습니다.")
-    return generate_pdf_bytes(preview.document_type, services, template.storage_path)
+    return generate_pdf_bytes(preview.document_type, services, document_template_file(template))

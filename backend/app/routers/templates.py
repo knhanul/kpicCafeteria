@@ -13,6 +13,7 @@ from ..db import get_db
 from ..deps import current_user
 from ..hwpx_service import HwpxTemplateError, validate_hwpx
 from ..models import DocumentTemplate, User
+from ..storage_resolver import document_template_file
 
 router = APIRouter(prefix="/api/templates", tags=["templates"])
 VALID_TYPES = {"MEAL_PLAN", "COOKING_INSTRUCTION", "PRESERVATION_RECORD"}
@@ -97,7 +98,7 @@ def delete_template(template_id: int, db: Session = Depends(get_db), user: User 
     row = db.get(DocumentTemplate, template_id)
     if not row:
         raise HTTPException(status_code=404, detail="템플릿을 찾을 수 없습니다.")
-    path = Path(row.storage_path)
+    path = document_template_file(row)
     db.delete(row)
     db.commit()
     path.unlink(missing_ok=True)

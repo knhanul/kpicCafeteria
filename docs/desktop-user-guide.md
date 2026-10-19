@@ -129,6 +129,7 @@ Backup 파일:
 
 ```text
 cafeteria_db_backup_manual_YYYYMMDD_HHMMSS.db
+cafeteria_db_backup_auto_YYYYMMDD_HHMMSS.db
 ```
 
 DB backup과 HWPX template 파일은 별도다. 완전한 재해 복구를 위해 다음 두 위치를 함께 보관한다.
@@ -138,7 +139,18 @@ DB backup과 HWPX template 파일은 별도다. 완전한 재해 복구를 위�
 %LOCALAPPDATA%\KPICCafeteria\storage\templates
 ```
 
-현재 UI에는 SQLite restore 기능이 없다. Restore는 후속 단계에서 maintenance mode와 restore-before-backup 정책을 포함해 구현해야 한다.
+## Restore
+
+`설정 > 시스템 데이터 백업`에서 백업 파일을 되돌릴 수 있다.
+
+- 백업 목록의 `복원` 버튼: 보관 중인 백업 파일로 복원한다.
+- `백업파일로 복원` 버튼: 다른 PC에서 가져온 `.db` 백업 파일을 업로드해 복원한다.
+
+복원 전에는 현재 상태의 안전 백업(`backup/auto`)이 자동으로 만들어지고, 복원 파일은 SQLite magic과 `PRAGMA integrity_check`로 검증한다. 복원 후에는 스키마 정합 절차가 자동으로 실행되고, 다른 PC에서 가져온 DB의 HWPX 양식 경로는 현재 데이터 폴더 기준으로 다시 찾는다(양식 파일은 `storage\templates`를 함께 복사해야 한다).
+
+DB만 다른 PC로 옮길 때 HWPX 양식 파일이 함께 없으면 양식 관리에서 파일이 없다고 표시되며, `storage\templates` 폴더를 같이 복사하면 경로가 자동으로 재해석된다.
+
+PostgreSQL 서버 버전도 같은 화면에서 `.dump` 복원을 지원한다(`pg_restore --clean --if-exists`).
 
 ## SQLite 안전 설정
 

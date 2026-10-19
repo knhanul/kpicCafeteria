@@ -16,6 +16,7 @@ from ..document_service import create_preview, render_pdf, render_preview_html, 
 from ..document_hwpx import generate_hwpx_bytes, generate_pdf_bytes
 from ..hwpx_service import HwpxTemplateError, active_template
 from ..models import DocumentPreview, MealService, User
+from ..storage_resolver import document_template_file
 
 router = APIRouter(tags=["documents"])
 VALID_TYPES = {"MEAL_PLAN", "COOKING_INSTRUCTION", "PRESERVATION_RECORD"}
@@ -166,7 +167,7 @@ def download_hwpx(
         content, filename = generate_hwpx_bytes(
             preview.document_type,
             services,
-            template.storage_path,
+            document_template_file(template),
         )
     except HwpxTemplateError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -195,7 +196,7 @@ def _preview_pdf_by_type(document_type: str, body: PreviewRangeBody, db: Session
         content, filename = generate_pdf_bytes(
             document_type,
             services,
-            template.storage_path,
+            document_template_file(template),
             start_date=body.start_date,
             end_date=body.end_date,
         )
@@ -272,7 +273,7 @@ def _download_hwpx_by_type(document_type: str, body: ExportBody, db: Session, us
     if not services:
         raise HTTPException(status_code=400, detail="출력할 배식이 없습니다.")
     try:
-        content, filename = generate_hwpx_bytes(document_type, services, template.storage_path, start_date=body.start_date, end_date=body.end_date)
+        content, filename = generate_hwpx_bytes(document_type, services, document_template_file(template), start_date=body.start_date, end_date=body.end_date)
     except HwpxTemplateError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

@@ -18,6 +18,7 @@ from ..config import settings
 from ..db import get_db
 from ..deps import admin_user
 from ..models import ImportJob, MealPeriodWeather, User, WeatherHistory, WeatherUploadHistory
+from ..storage_resolver import import_job_file
 from ..weather_import import (
     ALLOWED_EXTENSIONS,
     MAX_FILE_SIZE,
@@ -49,7 +50,7 @@ def _cleanup_expired_previews(db: Session) -> None:
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
     jobs = db.scalars(select(ImportJob).where(ImportJob.status == "WEATHER_PREVIEWED", ImportJob.created_at < cutoff)).all()
     for job in jobs:
-        Path(job.storage_path).unlink(missing_ok=True)
+        import_job_file(job.storage_path).unlink(missing_ok=True)
         job.status = "WEATHER_EXPIRED"
     if jobs:
         db.commit()
@@ -136,7 +137,7 @@ def apply_weather(
     created_at = job.created_at.replace(tzinfo=timezone.utc) if job.created_at.tzinfo is None else job.created_at
     if datetime.now(timezone.utc) - created_at > timedelta(minutes=30):
         raise HTTPException(status_code=400, detail="Preview가 만료되었습니다. 파일을 다시 분석해 주세요.")
-    source = Path(job.storage_path)
+    source = import_job_file(job.storage_path)
     checksum = (job.summary or {}).get("file_sha256", "")
     if not source.is_file() or sha256_file(source) != checksum:
         raise HTTPException(status_code=400, detail="Preview 이후 업로드 파일이 변경되었거나 삭제되었습니다.")
