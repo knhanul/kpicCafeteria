@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sys
 import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from app.desktop_runtime import configure_desktop_environment, reserve_local_port
 
@@ -14,14 +16,66 @@ _MUTEX_NAME = "Local\\KPICCafeteriaDesktop"
 _ERROR_ALREADY_EXISTS = 183
 
 
+def ensure_standard_streams() -> None:
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
+
+def build_log_config(log_path: Path) -> dict:
+    return {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "default": {
+                "()": "uvicorn.logging.DefaultFormatter",
+                "fmt": "%(levelprefix)s %(message)s",
+                "use_colors": False,
+            },
+            "access": {
+                "()": "uvicorn.logging.AccessFormatter",
+                "fmt": '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',
+                "use_colors": False,
+            },
+        },
+        "handlers": {
+            "default": {
+                "formatter": "default",
+                "class": "logging.FileHandler",
+                "filename": str(log_path),
+                "encoding": "utf-8",
+            },
+            "access": {
+                "formatter": "access",
+                "class": "logging.FileHandler",
+                "filename": str(log_path),
+                "encoding": "utf-8",
+            },
+        },
+        "loggers": {
+            "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
+            "uvicorn.error": {"level": "INFO"},
+            "uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": False},
+        },
+    }
+
+
 class DesktopServer(threading.Thread):
-    def __init__(self, port: int):
+    def __init__(self, port: int, log_path: Path):
         super().__init__(name="cafeteria-api", daemon=True)
         import uvicorn
         from app.main import app
 
         self.server = uvicorn.Server(
-            uvicorn.Config(app, host="127.0.0.1", port=port, log_level="info", access_log=False)
+            uvicorn.Config(
+                app,
+                host="127.0.0.1",
+                port=port,
+                log_level="info",
+                access_log=False,
+                log_config=build_log_config(log_path),
+            )
         )
 
     def run(self) -> None:
@@ -59,13 +113,14 @@ def acquire_single_instance_mutex():
 
 
 def main() -> None:
+    ensure_standard_streams()
     mutex = acquire_single_instance_mutex()
     server: DesktopServer | None = None
     try:
-        configure_desktop_environment()
+        data_root = configure_desktop_environment()
         port = reserve_local_port()
         base_url = f"http://127.0.0.1:{port}"
-        server = DesktopServer(port)
+        server = DesktopServer(port, data_root / "logs" / "uvicorn.log")
         server.start()
         wait_until_ready(f"{base_url}/health")
 

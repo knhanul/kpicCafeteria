@@ -40,13 +40,21 @@ cd C:\Pjt\kpicCafeteria
 .\scripts\build-desktop.ps1
 ```
 
+스크립트가 버전과 생성일을 입력받는다. 버전은 `1.2.3`처럼 숫자와 점(최대 3단계)만 입력할 수 있고 Enter는 `1.0.0`이 기본이다. `-Version`, `-BuildDate` 파라미터로 직접 전달할 수도 있다.
+
+```powershell
+.\scripts\build-desktop.ps1 -Version 1.0.0 -BuildDate 2026-10-20
+```
+
+아이콘은 `backend\app\static\assets\ci.png`에서 생성한다.
+
 결과:
 
 ```text
-desktop-dist\KPICCafeteria\KPICCafeteria.exe
+desktop-dist\KPICCafeteria.exe
 ```
 
-`desktop-dist\KPICCafeteria` 폴더 전체가 배포 단위다. EXE 하나만 복사하면 안 된다.
+단일 실행 파일 하나가 배포 단위다.
 
 회사/기관 Windows Application Control이나 백신 정책에서는 서명되지 않은 PyInstaller EXE가 차단될 수 있다. 이 경우 코드서명 인증서와 허용 정책이 필요하다.
 

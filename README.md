@@ -130,7 +130,7 @@ PC 버전은 내장 WebView2, 로컬 SQLite, 로그인 없는 단일 사용자 �
 .\scripts\build-desktop.ps1
 ```
 
-빌드 결과는 `desktop-dist\KPICCafeteria\`에 생성됩니다. 최초 실행 후 `기본 데이터 관리`에서 XLSX와 HWPX 양식을 등록합니다.
+빌드 결과는 `desktop-dist\KPICCafeteria.exe` 단일 실행 파일로 생성됩니다. 빌드 시 버전과 생성일을 입력하며, 아이콘은 `backend\app\static\assets\ci.png`를 사용합니다. 최초 실행 후 `기본 데이터 관리`에서 XLSX와 HWPX 양식을 등록합니다.
 
 자세한 내용은 [`docs/desktop-user-guide.md`](docs/desktop-user-guide.md)를 참고하세요.
 
